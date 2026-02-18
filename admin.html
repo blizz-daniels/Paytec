@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin Dashboard | CampusPay Hub</title>
+    <meta name="robots" content="noindex,nofollow" />
+    <link rel="stylesheet" href="assets/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">CampusPay Hub Admin</div>
+      <nav class="nav-links">
+        <a href="/">Home</a>
+        <a class="active" href="/admin">Dashboard</a>
+        <a href="/admin/import">Import Rosters</a>
+        <a href="/logout" class="logout-btn">Log out</a>
+      </nav>
+    </header>
+
+    <main class="container">
+      <section class="page-title">
+        <h1>Admin Monitoring</h1>
+        <p>Track users and login activity for the platform.</p>
+        <p>Accounts are managed via roster CSV only.</p>
+      </section>
+
+      <section class="grid two-col">
+        <article class="card">
+          <h2>Total Users</h2>
+          <p id="totalUsers">0</p>
+        </article>
+        <article class="card">
+          <h2>Total Students</h2>
+          <p id="totalStudents">0</p>
+        </article>
+        <article class="card">
+          <h2>Total Teachers</h2>
+          <p id="totalTeachers">0</p>
+        </article>
+        <article class="card">
+          <h2>Total Admins</h2>
+          <p id="totalAdmins">0</p>
+        </article>
+        <article class="card">
+          <h2>Total Login Events</h2>
+          <p id="totalLogins">0</p>
+        </article>
+        <article class="card">
+          <h2>Unique Users Logged In</h2>
+          <p id="uniqueLoggedInUsers">0</p>
+        </article>
+        <article class="card">
+          <h2>Today's Logins</h2>
+          <p id="todayLogins">0</p>
+        </article>
+      </section>
+
+      <section class="card" style="margin-top: 1rem;">
+        <h2>Recent Login Activity</h2>
+        <p id="adminError" class="auth-error" hidden></p>
+        <div style="overflow-x: auto;">
+          <table id="loginTable" style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr>
+                <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.5rem;">Username</th>
+                <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.5rem;">Source</th>
+                <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.5rem;">IP</th>
+                <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.5rem;">Time</th>
+              </tr>
+            </thead>
+            <tbody id="loginRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="assets/admin.js"></script>
+  </body>
+</html>

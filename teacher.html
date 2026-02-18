@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Teacher Dashboard | CampusPay Hub</title>
+    <meta name="robots" content="noindex,nofollow" />
+    <link rel="stylesheet" href="assets/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">CampusPay Hub Teacher</div>
+      <button id="menuButton" class="menu-btn" aria-label="Toggle navigation">&#9776;</button>
+      <nav id="mainNav" class="nav-links">
+        <a href="/">Home</a>
+        <a href="/notifications.html">Notifications</a>
+        <a href="/handouts.html">Handouts</a>
+        <a class="active" href="/teacher">Teacher</a>
+        <a href="/logout" class="logout-btn">Log out</a>
+      </nav>
+    </header>
+
+    <main class="container">
+      <section class="page-title">
+        <h1>Teacher Upload Dashboard</h1>
+        <p>Publish notifications, payment links, shared files, and handouts for students.</p>
+      </section>
+
+      <section class="grid two-col">
+        <article class="card">
+          <h2>Post Notification</h2>
+          <p id="notificationStatus" class="auth-subtitle"></p>
+          <form id="notificationForm" class="auth-form">
+            <label for="notificationTitle">Title</label>
+            <input id="notificationTitle" name="title" type="text" maxlength="120" required />
+
+            <label for="notificationCategory">Category</label>
+            <input id="notificationCategory" name="category" type="text" maxlength="40" value="General" />
+
+            <label for="notificationBody">Message</label>
+            <textarea id="notificationBody" name="body" rows="5" maxlength="2000" required></textarea>
+
+            <label>
+              <input id="notificationUrgent" name="isUrgent" type="checkbox" />
+              Mark as urgent
+            </label>
+
+            <button type="submit" class="btn">Publish Notification</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <h2>Add Payment Link</h2>
+          <p id="paymentStatus" class="auth-subtitle"></p>
+          <form id="paymentForm" class="auth-form">
+            <label for="paymentTitle">Title</label>
+            <input id="paymentTitle" name="title" type="text" maxlength="120" required />
+
+            <label for="paymentDescription">Description</label>
+            <textarea id="paymentDescription" name="description" rows="4" maxlength="2000" required></textarea>
+
+            <label for="paymentUrl">Payment URL</label>
+            <input id="paymentUrl" name="paymentUrl" type="url" maxlength="500" required />
+
+            <button type="submit" class="btn">Publish Payment Link</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <h2>Upload Shared File</h2>
+          <p id="sharedFileStatus" class="auth-subtitle"></p>
+          <form id="sharedFileForm" class="auth-form">
+            <label for="sharedFileTitle">Title</label>
+            <input id="sharedFileTitle" name="title" type="text" maxlength="120" required />
+
+            <label for="sharedFileDescription">Description</label>
+            <textarea id="sharedFileDescription" name="description" rows="4" maxlength="2000" required></textarea>
+
+            <label for="sharedFileUrl">File URL</label>
+            <input id="sharedFileUrl" name="fileUrl" type="url" maxlength="500" required />
+
+            <button type="submit" class="btn">Publish File</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <h2>Upload Handout File</h2>
+          <p id="handoutStatus" class="auth-subtitle"></p>
+          <form id="handoutForm" class="auth-form">
+            <label for="handoutTitle">Title</label>
+            <input id="handoutTitle" name="title" type="text" maxlength="120" required />
+
+            <label for="handoutDescription">Description</label>
+            <textarea id="handoutDescription" name="description" rows="5" maxlength="2000" required></textarea>
+
+            <label for="handoutUrl">File URL (optional)</label>
+            <input id="handoutUrl" name="fileUrl" type="url" maxlength="500" />
+
+            <button type="submit" class="btn">Save Handout</button>
+          </form>
+        </article>
+      </section>
+    </main>
+
+    <script src="assets/app.js"></script>
+    <script src="assets/teacher.js"></script>
+  </body>
+</html>

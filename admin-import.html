@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Import Rosters | CampusPay Hub</title>
+    <meta name="robots" content="noindex,nofollow" />
+    <link rel="stylesheet" href="assets/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">CampusPay Hub Admin</div>
+      <nav class="nav-links">
+        <a href="/">Home</a>
+        <a href="/admin">Dashboard</a>
+        <a class="active" href="/admin/import">Import Rosters</a>
+        <a href="/logout" class="logout-btn">Log out</a>
+      </nav>
+    </header>
+
+    <main class="container">
+      <section class="page-title">
+        <h1>Roster CSV Import</h1>
+        <p>Upload CSV files to provision student and teacher accounts.</p>
+        <p>Required columns: students (matric_number,surname), teachers (teacher_code,surname).</p>
+      </section>
+
+      <section class="grid two-col">
+        <article class="card">
+          <h2>Import Student Roster</h2>
+          <p id="studentImportStatus" class="auth-subtitle"></p>
+          <form id="studentImportForm" class="auth-form">
+            <label for="studentCsv">Student CSV File</label>
+            <input id="studentCsv" name="studentCsv" type="file" accept=".csv,text/csv" required />
+            <button type="submit" class="btn">Import Students</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <h2>Import Teacher Roster</h2>
+          <p id="teacherImportStatus" class="auth-subtitle"></p>
+          <form id="teacherImportForm" class="auth-form">
+            <label for="teacherCsv">Teacher CSV File</label>
+            <input id="teacherCsv" name="teacherCsv" type="file" accept=".csv,text/csv" required />
+            <button type="submit" class="btn">Import Teachers</button>
+          </form>
+        </article>
+      </section>
+    </main>
+
+    <script src="assets/admin-import.js"></script>
+  </body>
+</html>

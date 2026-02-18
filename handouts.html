@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Handouts &bull; CampusPay Hub</title>
+    <link rel="stylesheet" href="assets/style.css" />
+  </head>
+  <body data-page="handouts">
+    <header class="topbar">
+      <div class="brand">CampusPay Hub</div>
+      <button id="menuButton" class="menu-btn" aria-label="Toggle navigation">&#9776;</button>
+      <nav id="mainNav" class="nav-links">
+        <a href="index.html">Home</a>
+        <a href="notifications.html">Notifications</a>
+        <a class="active" href="handouts.html">Handouts</a>
+        <a href="/teacher" data-role-link="teacher" hidden>Teacher</a>
+        <a href="/logout" class="logout-btn">Log out</a>
+      </nav>
+    </header>
+
+    <main class="container">
+      <section class="page-title">
+        <h1>Department Handouts</h1>
+        <p>Digital handouts shared by teachers for easy student access.</p>
+      </section>
+
+      <p id="contentError" class="auth-error" hidden></p>
+      <section id="handoutsList" class="grid"></section>
+    </main>
+
+    <footer class="footer">
+      <p>Need a file added? Ask your class teacher to upload it in the dashboard.</p>
+    </footer>
+
+    <script src="assets/app.js"></script>
+    <script src="assets/content.js"></script>
+  </body>
+</html>

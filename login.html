@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Portal Login | CampusPay Hub</title>
+    <meta name="description" content="CampusPay Hub login for students, teachers, and admins." />
+    <meta name="robots" content="index,follow" />
+    <link rel="stylesheet" href="assets/style.css" />
+  </head>
+  <body>
+    <main class="container auth-shell">
+      <section class="card auth-card">
+        <h1>Portal Login</h1>
+        <p class="auth-subtitle">Students use matric number, teachers use teacher code. Password is surname in lowercase.</p>
+        <p id="authError" class="auth-error" hidden></p>
+        <form method="post" action="/login" class="auth-form">
+          <label for="username">Username</label>
+          <input id="username" name="username" type="text" minlength="3" maxlength="40" pattern="[A-Za-z0-9/_-]+" required />
+
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" minlength="2" maxlength="40" required />
+
+          <button type="submit" class="btn">Log in</button>
+        </form>
+        <p class="auth-help">Accounts are provisioned by admin roster upload.</p>
+      </section>
+    </main>
+    <script src="assets/auth.js"></script>
+  </body>
+</html>
