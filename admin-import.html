@@ -37,8 +37,25 @@
           <form id="studentImportForm" class="auth-form">
             <label for="studentCsv">Student CSV File</label>
             <input id="studentCsv" name="studentCsv" type="file" accept=".csv,text/csv" required />
-            <button type="submit" class="btn">Import Students</button>
+            <div class="cta-row">
+              <button id="studentPreviewButton" type="button" class="btn btn-secondary">Preview Students</button>
+              <button type="submit" class="btn">Import Students</button>
+              <button id="studentDownloadReport" type="button" class="btn" hidden>Download Report</button>
+            </div>
           </form>
+          <div style="margin-top: 0.75rem; overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+              <thead>
+                <tr>
+                  <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.45rem;">Row</th>
+                  <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.45rem;">Identifier</th>
+                  <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.45rem;">Status</th>
+                  <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.45rem;">Message</th>
+                </tr>
+              </thead>
+              <tbody id="studentImportRows"></tbody>
+            </table>
+          </div>
         </article>
 
         <article class="card">
@@ -47,8 +64,25 @@
           <form id="teacherImportForm" class="auth-form">
             <label for="teacherCsv">Teacher CSV File</label>
             <input id="teacherCsv" name="teacherCsv" type="file" accept=".csv,text/csv" required />
-            <button type="submit" class="btn">Import Teachers</button>
+            <div class="cta-row">
+              <button id="teacherPreviewButton" type="button" class="btn btn-secondary">Preview Teachers</button>
+              <button type="submit" class="btn">Import Teachers</button>
+              <button id="teacherDownloadReport" type="button" class="btn" hidden>Download Report</button>
+            </div>
           </form>
+          <div style="margin-top: 0.75rem; overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+              <thead>
+                <tr>
+                  <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.45rem;">Row</th>
+                  <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.45rem;">Identifier</th>
+                  <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.45rem;">Status</th>
+                  <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.45rem;">Message</th>
+                </tr>
+              </thead>
+              <tbody id="teacherImportRows"></tbody>
+            </table>
+          </div>
         </article>
       </section>
     </main>

@@ -257,14 +257,40 @@ async function importRoster(filePath, role, idHeader) {
   return importRosterCsvText(raw, role, idHeader, path.basename(filePath));
 }
 
-async function importRosterCsvText(csvText, role, idHeader, sourceName) {
+function escapeCsvValue(value) {
+  const text = String(value ?? "");
+  if (/[",\r\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function buildImportReportCsv(results) {
+  const header = ["line_number", "identifier", "status", "message"];
+  const lines = [header.join(",")];
+  results.forEach((result) => {
+    lines.push(
+      [
+        escapeCsvValue(result.lineNumber),
+        escapeCsvValue(result.identifier),
+        escapeCsvValue(result.status),
+        escapeCsvValue(result.message),
+      ].join(",")
+    );
+  });
+  return lines.join("\n");
+}
+
+async function processRosterCsv(csvText, options) {
+  const { role, idHeader, sourceName, applyChanges } = options;
   const raw = String(csvText || "");
   const lines = raw
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-  if (lines.length < 2) {
-    return 0;
+
+  if (lines.length < 1) {
+    throw new Error("CSV is empty.");
   }
 
   const headers = parseCsvLine(lines[0]).map((header) => header.toLowerCase());
@@ -278,38 +304,123 @@ async function importRosterCsvText(csvText, role, idHeader, sourceName) {
       }
       return headers.indexOf(candidate);
     }, -1);
+
   if (idIndex === -1 || surnameIndex === -1) {
     throw new Error(`Invalid roster header. Expected columns: ${idHeader},surname`);
   }
 
-  let imported = 0;
+  const existingRows = await all("SELECT auth_id FROM auth_roster WHERE role = ?", [role]);
+  const existingIds = new Set(existingRows.map((row) => normalizeIdentifier(row.auth_id)));
+  const seenInFile = new Set();
+  const results = [];
+  const summary = {
+    totalRows: Math.max(0, lines.length - 1),
+    validRows: 0,
+    invalidRows: 0,
+    duplicateRows: 0,
+    inserts: 0,
+    updates: 0,
+    imported: 0,
+  };
+
   for (let i = 1; i < lines.length; i += 1) {
+    const lineNumber = i + 1;
     const row = parseCsvLine(lines[i]);
     const identifier = normalizeIdentifier(row[idIndex]);
     const surnamePassword = normalizeSurnamePassword(row[surnameIndex]);
-    if (!isValidIdentifier(identifier) || !isValidSurnamePassword(surnamePassword)) {
+    const rawDisplayName = nameIndex !== -1 ? normalizeDisplayName(row[nameIndex]) : "";
+
+    if (!isValidIdentifier(identifier)) {
+      summary.invalidRows += 1;
+      results.push({
+        lineNumber,
+        identifier,
+        status: "error",
+        message: `Invalid ${idHeader}. Use 3-40 chars: letters, numbers, /, _, -.`,
+      });
       continue;
     }
 
-    const passwordHash = await bcrypt.hash(surnamePassword, 12);
-    await run(
-      `
-        INSERT INTO auth_roster (auth_id, role, password_hash, source_file)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(auth_id, role) DO UPDATE SET
-          password_hash = excluded.password_hash,
-          source_file = excluded.source_file
-      `,
-      [identifier, role, passwordHash, sourceName]
-    );
-    const rawDisplayName = nameIndex !== -1 ? normalizeDisplayName(row[nameIndex]) : "";
-    if (rawDisplayName) {
-      await upsertProfileDisplayName(identifier, rawDisplayName);
+    if (seenInFile.has(identifier)) {
+      summary.invalidRows += 1;
+      summary.duplicateRows += 1;
+      results.push({
+        lineNumber,
+        identifier,
+        status: "duplicate_in_file",
+        message: `Duplicate ${idHeader} in this upload.`,
+      });
+      continue;
     }
-    imported += 1;
+    seenInFile.add(identifier);
+
+    if (!isValidSurnamePassword(surnamePassword)) {
+      summary.invalidRows += 1;
+      results.push({
+        lineNumber,
+        identifier,
+        status: "error",
+        message: "Invalid surname password format.",
+      });
+      continue;
+    }
+
+    const exists = existingIds.has(identifier);
+    const result = {
+      lineNumber,
+      identifier,
+      status: exists ? "update" : "insert",
+      message: exists ? "Will update existing account." : "Will create new account.",
+    };
+
+    if (applyChanges) {
+      const passwordHash = await bcrypt.hash(surnamePassword, 12);
+      await run(
+        `
+          INSERT INTO auth_roster (auth_id, role, password_hash, source_file)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(auth_id, role) DO UPDATE SET
+            password_hash = excluded.password_hash,
+            source_file = excluded.source_file
+        `,
+        [identifier, role, passwordHash, sourceName]
+      );
+      if (rawDisplayName) {
+        await upsertProfileDisplayName(identifier, rawDisplayName);
+      }
+      result.message = exists ? "Updated existing account." : "Created new account.";
+    }
+
+    if (exists) {
+      summary.updates += 1;
+    } else {
+      summary.inserts += 1;
+      existingIds.add(identifier);
+    }
+    summary.validRows += 1;
+    summary.imported += 1;
+    results.push(result);
   }
 
-  return imported;
+  return {
+    role,
+    summary,
+    rows: results,
+    reportCsv: buildImportReportCsv(results),
+  };
+}
+
+async function importRosterCsvText(csvText, role, idHeader, sourceName) {
+  if (!String(csvText || "").trim()) {
+    return 0;
+  }
+  const result = await processRosterCsv(csvText, {
+    role,
+    idHeader,
+    sourceName,
+    applyChanges: true,
+  });
+  return result.summary.imported;
 }
 
 async function upsertProfileDisplayName(username, displayName) {
@@ -1075,10 +1186,45 @@ app.post("/api/admin/import/students", requireAdmin, async (req, res) => {
   }
 
   try {
-    const imported = await importRosterCsvText(csvText, "student", "matric_number", "admin-upload-students.csv");
-    return res.status(200).json({ ok: true, imported });
+    const result = await processRosterCsv(csvText, {
+      role: "student",
+      idHeader: "matric_number",
+      sourceName: "admin-upload-students.csv",
+      applyChanges: true,
+    });
+    return res.status(200).json({
+      ok: true,
+      imported: result.summary.imported,
+      summary: result.summary,
+      rows: result.rows,
+      reportCsv: result.reportCsv,
+    });
   } catch (err) {
     return res.status(400).json({ error: err.message || "Could not import student roster." });
+  }
+});
+
+app.post("/api/admin/import/students/preview", requireAdmin, async (req, res) => {
+  const csvText = String(req.body.csvText || "");
+  if (!csvText.trim()) {
+    return res.status(400).json({ error: "Student CSV is required." });
+  }
+
+  try {
+    const result = await processRosterCsv(csvText, {
+      role: "student",
+      idHeader: "matric_number",
+      sourceName: "admin-preview-students.csv",
+      applyChanges: false,
+    });
+    return res.status(200).json({
+      ok: true,
+      summary: result.summary,
+      rows: result.rows,
+      reportCsv: result.reportCsv,
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || "Could not preview student roster." });
   }
 });
 
@@ -1089,10 +1235,45 @@ app.post("/api/admin/import/teachers", requireAdmin, async (req, res) => {
   }
 
   try {
-    const imported = await importRosterCsvText(csvText, "teacher", "teacher_code", "admin-upload-teachers.csv");
-    return res.status(200).json({ ok: true, imported });
+    const result = await processRosterCsv(csvText, {
+      role: "teacher",
+      idHeader: "teacher_code",
+      sourceName: "admin-upload-teachers.csv",
+      applyChanges: true,
+    });
+    return res.status(200).json({
+      ok: true,
+      imported: result.summary.imported,
+      summary: result.summary,
+      rows: result.rows,
+      reportCsv: result.reportCsv,
+    });
   } catch (err) {
     return res.status(400).json({ error: err.message || "Could not import teacher roster." });
+  }
+});
+
+app.post("/api/admin/import/teachers/preview", requireAdmin, async (req, res) => {
+  const csvText = String(req.body.csvText || "");
+  if (!csvText.trim()) {
+    return res.status(400).json({ error: "Teacher CSV is required." });
+  }
+
+  try {
+    const result = await processRosterCsv(csvText, {
+      role: "teacher",
+      idHeader: "teacher_code",
+      sourceName: "admin-preview-teachers.csv",
+      applyChanges: false,
+    });
+    return res.status(200).json({
+      ok: true,
+      summary: result.summary,
+      rows: result.rows,
+      reportCsv: result.reportCsv,
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || "Could not preview teacher roster." });
   }
 });
 
