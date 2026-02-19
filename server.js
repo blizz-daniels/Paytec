@@ -539,6 +539,29 @@ function requireTeacher(req, res, next) {
   return res.status(403).redirect("/");
 }
 
+function isAdminSession(req) {
+  return !!(req.session && req.session.user && req.session.user.role === "admin");
+}
+
+function parseResourceId(rawValue) {
+  const value = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return value;
+}
+
+async function ensureCanManageContent(req, table, id) {
+  const row = await get(`SELECT id, created_by FROM ${table} WHERE id = ? LIMIT 1`, [id]);
+  if (!row) {
+    return { error: "not_found" };
+  }
+  if (isAdminSession(req) || row.created_by === req.session.user.username) {
+    return { row };
+  }
+  return { error: "forbidden" };
+}
+
 function regenerateSession(req) {
   return new Promise((resolve, reject) => {
     req.session.regenerate((err) => {
@@ -875,6 +898,68 @@ app.post("/api/notifications", requireTeacher, async (req, res) => {
   }
 });
 
+app.put("/api/notifications/:id", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  const title = String(req.body.title || "").trim();
+  const body = String(req.body.body || "").trim();
+  const category = String(req.body.category || "General").trim() || "General";
+  const isUrgent = req.body.isUrgent ? 1 : 0;
+
+  if (!id) {
+    return res.status(400).json({ error: "Invalid notification ID." });
+  }
+  if (!title || !body) {
+    return res.status(400).json({ error: "Title and body are required." });
+  }
+  if (title.length > 120 || body.length > 2000 || category.length > 40) {
+    return res.status(400).json({ error: "Notification field length is invalid." });
+  }
+
+  try {
+    const access = await ensureCanManageContent(req, "notifications", id);
+    if (access.error === "not_found") {
+      return res.status(404).json({ error: "Notification not found." });
+    }
+    if (access.error === "forbidden") {
+      return res.status(403).json({ error: "You can only edit your own notification." });
+    }
+
+    await run(
+      `
+        UPDATE notifications
+        SET title = ?, body = ?, category = ?, is_urgent = ?
+        WHERE id = ?
+      `,
+      [title, body, category, isUrgent, id]
+    );
+    return res.status(200).json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not update notification." });
+  }
+});
+
+app.delete("/api/notifications/:id", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid notification ID." });
+  }
+
+  try {
+    const access = await ensureCanManageContent(req, "notifications", id);
+    if (access.error === "not_found") {
+      return res.status(404).json({ error: "Notification not found." });
+    }
+    if (access.error === "forbidden") {
+      return res.status(403).json({ error: "You can only delete your own notification." });
+    }
+
+    await run("DELETE FROM notifications WHERE id = ?", [id]);
+    return res.status(200).json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not delete notification." });
+  }
+});
+
 app.get("/api/handouts", requireAuth, async (_req, res) => {
   try {
     const rows = await all(
@@ -916,6 +1001,70 @@ app.post("/api/handouts", requireTeacher, async (req, res) => {
     return res.status(201).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not save handout." });
+  }
+});
+
+app.put("/api/handouts/:id", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  const title = String(req.body.title || "").trim();
+  const description = String(req.body.description || "").trim();
+  const fileUrl = String(req.body.fileUrl || "").trim();
+
+  if (!id) {
+    return res.status(400).json({ error: "Invalid handout ID." });
+  }
+  if (!title || !description) {
+    return res.status(400).json({ error: "Title and description are required." });
+  }
+  if (title.length > 120 || description.length > 2000 || fileUrl.length > 500) {
+    return res.status(400).json({ error: "Handout field length is invalid." });
+  }
+  if (fileUrl && !isValidHttpUrl(fileUrl)) {
+    return res.status(400).json({ error: "File URL must start with http:// or https://." });
+  }
+
+  try {
+    const access = await ensureCanManageContent(req, "handouts", id);
+    if (access.error === "not_found") {
+      return res.status(404).json({ error: "Handout not found." });
+    }
+    if (access.error === "forbidden") {
+      return res.status(403).json({ error: "You can only edit your own handout." });
+    }
+
+    await run(
+      `
+        UPDATE handouts
+        SET title = ?, description = ?, file_url = ?
+        WHERE id = ?
+      `,
+      [title, description, fileUrl || null, id]
+    );
+    return res.status(200).json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not update handout." });
+  }
+});
+
+app.delete("/api/handouts/:id", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid handout ID." });
+  }
+
+  try {
+    const access = await ensureCanManageContent(req, "handouts", id);
+    if (access.error === "not_found") {
+      return res.status(404).json({ error: "Handout not found." });
+    }
+    if (access.error === "forbidden") {
+      return res.status(403).json({ error: "You can only delete your own handout." });
+    }
+
+    await run("DELETE FROM handouts WHERE id = ?", [id]);
+    return res.status(200).json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not delete handout." });
   }
 });
 
@@ -991,6 +1140,70 @@ app.post("/api/payment-links", requireTeacher, async (req, res) => {
   }
 });
 
+app.put("/api/payment-links/:id", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  const title = String(req.body.title || "").trim();
+  const description = String(req.body.description || "").trim();
+  const paymentUrl = String(req.body.paymentUrl || "").trim();
+
+  if (!id) {
+    return res.status(400).json({ error: "Invalid payment link ID." });
+  }
+  if (!title || !description || !paymentUrl) {
+    return res.status(400).json({ error: "Title, description, and payment URL are required." });
+  }
+  if (title.length > 120 || description.length > 2000 || paymentUrl.length > 500) {
+    return res.status(400).json({ error: "Payment link field length is invalid." });
+  }
+  if (!isValidHttpUrl(paymentUrl)) {
+    return res.status(400).json({ error: "Payment URL must start with http:// or https://." });
+  }
+
+  try {
+    const access = await ensureCanManageContent(req, "payment_links", id);
+    if (access.error === "not_found") {
+      return res.status(404).json({ error: "Payment link not found." });
+    }
+    if (access.error === "forbidden") {
+      return res.status(403).json({ error: "You can only edit your own payment link." });
+    }
+
+    await run(
+      `
+        UPDATE payment_links
+        SET title = ?, description = ?, payment_url = ?
+        WHERE id = ?
+      `,
+      [title, description, paymentUrl, id]
+    );
+    return res.status(200).json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not update payment link." });
+  }
+});
+
+app.delete("/api/payment-links/:id", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid payment link ID." });
+  }
+
+  try {
+    const access = await ensureCanManageContent(req, "payment_links", id);
+    if (access.error === "not_found") {
+      return res.status(404).json({ error: "Payment link not found." });
+    }
+    if (access.error === "forbidden") {
+      return res.status(403).json({ error: "You can only delete your own payment link." });
+    }
+
+    await run("DELETE FROM payment_links WHERE id = ?", [id]);
+    return res.status(200).json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not delete payment link." });
+  }
+});
+
 app.get("/api/shared-files", requireAuth, async (_req, res) => {
   try {
     const rows = await all(
@@ -1032,6 +1245,70 @@ app.post("/api/shared-files", requireTeacher, async (req, res) => {
     return res.status(201).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not save shared file." });
+  }
+});
+
+app.put("/api/shared-files/:id", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  const title = String(req.body.title || "").trim();
+  const description = String(req.body.description || "").trim();
+  const fileUrl = String(req.body.fileUrl || "").trim();
+
+  if (!id) {
+    return res.status(400).json({ error: "Invalid shared file ID." });
+  }
+  if (!title || !description || !fileUrl) {
+    return res.status(400).json({ error: "Title, description, and file URL are required." });
+  }
+  if (title.length > 120 || description.length > 2000 || fileUrl.length > 500) {
+    return res.status(400).json({ error: "Shared file field length is invalid." });
+  }
+  if (!isValidHttpUrl(fileUrl)) {
+    return res.status(400).json({ error: "File URL must start with http:// or https://." });
+  }
+
+  try {
+    const access = await ensureCanManageContent(req, "shared_files", id);
+    if (access.error === "not_found") {
+      return res.status(404).json({ error: "Shared file not found." });
+    }
+    if (access.error === "forbidden") {
+      return res.status(403).json({ error: "You can only edit your own shared file." });
+    }
+
+    await run(
+      `
+        UPDATE shared_files
+        SET title = ?, description = ?, file_url = ?
+        WHERE id = ?
+      `,
+      [title, description, fileUrl, id]
+    );
+    return res.status(200).json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not update shared file." });
+  }
+});
+
+app.delete("/api/shared-files/:id", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid shared file ID." });
+  }
+
+  try {
+    const access = await ensureCanManageContent(req, "shared_files", id);
+    if (access.error === "not_found") {
+      return res.status(404).json({ error: "Shared file not found." });
+    }
+    if (access.error === "forbidden") {
+      return res.status(403).json({ error: "You can only delete your own shared file." });
+    }
+
+    await run("DELETE FROM shared_files WHERE id = ?", [id]);
+    return res.status(200).json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not delete shared file." });
   }
 });
 

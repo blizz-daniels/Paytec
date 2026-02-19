@@ -119,6 +119,8 @@ body {
   font-weight: 700;
   padding: 0.65rem 1rem;
   border-radius: 0.7rem;
+  border: none;
+  cursor: pointer;
 }
 
 .btn:hover { background: var(--primary-dark); }
