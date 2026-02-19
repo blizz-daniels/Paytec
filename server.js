@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const express = require("express");
 const multer = require("multer");
@@ -32,6 +33,11 @@ fs.mkdirSync(usersDir, { recursive: true });
 
 const allowedAvatarMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const allowedAvatarExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 8;
+const LOGIN_RATE_LIMIT_BLOCK_MS = 15 * 60 * 1000;
+const loginAttempts = new Map();
 
 const avatarUpload = multer({
   storage: multer.diskStorage({
@@ -136,6 +142,96 @@ function isValidSurnamePassword(value) {
 
 function normalizeDisplayName(value) {
   return String(value || "").trim();
+}
+
+function getClientIp(req) {
+  return String(req.ip || req.headers["x-forwarded-for"] || "unknown").trim();
+}
+
+function getLoginRateLimitKey(req, identifier) {
+  return `${getClientIp(req)}::${String(identifier || "*")}`;
+}
+
+function getLoginAttemptRecord(key, now = Date.now()) {
+  const existing = loginAttempts.get(key);
+  if (!existing) {
+    return {
+      attempts: 0,
+      windowStartedAt: now,
+      blockedUntil: 0,
+    };
+  }
+  if (existing.windowStartedAt + LOGIN_RATE_LIMIT_WINDOW_MS <= now) {
+    existing.attempts = 0;
+    existing.windowStartedAt = now;
+  }
+  return existing;
+}
+
+function isLoginRateLimited(req, identifier) {
+  const now = Date.now();
+  const key = getLoginRateLimitKey(req, identifier);
+  const record = getLoginAttemptRecord(key, now);
+  loginAttempts.set(key, record);
+  return record.blockedUntil > now;
+}
+
+function recordFailedLogin(req, identifier) {
+  const now = Date.now();
+  const key = getLoginRateLimitKey(req, identifier);
+  const record = getLoginAttemptRecord(key, now);
+  record.attempts += 1;
+  if (record.attempts >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS) {
+    record.blockedUntil = now + LOGIN_RATE_LIMIT_BLOCK_MS;
+    record.attempts = 0;
+    record.windowStartedAt = now;
+  }
+  loginAttempts.set(key, record);
+}
+
+function clearFailedLogins(req, identifier) {
+  const exactKey = getLoginRateLimitKey(req, identifier);
+  const wildcardKey = getLoginRateLimitKey(req, "*");
+  loginAttempts.delete(exactKey);
+  loginAttempts.delete(wildcardKey);
+}
+
+function ensureCsrfToken(req) {
+  if (!req.session) {
+    return "";
+  }
+  if (!req.session.csrfToken) {
+    req.session.csrfToken = crypto.randomBytes(32).toString("hex");
+  }
+  return req.session.csrfToken;
+}
+
+function isSameToken(expected, provided) {
+  const expectedBuffer = Buffer.from(String(expected || ""), "utf8");
+  const providedBuffer = Buffer.from(String(provided || ""), "utf8");
+  if (!expectedBuffer.length || expectedBuffer.length !== providedBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+function rejectCsrf(req, res) {
+  if (req.accepts("json")) {
+    return res.status(403).json({ error: "Invalid CSRF token." });
+  }
+  return res.status(403).send("Invalid CSRF token.");
+}
+
+function requireCsrf(req, res, next) {
+  if (CSRF_SAFE_METHODS.has(req.method)) {
+    return next();
+  }
+  const expectedToken = req.session ? req.session.csrfToken : "";
+  const requestToken = req.get("x-csrf-token") || req.body?._csrf;
+  if (!expectedToken || !requestToken || !isSameToken(expectedToken, requestToken)) {
+    return rejectCsrf(req, res);
+  }
+  return next();
 }
 
 function deriveDisplayNameFromIdentifier(identifier) {
@@ -401,6 +497,13 @@ app.use(
   })
 );
 
+app.get("/api/csrf-token", (req, res) => {
+  const csrfToken = ensureCsrfToken(req);
+  return res.json({ csrfToken });
+});
+
+app.use(requireCsrf);
+
 app.use("/assets", express.static(path.join(__dirname, "assets")));
 app.use("/users", express.static(usersDir));
 
@@ -504,9 +607,17 @@ app.post("/login", async (req, res) => {
   const rawPassword = String(req.body.password || "");
   const identifier = normalizeIdentifier(rawIdentifier);
   const surnamePassword = normalizeSurnamePassword(rawPassword);
+  const failLogin = (code) => {
+    recordFailedLogin(req, identifier || "*");
+    return res.redirect(`/login?error=${code}`);
+  };
+
+  if (isLoginRateLimited(req, identifier || "*")) {
+    return res.redirect("/login?error=rate_limited");
+  }
 
   if (!isValidIdentifier(identifier) || !rawPassword.trim()) {
-    return res.redirect("/login?error=invalid");
+    return failLogin("invalid");
   }
 
   try {
@@ -527,19 +638,19 @@ app.post("/login", async (req, res) => {
 
     if (!authUser) {
       if (!isValidSurnamePassword(surnamePassword)) {
-        return res.redirect("/login?error=invalid");
+        return failLogin("invalid");
       }
       const rosterUser = await get(
         "SELECT auth_id, role, password_hash FROM auth_roster WHERE auth_id = ? LIMIT 1",
         [identifier]
       );
       if (!rosterUser) {
-        return res.redirect("/login?error=invalid");
+        return failLogin("invalid");
       }
 
       const validRosterPassword = await bcrypt.compare(surnamePassword, rosterUser.password_hash);
       if (!validRosterPassword) {
-        return res.redirect("/login?error=invalid");
+        return failLogin("invalid");
       }
       authUser = {
         username: rosterUser.auth_id,
@@ -548,8 +659,10 @@ app.post("/login", async (req, res) => {
       source = rosterUser.role === "teacher" ? "login-teacher" : "login-student";
     }
 
+    clearFailedLogins(req, identifier || "*");
     await regenerateSession(req);
     req.session.user = { username: authUser.username, role: authUser.role };
+    ensureCsrfToken(req);
     await run("INSERT INTO login_events (username, source, ip, user_agent) VALUES (?, ?, ?, ?)", [
       authUser.username,
       source,
@@ -565,7 +678,7 @@ app.post("/login", async (req, res) => {
     }
     return res.redirect("/");
   } catch (_err) {
-    return res.redirect("/login?error=session");
+    return failLogin("session");
   }
 });
 
@@ -580,7 +693,6 @@ function handleLogout(req, res) {
   return undefined;
 }
 
-app.get("/logout", handleLogout);
 app.post("/logout", handleLogout);
 
 app.get("/health", (_req, res) => {

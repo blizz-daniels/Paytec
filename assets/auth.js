@@ -8,6 +8,7 @@ if (!authError || !error) {
   const loginMessages = {
     invalid: "Invalid username or password.",
     session: "Could not start your session. Try again.",
+    rate_limited: "Too many failed login attempts. Please wait 15 minutes and try again.",
   };
 
   const fallback = "Login failed. Please try again.";

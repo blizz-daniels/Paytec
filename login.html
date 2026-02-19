@@ -20,12 +20,14 @@
 
           <label for="password">Password</label>
           <input id="password" name="password" type="password" minlength="2" maxlength="40" required />
+          <input type="hidden" name="_csrf" value="" />
 
           <button type="submit" class="btn">Log in</button>
         </form>
         <p class="auth-help">Accounts are provisioned by admin roster upload.</p>
       </section>
     </main>
+    <script src="assets/csrf.js"></script>
     <script src="assets/auth.js"></script>
   </body>
 </html>

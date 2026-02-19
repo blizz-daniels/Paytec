@@ -16,7 +16,10 @@
         <a class="active" href="handouts.html">Handouts</a>
         <a href="/teacher" data-role-link="teacher" hidden>Teacher</a>
         <button id="profileToggleButton" class="profile-trigger" type="button">Profile</button>
-        <a href="/logout" class="logout-btn">Log out</a>
+        <form method="post" action="/logout" class="logout-form">
+          <input type="hidden" name="_csrf" value="" />
+          <button type="submit" class="logout-btn">Log out</button>
+        </form>
       </nav>
     </header>
 
@@ -34,6 +37,7 @@
       <p>Need a file added? Ask your class teacher to upload it in the dashboard.</p>
     </footer>
 
+    <script src="assets/csrf.js"></script>
     <script src="assets/app.js"></script>
     <script src="assets/content.js"></script>
     <script src="assets/profile.js"></script>

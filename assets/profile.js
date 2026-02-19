@@ -42,7 +42,10 @@ window.addEventListener("DOMContentLoaded", () => {
         <a href="/">Home</a>
         <a href="/notifications.html">Notifications</a>
         <a href="/handouts.html">Handouts</a>
-        <a href="/logout" class="logout-btn">Log out</a>
+        <form method="post" action="/logout" class="logout-form">
+          <input type="hidden" name="_csrf" value="" />
+          <button type="submit" class="logout-btn">Log out</button>
+        </form>
       </div>
       <form id="profileDisplayForm" class="profile-panel__form">
         <label for="profileDisplayName">Display name</label>
