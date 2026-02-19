@@ -131,6 +131,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   function closePanel() {
     panel.classList.remove("profile-panel--open");
+    panel.style.display = "none";
     document.body.classList.remove("has-profile-panel");
     setStatus("", false);
   }
