@@ -3,16 +3,20 @@ if (!nav) {
   return;
 }
 
-const profileButton = document.createElement("button");
-profileButton.type = "button";
-profileButton.className = "profile-trigger";
-profileButton.id = "profileToggleButton";
-profileButton.textContent = "Profile";
-const logoutLink = nav.querySelector(".logout-btn");
-if (logoutLink) {
-  nav.insertBefore(profileButton, logoutLink);
-} else {
-  nav.appendChild(profileButton);
+const profileButtonId = "profileToggleButton";
+let profileButton = document.getElementById(profileButtonId);
+if (!profileButton) {
+  profileButton = document.createElement("button");
+  profileButton.type = "button";
+  profileButton.className = "profile-trigger";
+  profileButton.id = profileButtonId;
+  profileButton.textContent = "Profile";
+  const logoutLink = nav.querySelector(".logout-btn");
+  if (logoutLink) {
+    nav.insertBefore(profileButton, logoutLink);
+  } else {
+    nav.appendChild(profileButton);
+  }
 }
 
 const panel = document.createElement("div");
