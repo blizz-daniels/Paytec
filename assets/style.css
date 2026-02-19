@@ -161,6 +161,131 @@ body {
   line-height: 1.55;
 }
 
+.profile-card {
+  margin-bottom: 1.5rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.profile-card__head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.profile-card__avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #eef2ff;
+  color: var(--primary-dark);
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.profile-card__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.profile-card__avatar span {
+  font-size: 1.35rem;
+}
+
+.profile-greeting {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.profile-nickname {
+  margin: 0;
+  color: var(--muted);
+}
+
+.profile-form {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.profile-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-weight: 600;
+  color: #1b1d2b;
+}
+
+.profile-form input {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  font-size: 1rem;
+  font-family: inherit;
+}
+
+.profile-form__preview {
+  display: flex;
+  gap: 0.85rem;
+  align-items: center;
+  border: 1px dashed var(--border);
+  border-radius: 0.9rem;
+  padding: 0.8rem 0.9rem;
+  background: #f6f8ff;
+}
+
+.profile-form__preview-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e0e7ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: var(--primary);
+  overflow: hidden;
+}
+
+.profile-form__preview-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-form__preview-avatar span {
+  font-size: 1.15rem;
+}
+
+.profile-form__preview-name {
+  margin: 0;
+  font-weight: 600;
+}
+
+.profile-form__preview-subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.profile-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.profile-form__status {
+  margin: 0;
+  min-height: 1.1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .update .tag {
   color: var(--accent);
   font-size: 0.86rem;
@@ -228,6 +353,18 @@ body {
   color: #a52828;
   border-radius: 0.65rem;
   padding: 0.65rem 0.75rem;
+}
+
+@media (max-width: 600px) {
+  .profile-card__head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .profile-form__preview {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 
 @media (max-width: 760px) {

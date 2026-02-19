@@ -1,5 +1,5 @@
-matric_number,surname
-std001,doe
-edu2502082,jibunoh
-edu2502089,jibunoh
-educ250202011,toogun
+matric_number,surname,name
+std001,doe,John Doe
+edu2502082,jibunoh,Ifeanyichukwu Daniel Jibunoh
+edu2502089,jibunoh,James Jibunoh
+educ250202011,toogun,Amaka Toogun

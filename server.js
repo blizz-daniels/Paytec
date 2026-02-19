@@ -106,6 +106,24 @@ function isValidSurnamePassword(value) {
   return /^[a-z][a-z' -]{1,39}$/.test(value);
 }
 
+function normalizeDisplayName(value) {
+  return String(value || "").trim();
+}
+
+function deriveDisplayNameFromIdentifier(identifier) {
+  const parts = String(identifier || "")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) {
+    return identifier;
+  }
+  return parts
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
 async function importRoster(filePath, role, idHeader) {
   if (!fs.existsSync(filePath)) {
     return 0;
@@ -128,6 +146,14 @@ async function importRosterCsvText(csvText, role, idHeader, sourceName) {
   const headers = parseCsvLine(lines[0]).map((header) => header.toLowerCase());
   const idIndex = headers.indexOf(idHeader);
   const surnameIndex = headers.indexOf("surname");
+  const preferredNameColumns = ["name", "full_name", "display_name", "student_name"];
+  const nameIndex =
+    preferredNameColumns.reduce((foundIndex, candidate) => {
+      if (foundIndex !== -1) {
+        return foundIndex;
+      }
+      return headers.indexOf(candidate);
+    }, -1);
   if (idIndex === -1 || surnameIndex === -1) {
     throw new Error(`Invalid roster header. Expected columns: ${idHeader},surname`);
   }
@@ -152,10 +178,40 @@ async function importRosterCsvText(csvText, role, idHeader, sourceName) {
       `,
       [identifier, role, passwordHash, sourceName]
     );
+    const rawDisplayName = nameIndex !== -1 ? normalizeDisplayName(row[nameIndex]) : "";
+    if (rawDisplayName) {
+      await upsertProfileDisplayName(identifier, rawDisplayName);
+    }
     imported += 1;
   }
 
   return imported;
+}
+
+async function upsertProfileDisplayName(username, displayName) {
+  if (!displayName) {
+    return;
+  }
+  await run(
+    `
+      INSERT INTO user_profiles (username, display_name)
+      VALUES (?, ?)
+      ON CONFLICT(username) DO UPDATE SET
+        display_name = excluded.display_name
+    `,
+    [username, displayName]
+  );
+}
+
+async function getUserProfile(username) {
+  return get(
+    `
+      SELECT display_name, nickname, profile_image_url
+      FROM user_profiles
+      WHERE username = ?
+    `,
+    [username]
+  );
 }
 
 async function initDatabase() {
@@ -232,6 +288,16 @@ async function initDatabase() {
       file_url TEXT NOT NULL,
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      username TEXT PRIMARY KEY,
+      display_name TEXT,
+      nickname TEXT,
+      profile_image_url TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
@@ -470,11 +536,55 @@ app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
-app.get("/api/me", requireAuth, (req, res) => {
-  return res.json({
-    username: req.session.user.username,
-    role: req.session.user.role,
-  });
+app.get("/api/me", requireAuth, async (req, res) => {
+  try {
+    const profile = await getUserProfile(req.session.user.username);
+    const displayName =
+      profile && profile.display_name
+        ? profile.display_name
+        : deriveDisplayNameFromIdentifier(req.session.user.username);
+    return res.json({
+      username: req.session.user.username,
+      role: req.session.user.role,
+      displayName,
+      nickname: profile ? profile.nickname : null,
+      profileImageUrl: profile ? profile.profile_image_url : null,
+    });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load profile." });
+  }
+});
+
+app.post("/api/profile", requireAuth, async (req, res) => {
+  const nickname = String(req.body.nickname || "").trim();
+  const profileImageUrl = String(req.body.profileImageUrl || "").trim();
+
+  if (nickname.length > 40) {
+    return res.status(400).json({ error: "Nickname cannot be longer than 40 characters." });
+  }
+  if (profileImageUrl.length > 500) {
+    return res.status(400).json({ error: "Profile picture URL is too long." });
+  }
+  if (profileImageUrl && !isValidHttpUrl(profileImageUrl)) {
+    return res.status(400).json({ error: "Profile picture URL must start with http:// or https://." });
+  }
+
+  try {
+    await run(
+      `
+        INSERT INTO user_profiles (username, nickname, profile_image_url, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(username) DO UPDATE SET
+          nickname = excluded.nickname,
+          profile_image_url = excluded.profile_image_url,
+          updated_at = CURRENT_TIMESTAMP
+      `,
+      [req.session.user.username, nickname || null, profileImageUrl || null]
+    );
+    return res.json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not update profile." });
+  }
 });
 
 app.get("/admin", requireAdmin, (_req, res) => {
