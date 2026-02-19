@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const bcrypt = require("bcryptjs");
 const express = require("express");
+const multer = require("multer");
 const session = require("express-session");
 const sqlite3 = require("sqlite3").verbose();
 const SQLiteStore = require("connect-sqlite3")(session);
@@ -26,6 +27,33 @@ if (isProduction && !ADMIN_PASSWORD) {
 
 fs.mkdirSync(dataDir, { recursive: true });
 
+const usersDir = path.join(dataDir, "users");
+fs.mkdirSync(usersDir, { recursive: true });
+
+const allowedAvatarMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+const allowedAvatarExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+
+const avatarUpload = multer({
+  storage: multer.diskStorage({
+    destination: usersDir,
+    filename(req, file, cb) {
+      const username = String(req.session?.user?.username || "user").replace(/[^\w-]/g, "");
+      const ext = path.extname(file.originalname || "").toLowerCase() || ".png";
+      const safeExt = allowedAvatarExtensions.has(ext) ? ext : ".png";
+      cb(null, `${username}${safeExt}`);
+    },
+  }),
+  fileFilter(_req, file, cb) {
+    if (allowedAvatarMimeTypes.has(file.mimetype)) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error("Only PNG, JPEG, and WEBP files are allowed."));
+  },
+  limits: {
+    fileSize: 2 * 1024 * 1024,
+  },
+});
 const db = new sqlite3.Database(dbPath);
 
 function run(sql, params = []) {
@@ -194,12 +222,34 @@ async function upsertProfileDisplayName(username, displayName) {
   }
   await run(
     `
-      INSERT INTO user_profiles (username, display_name)
-      VALUES (?, ?)
+      INSERT INTO user_profiles (username, display_name, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(username) DO UPDATE SET
-        display_name = excluded.display_name
+        display_name = excluded.display_name,
+        updated_at = CURRENT_TIMESTAMP
     `,
     [username, displayName]
+  );
+}
+
+async function upsertProfileImage(username, imageUrl) {
+  if (!imageUrl) {
+    return;
+  }
+  const profile = await getUserProfile(username);
+  const displayName =
+    profile && profile.display_name ? profile.display_name : deriveDisplayNameFromIdentifier(username);
+
+  await run(
+    `
+      INSERT INTO user_profiles (username, display_name, profile_image_url, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(username) DO UPDATE SET
+        profile_image_url = excluded.profile_image_url,
+        updated_at = CURRENT_TIMESTAMP,
+        display_name = COALESCE(user_profiles.display_name, excluded.display_name)
+    `,
+    [username, displayName, imageUrl]
   );
 }
 
@@ -352,6 +402,7 @@ app.use(
 );
 
 app.use("/assets", express.static(path.join(__dirname, "assets")));
+app.use("/users", express.static(usersDir));
 
 function isAuthenticated(req) {
   return !!(req.session && req.session.user);
@@ -547,7 +598,6 @@ app.get("/api/me", requireAuth, async (req, res) => {
       username: req.session.user.username,
       role: req.session.user.role,
       displayName,
-      nickname: profile ? profile.nickname : null,
       profileImageUrl: profile ? profile.profile_image_url : null,
     });
   } catch (_err) {
@@ -556,35 +606,46 @@ app.get("/api/me", requireAuth, async (req, res) => {
 });
 
 app.post("/api/profile", requireAuth, async (req, res) => {
-  const nickname = String(req.body.nickname || "").trim();
-  const profileImageUrl = String(req.body.profileImageUrl || "").trim();
-
-  if (nickname.length > 40) {
-    return res.status(400).json({ error: "Nickname cannot be longer than 40 characters." });
+  const displayName = normalizeDisplayName(req.body.displayName || "");
+  if (!displayName) {
+    return res.status(400).json({ error: "Display name cannot be empty." });
   }
-  if (profileImageUrl.length > 500) {
-    return res.status(400).json({ error: "Profile picture URL is too long." });
-  }
-  if (profileImageUrl && !isValidHttpUrl(profileImageUrl)) {
-    return res.status(400).json({ error: "Profile picture URL must start with http:// or https://." });
+  if (displayName.length > 60) {
+    return res.status(400).json({ error: "Display name cannot be longer than 60 characters." });
   }
 
   try {
-    await run(
-      `
-        INSERT INTO user_profiles (username, nickname, profile_image_url, updated_at)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(username) DO UPDATE SET
-          nickname = excluded.nickname,
-          profile_image_url = excluded.profile_image_url,
-          updated_at = CURRENT_TIMESTAMP
-      `,
-      [req.session.user.username, nickname || null, profileImageUrl || null]
-    );
+    await upsertProfileDisplayName(req.session.user.username, displayName);
     return res.json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not update profile." });
   }
+});
+
+app.post("/api/profile/avatar", requireAuth, (req, res) => {
+  avatarUpload.single("avatar")(req, res, async (err) => {
+    if (err) {
+      const message =
+        err && err.message === "Only PNG, JPEG, and WEBP files are allowed."
+          ? err.message
+          : err && err.code === "LIMIT_FILE_SIZE"
+          ? "Profile picture cannot be larger than 2 MB."
+          : "Could not process the upload.";
+      return res.status(400).json({ error: message });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: "Please select an image to upload." });
+    }
+
+    const relativeUrl = `/users/${req.file.filename}`;
+    try {
+      await upsertProfileImage(req.session.user.username, relativeUrl);
+      return res.json({ ok: true, profileImageUrl: relativeUrl });
+    } catch (_imageErr) {
+      return res.status(500).json({ error: "Could not save profile picture." });
+    }
+  });
 });
 
 app.get("/admin", requireAdmin, (_req, res) => {
