@@ -201,19 +201,21 @@ body {
 }
 
 .profile-panel__content {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: min(420px, 90vw);
-  padding: 1.5rem;
+  position: absolute;
+  top: 70px;
+  right: 1rem;
+  transform: none;
+  width: min(360px, 90vw);
+  max-height: calc(100vh - 110px);
+  padding: 1.25rem;
   border-radius: 1rem;
   background: var(--surface);
-  box-shadow: 0 25px 60px rgba(15, 23, 42, 0.25);
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.35);
   display: flex;
   flex-direction: column;
   gap: 1rem;
   z-index: 10;
+  overflow: auto;
 }
 
 .profile-panel__header {
@@ -320,6 +322,18 @@ body.has-profile-panel {
   overflow: hidden;
 }
 
+@media (max-width: 640px) {
+  .profile-panel__content {
+    top: 56px;
+    right: 0.5rem;
+    left: 0.5rem;
+    width: auto;
+    max-height: calc(100vh - 72px);
+    padding: 1rem 1.25rem;
+    border-radius: 0.6rem;
+  }
+}
+
 .update .tag {
   color: var(--accent);
   font-size: 0.86rem;
@@ -387,15 +401,6 @@ body.has-profile-panel {
   color: #a52828;
   border-radius: 0.65rem;
   padding: 0.65rem 0.75rem;
-}
-
-@media (max-width: 640px) {
-  .profile-panel__content {
-    width: 100%;
-    max-height: 100vh;
-    border-radius: 0;
-    padding: 1.25rem;
-  }
 }
 
 @media (max-width: 760px) {

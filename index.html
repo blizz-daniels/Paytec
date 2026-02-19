@@ -32,59 +32,6 @@
         </div>
       </section>
 
-      <section class="profile-card card" id="homeProfile" aria-label="Profile bar">
-        <div class="profile-card__head">
-          <div class="profile-card__avatar" aria-hidden="true">
-            <img id="profileHeroImage" alt="Profile picture" hidden />
-            <span id="profileHeroInitial"></span>
-          </div>
-          <div>
-            <p class="profile-greeting">
-              Hello, <span id="homeStudentName">Student</span>
-            </p>
-            <p class="profile-nickname">
-              Nickname: <span id="profileNicknameValue">Add a nickname</span>
-            </p>
-          </div>
-        </div>
-        <form id="profileForm" class="profile-form" aria-label="Profile preferences">
-          <label for="profileNicknameInput">
-            Nickname
-            <input
-              id="profileNicknameInput"
-              name="nickname"
-              type="text"
-              maxlength="40"
-              placeholder="What should we call you?"
-            />
-          </label>
-          <label for="profilePictureInput">
-            Profile picture URL
-            <input
-              id="profilePictureInput"
-              name="profileImageUrl"
-              type="url"
-              placeholder="https://example.com/photo.jpg"
-            />
-          </label>
-          <div class="profile-form__preview">
-            <div class="profile-form__preview-avatar" aria-hidden="true">
-              <img id="profilePreviewImage" alt="Profile preview" hidden />
-              <span id="profilePreviewInitial"></span>
-            </div>
-            <div>
-              <p id="profilePreviewName" class="profile-form__preview-name"></p>
-              <p id="profilePreviewNickname" class="profile-form__preview-subtitle"></p>
-            </div>
-          </div>
-          <div class="profile-form__actions">
-            <button type="submit" class="btn">Save changes</button>
-            <button type="button" class="btn btn-secondary" id="profileResetButton">Reset</button>
-          </div>
-          <p id="profileFormStatus" class="profile-form__status" aria-live="polite"></p>
-        </form>
-      </section>
-
       <p class="home-greeting" hidden>
         Hello, <span id="homeGreetingName">Student</span>!
       </p>
