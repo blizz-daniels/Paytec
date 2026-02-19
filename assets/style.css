@@ -169,18 +169,26 @@ body {
 }
 
 .nav-links .profile-trigger {
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 0.6rem;
-  padding: 0.4rem 0.9rem;
-  background: #f4f5ff;
-  color: var(--text);
-  font-weight: 600;
+  padding: 0.45rem 0.9rem;
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  color: white;
+  font-weight: 700;
+  letter-spacing: 0.01em;
   cursor: pointer;
+  box-shadow: 0 10px 20px rgba(79, 70, 229, 0.25);
+  transition: transform 180ms ease, box-shadow 180ms ease;
 }
 
 .nav-links .profile-trigger:hover {
-  background: #e8e9ff;
-  color: var(--primary-dark);
+  transform: translateY(-1px);
+  box-shadow: 0 16px 24px rgba(79, 70, 229, 0.35);
+}
+
+.nav-links .profile-trigger:active {
+  transform: translateY(0);
+  box-shadow: 0 8px 14px rgba(43, 37, 116, 0.35);
 }
 
 .profile-panel {
@@ -316,6 +324,36 @@ body {
   padding: 0.65rem 0.8rem;
   font-size: 1rem;
   font-family: inherit;
+  background: #fff;
+  color: var(--text);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.profile-panel__form input[type="file"]::-webkit-file-upload-button,
+.profile-panel__form input[type="file"]::-ms-browse,
+.profile-panel__form input[type="file"]::file-selector-button {
+  border: none;
+  border-radius: 0.65rem;
+  padding: 0.55rem 0.95rem;
+  background: var(--primary);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+  margin-right: 0.5rem;
+  transition: background 180ms ease, transform 180ms ease;
+}
+
+.profile-panel__form input[type="file"]::-webkit-file-upload-button:hover,
+.profile-panel__form input[type="file"]::-ms-browse:hover,
+.profile-panel__form input[type="file"]::file-selector-button:hover {
+  background: var(--primary-dark);
+  transform: translateY(-1px);
+}
+
+.profile-panel__form input[type="file"]::-webkit-file-upload-button:active,
+.profile-panel__form input[type="file"]::-ms-browse:active,
+.profile-panel__form input[type="file"]::file-selector-button:active {
+  transform: translateY(0);
 }
 
 body.has-profile-panel {
@@ -378,6 +416,27 @@ body.has-profile-panel {
   border-radius: 0.65rem;
   padding: 0.65rem 0.75rem;
   font-size: 1rem;
+  font-family: inherit;
+}
+
+.auth-form input[type="file"]::-webkit-file-upload-button,
+.auth-form input[type="file"]::-ms-browse,
+.auth-form input[type="file"]::file-selector-button {
+  border: none;
+  border-radius: 0.65rem;
+  padding: 0.55rem 0.9rem;
+  background: var(--primary);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.auth-form input[type="file"]::-webkit-file-upload-button:hover,
+.auth-form input[type="file"]::-ms-browse:hover,
+.auth-form input[type="file"]::file-selector-button:hover {
+  background: var(--primary-dark);
+  transform: translateY(-1px);
 }
 
 .auth-form textarea {
