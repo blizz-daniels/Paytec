@@ -526,14 +526,14 @@ async function initPaymentsPage() {
 
     if (paymentState.me.role === "student") {
       if (studentSection) studentSection.hidden = false;
-      if (reviewSection) reviewSection.hidden = true;
-      if (queueSection) queueSection.hidden = true;
+      if (reviewSection) reviewSection.remove();
+      if (queueSection) queueSection.remove();
       bindStudentSubmit();
       await loadStudentReceipts();
       return;
     }
 
-    if (studentSection) studentSection.hidden = true;
+    if (studentSection) studentSection.remove();
     if (reviewSection) reviewSection.hidden = false;
     if (queueSection) queueSection.hidden = false;
     bindPaymentItemsManagement();
