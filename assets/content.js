@@ -29,7 +29,6 @@ const contentState = {
   data: {
     notifications: [],
     handouts: [],
-    paymentLinks: [],
     sharedFiles: [],
   },
   filters: {
@@ -49,7 +48,6 @@ function normalizeForFilter(item, type) {
   const typeCategoryMap = {
     notification: "Notification",
     handout: "Handout",
-    payment: "Payment",
     shared: "Shared File",
   };
   const category = String(item.category || typeCategoryMap[type] || "General").trim();
@@ -162,31 +160,6 @@ function renderHandouts(items) {
       <p>${escapeHtml(item.description)}</p>
       <a href="${escapeHtml(href)}" class="text-link" ${item.file_url ? 'target="_blank" rel="noopener noreferrer"' : ""}>${escapeHtml(linkText)}</a>
       <p><small>Uploaded by: ${escapeHtml(item.created_by)} &bull; ${escapeHtml(formatDate(item.created_at))}</small></p>
-    `;
-    root.appendChild(article);
-  });
-}
-
-function renderPaymentLinks(items) {
-  const root = document.getElementById("paymentLinksList");
-  if (!root) {
-    return;
-  }
-
-  root.innerHTML = "";
-  if (!items.length) {
-    root.innerHTML = "<p>No payment links match your filters.</p>";
-    return;
-  }
-
-  items.forEach((item) => {
-    const article = document.createElement("article");
-    article.className = "update";
-    article.innerHTML = `
-      <h3>${escapeHtml(item.title)}</h3>
-      <p>${escapeHtml(item.description)}</p>
-      <a href="${escapeHtml(item.payment_url)}" class="text-link" target="_blank" rel="noopener noreferrer">Open Payment Link</a>
-      <p><small>Posted by: ${escapeHtml(item.created_by)} &bull; ${escapeHtml(formatDate(item.created_at))}</small></p>
     `;
     root.appendChild(article);
   });
@@ -342,7 +315,6 @@ function getPageSources(page) {
   if (page === "home") {
     return [
       { type: "notification", items: contentState.data.notifications },
-      { type: "payment", items: contentState.data.paymentLinks },
       { type: "shared", items: contentState.data.sharedFiles },
       { type: "handout", items: contentState.data.handouts },
     ];
@@ -423,7 +395,6 @@ function renderPageFromState() {
 
   if (page === "home") {
     renderHomeNotifications(applyFilters(contentState.data.notifications, "notification"));
-    renderPaymentLinks(applyFilters(contentState.data.paymentLinks, "payment"));
     renderSharedFiles(applyFilters(contentState.data.sharedFiles, "shared"));
     renderHomeHandouts(applyFilters(contentState.data.handouts, "handout"));
   }
@@ -586,21 +557,19 @@ async function loadContent() {
     }
 
     if (page === "home") {
-      const [meRes, notificationsRes, paymentLinksRes, sharedFilesRes, handoutsRes] = await Promise.all([
+      const [meRes, notificationsRes, sharedFilesRes, handoutsRes] = await Promise.all([
         fetch("/api/me", { credentials: "same-origin" }),
         fetch("/api/notifications", { credentials: "same-origin" }),
-        fetch("/api/payment-links", { credentials: "same-origin" }),
         fetch("/api/shared-files", { credentials: "same-origin" }),
         fetch("/api/handouts", { credentials: "same-origin" }),
       ]);
 
-      if (!meRes.ok || !notificationsRes.ok || !paymentLinksRes.ok || !sharedFilesRes.ok || !handoutsRes.ok) {
+      if (!meRes.ok || !notificationsRes.ok || !sharedFilesRes.ok || !handoutsRes.ok) {
         throw new Error("home");
       }
 
       contentState.user = await meRes.json();
       contentState.data.notifications = await notificationsRes.json();
-      contentState.data.paymentLinks = await paymentLinksRes.json();
       contentState.data.sharedFiles = await sharedFilesRes.json();
       contentState.data.handouts = await handoutsRes.json();
       refreshFilterChoices();

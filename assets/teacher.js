@@ -92,38 +92,6 @@ const manageConfigs = [
     },
   },
   {
-    key: "payment-links",
-    endpoint: "/api/payment-links",
-    listId: "managePaymentList",
-    statusId: "managePaymentStatus",
-    emptyText: "No payment links to manage yet.",
-    renderDetails(item) {
-      return `
-        <p>${escapeHtml(item.description || "")}</p>
-        <small>URL: ${escapeHtml(item.payment_url || "-")} | By ${escapeHtml(item.created_by || "-")}</small>
-      `;
-    },
-    buildEditPayload(item) {
-      const title = window.prompt("Payment link title:", item.title || "");
-      if (title === null) {
-        return null;
-      }
-      const description = window.prompt("Description:", item.description || "");
-      if (description === null) {
-        return null;
-      }
-      const paymentUrl = window.prompt("Payment URL:", item.payment_url || "");
-      if (paymentUrl === null) {
-        return null;
-      }
-      return {
-        title: title.trim(),
-        description: description.trim(),
-        paymentUrl: paymentUrl.trim(),
-      };
-    },
-  },
-  {
     key: "shared-files",
     endpoint: "/api/shared-files",
     listId: "manageSharedFileList",
@@ -424,45 +392,6 @@ if (handoutForm) {
       setStatus("handoutStatus", err.message, true);
       if (window.showToast) {
         window.showToast(err.message || "Could not save handout.", { type: "error" });
-      }
-    } finally {
-      setButtonBusy(submitButton, false, "");
-      if (loadingToast) {
-        loadingToast.close();
-      }
-    }
-  });
-}
-
-const paymentForm = document.getElementById("paymentForm");
-if (paymentForm) {
-  paymentForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const submitButton = paymentForm.querySelector('button[type="submit"]');
-    const loadingToast = window.showToast
-      ? window.showToast("Publishing payment link...", { type: "loading", sticky: true })
-      : null;
-    setButtonBusy(submitButton, true, "Publishing...");
-    setStatus("paymentStatus", "Publishing...", false);
-
-    const payload = {
-      title: document.getElementById("paymentTitle").value.trim(),
-      description: document.getElementById("paymentDescription").value.trim(),
-      paymentUrl: document.getElementById("paymentUrl").value.trim(),
-    };
-
-    try {
-      await submitJson("/api/payment-links", payload);
-      paymentForm.reset();
-      setStatus("paymentStatus", "Payment link published.", false);
-      if (window.showToast) {
-        window.showToast("Payment link published.", { type: "success" });
-      }
-      await loadManageData();
-    } catch (err) {
-      setStatus("paymentStatus", err.message, true);
-      if (window.showToast) {
-        window.showToast(err.message || "Could not publish payment link.", { type: "error" });
       }
     } finally {
       setButtonBusy(submitButton, false, "");
