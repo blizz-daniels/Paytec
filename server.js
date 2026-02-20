@@ -30,9 +30,13 @@ fs.mkdirSync(dataDir, { recursive: true });
 
 const usersDir = path.join(dataDir, "users");
 fs.mkdirSync(usersDir, { recursive: true });
+const receiptsDir = path.join(dataDir, "receipts");
+fs.mkdirSync(receiptsDir, { recursive: true });
 
 const allowedAvatarMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const allowedAvatarExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+const allowedReceiptMimeTypes = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
+const allowedReceiptExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".pdf"]);
 const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 8;
@@ -58,6 +62,29 @@ const avatarUpload = multer({
   },
   limits: {
     fileSize: 2 * 1024 * 1024,
+  },
+});
+
+const receiptUpload = multer({
+  storage: multer.diskStorage({
+    destination: receiptsDir,
+    filename(req, file, cb) {
+      const username = String(req.session?.user?.username || "user").replace(/[^\w-]/g, "").slice(0, 40) || "user";
+      const ext = path.extname(file.originalname || "").toLowerCase() || ".bin";
+      const safeExt = allowedReceiptExtensions.has(ext) ? ext : ".bin";
+      const suffix = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+      cb(null, `${username}-${suffix}${safeExt}`);
+    },
+  }),
+  fileFilter(_req, file, cb) {
+    if (allowedReceiptMimeTypes.has(file.mimetype)) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error("Only JPG, PNG, WEBP, and PDF receipts are allowed."));
+  },
+  limits: {
+    fileSize: 5 * 1024 * 1024,
   },
 });
 const db = new sqlite3.Database(dbPath);
@@ -559,6 +586,57 @@ async function initDatabase() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS payment_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      expected_amount REAL NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'NGN',
+      due_date TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS payment_receipts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_item_id INTEGER NOT NULL,
+      student_username TEXT NOT NULL,
+      amount_paid REAL NOT NULL,
+      paid_at TEXT NOT NULL,
+      transaction_ref TEXT NOT NULL UNIQUE,
+      receipt_file_path TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'submitted',
+      submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      reviewed_by TEXT,
+      reviewed_at TEXT,
+      rejection_reason TEXT,
+      verification_notes TEXT,
+      extracted_text TEXT
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS payment_receipt_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      receipt_id INTEGER NOT NULL,
+      actor_username TEXT NOT NULL,
+      actor_role TEXT NOT NULL,
+      action TEXT NOT NULL,
+      from_status TEXT,
+      to_status TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run("CREATE INDEX IF NOT EXISTS idx_payment_receipts_student ON payment_receipts(student_username)");
+  await run("CREATE INDEX IF NOT EXISTS idx_payment_receipts_status ON payment_receipts(status)");
+  await run("CREATE INDEX IF NOT EXISTS idx_payment_receipts_item ON payment_receipts(payment_item_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_payment_receipt_events_receipt ON payment_receipt_events(receipt_id)");
+
+  await run(`
     CREATE TABLE IF NOT EXISTS user_profiles (
       username TEXT PRIMARY KEY,
       display_name TEXT,
@@ -590,6 +668,34 @@ async function initDatabase() {
   const notificationColumns = await all("PRAGMA table_info(notifications)");
   if (!notificationColumns.some((column) => column.name === "is_pinned")) {
     await run("ALTER TABLE notifications ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
+  }
+
+  const paymentItemsColumns = await all("PRAGMA table_info(payment_items)");
+  if (!paymentItemsColumns.some((column) => column.name === "description")) {
+    await run("ALTER TABLE payment_items ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+  }
+  if (!paymentItemsColumns.some((column) => column.name === "currency")) {
+    await run("ALTER TABLE payment_items ADD COLUMN currency TEXT NOT NULL DEFAULT 'NGN'");
+  }
+  if (!paymentItemsColumns.some((column) => column.name === "due_date")) {
+    await run("ALTER TABLE payment_items ADD COLUMN due_date TEXT");
+  }
+
+  const paymentReceiptColumns = await all("PRAGMA table_info(payment_receipts)");
+  if (!paymentReceiptColumns.some((column) => column.name === "reviewed_by")) {
+    await run("ALTER TABLE payment_receipts ADD COLUMN reviewed_by TEXT");
+  }
+  if (!paymentReceiptColumns.some((column) => column.name === "reviewed_at")) {
+    await run("ALTER TABLE payment_receipts ADD COLUMN reviewed_at TEXT");
+  }
+  if (!paymentReceiptColumns.some((column) => column.name === "rejection_reason")) {
+    await run("ALTER TABLE payment_receipts ADD COLUMN rejection_reason TEXT");
+  }
+  if (!paymentReceiptColumns.some((column) => column.name === "verification_notes")) {
+    await run("ALTER TABLE payment_receipts ADD COLUMN verification_notes TEXT");
+  }
+  if (!paymentReceiptColumns.some((column) => column.name === "extracted_text")) {
+    await run("ALTER TABLE payment_receipts ADD COLUMN extracted_text TEXT");
   }
 
   // Ensure at least one admin account exists.
@@ -679,6 +785,16 @@ function requireTeacher(req, res, next) {
   return res.status(403).redirect("/");
 }
 
+function requireStudent(req, res, next) {
+  if (!isAuthenticated(req) || !req.session.user) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (req.session.user.role === "student") {
+    return next();
+  }
+  return res.status(403).json({ error: "Only students can perform this action." });
+}
+
 function isAdminSession(req) {
   return !!(req.session && req.session.user && req.session.user.role === "admin");
 }
@@ -689,6 +805,40 @@ function parseResourceId(rawValue) {
     return null;
   }
   return value;
+}
+
+function isValidIsoLikeDate(value) {
+  if (!value) {
+    return false;
+  }
+  const date = new Date(String(value));
+  return !Number.isNaN(date.getTime());
+}
+
+function parseMoneyValue(value) {
+  const amount = Number.parseFloat(String(value));
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+  return amount;
+}
+
+function parseCurrency(value) {
+  const text = String(value || "NGN").trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(text)) {
+    return null;
+  }
+  return text;
+}
+
+function sanitizeTransactionRef(value) {
+  return String(value || "").trim().slice(0, 120);
+}
+
+function sanitizeReceiptStatus(value) {
+  const status = String(value || "").trim().toLowerCase();
+  const allowed = new Set(["submitted", "under_review", "approved", "rejected"]);
+  return allowed.has(status) ? status : "";
 }
 
 async function ensureCanManageContent(req, table, id) {
@@ -757,6 +907,144 @@ async function logAuditEvent(req, action, contentType, contentId, targetOwner, s
   } catch (err) {
     console.error("Audit logging failed:", err);
   }
+}
+
+async function logReceiptEvent(receiptId, req, action, fromStatus, toStatus, notes) {
+  if (!req || !req.session || !req.session.user) {
+    return;
+  }
+  await run(
+    `
+      INSERT INTO payment_receipt_events (
+        receipt_id,
+        actor_username,
+        actor_role,
+        action,
+        from_status,
+        to_status,
+        notes
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      receiptId,
+      req.session.user.username,
+      req.session.user.role,
+      action,
+      fromStatus || null,
+      toStatus || null,
+      notes || null,
+    ]
+  );
+}
+
+async function buildVerificationFlags(receiptRow, paymentItemRow) {
+  const expected = Number(paymentItemRow?.expected_amount || 0);
+  const paid = Number(receiptRow?.amount_paid || 0);
+  const amountMatchesExpected = Number.isFinite(expected) && Number.isFinite(paid) && Math.abs(paid - expected) < 0.01;
+  const paidAtDate = new Date(receiptRow?.paid_at || "");
+  const dueDateValue = paymentItemRow?.due_date ? new Date(paymentItemRow.due_date) : null;
+  let paidBeforeDue = null;
+  if (dueDateValue && !Number.isNaN(dueDateValue.getTime()) && !Number.isNaN(paidAtDate.getTime())) {
+    paidBeforeDue = paidAtDate.getTime() <= dueDateValue.getTime();
+  }
+  const duplicateRefRow = await get(
+    `
+      SELECT id
+      FROM payment_receipts
+      WHERE transaction_ref = ?
+        AND id != ?
+      LIMIT 1
+    `,
+    [receiptRow.transaction_ref, receiptRow.id]
+  );
+  return {
+    amount_matches_expected: !!amountMatchesExpected,
+    paid_before_due: paidBeforeDue,
+    duplicate_reference: !!duplicateRefRow,
+  };
+}
+
+function extractReceiptText(_filePath) {
+  return {
+    text: "",
+    confidence: 0,
+    provider: "none",
+  };
+}
+
+function ensureStatusTransition(fromStatus, toStatus) {
+  const transitions = {
+    submitted: new Set(["under_review"]),
+    under_review: new Set(["approved", "rejected"]),
+  };
+  const allowed = transitions[fromStatus];
+  return !!(allowed && allowed.has(toStatus));
+}
+
+function parseQueueFilters(query) {
+  return {
+    status: sanitizeReceiptStatus(query.status || ""),
+    student: normalizeIdentifier(query.student || ""),
+    dateFrom: String(query.dateFrom || "").trim(),
+    dateTo: String(query.dateTo || "").trim(),
+    paymentItemId: parseResourceId(query.paymentItemId),
+  };
+}
+
+function buildReceiptQueueQuery(filters, limit = 100) {
+  const conditions = [];
+  const params = [];
+
+  if (filters.status) {
+    conditions.push("pr.status = ?");
+    params.push(filters.status);
+  }
+  if (filters.student) {
+    conditions.push("pr.student_username = ?");
+    params.push(filters.student);
+  }
+  if (filters.dateFrom && isValidIsoLikeDate(filters.dateFrom)) {
+    conditions.push("DATE(pr.submitted_at) >= DATE(?)");
+    params.push(filters.dateFrom);
+  }
+  if (filters.dateTo && isValidIsoLikeDate(filters.dateTo)) {
+    conditions.push("DATE(pr.submitted_at) <= DATE(?)");
+    params.push(filters.dateTo);
+  }
+  if (filters.paymentItemId) {
+    conditions.push("pr.payment_item_id = ?");
+    params.push(filters.paymentItemId);
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const sql = `
+    SELECT
+      pr.id,
+      pr.payment_item_id,
+      pr.student_username,
+      pr.amount_paid,
+      pr.paid_at,
+      pr.transaction_ref,
+      pr.status,
+      pr.submitted_at,
+      pr.reviewed_by,
+      pr.reviewed_at,
+      pr.rejection_reason,
+      pr.verification_notes,
+      pr.extracted_text,
+      pi.title AS payment_item_title,
+      pi.expected_amount,
+      pi.currency,
+      pi.due_date,
+      pi.created_by AS payment_item_owner
+    FROM payment_receipts pr
+    JOIN payment_items pi ON pi.id = pr.payment_item_id
+    ${whereClause}
+    ORDER BY pr.submitted_at DESC, pr.id DESC
+    LIMIT ${Number(limit) > 0 ? Number(limit) : 100}
+  `;
+  return { sql, params };
 }
 
 app.get("/robots.txt", (req, res) => {
@@ -1047,6 +1335,495 @@ app.get("/api/admin/audit-logs", requireAdmin, async (_req, res) => {
     return res.json(rows);
   } catch (_err) {
     return res.status(500).json({ error: "Could not load audit logs" });
+  }
+});
+
+app.get("/api/payment-items", requireAuth, async (_req, res) => {
+  try {
+    const rows = await all(
+      `
+        SELECT id, title, description, expected_amount, currency, due_date, created_by, created_at
+        FROM payment_items
+        ORDER BY created_at DESC, id DESC
+      `
+    );
+    return res.json(rows);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load payment items." });
+  }
+});
+
+app.post("/api/payment-items", requireTeacher, async (req, res) => {
+  const title = String(req.body.title || "").trim();
+  const description = String(req.body.description || "").trim();
+  const expectedAmount = parseMoneyValue(req.body.expectedAmount);
+  const currency = parseCurrency(req.body.currency || "NGN");
+  const dueDateRaw = String(req.body.dueDate || "").trim();
+  const dueDate = dueDateRaw || null;
+
+  if (!title || title.length > 120) {
+    return res.status(400).json({ error: "Title is required and must be 120 characters or less." });
+  }
+  if (!Number.isFinite(expectedAmount) || expectedAmount <= 0) {
+    return res.status(400).json({ error: "Expected amount must be greater than zero." });
+  }
+  if (!currency) {
+    return res.status(400).json({ error: "Currency must be a 3-letter code (e.g. NGN)." });
+  }
+  if (dueDate && !isValidIsoLikeDate(dueDate)) {
+    return res.status(400).json({ error: "Due date format is invalid." });
+  }
+
+  try {
+    const result = await run(
+      `
+        INSERT INTO payment_items (title, description, expected_amount, currency, due_date, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [title, description, expectedAmount, currency, dueDate, req.session.user.username]
+    );
+    await logAuditEvent(
+      req,
+      "create",
+      "payment_item",
+      result.lastID,
+      req.session.user.username,
+      `Created payment item "${title.slice(0, 80)}" (${currency} ${expectedAmount})`
+    );
+    return res.status(201).json({ ok: true, id: result.lastID });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not create payment item." });
+  }
+});
+
+app.put("/api/payment-items/:id", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  const title = String(req.body.title || "").trim();
+  const description = String(req.body.description || "").trim();
+  const expectedAmount = parseMoneyValue(req.body.expectedAmount);
+  const currency = parseCurrency(req.body.currency || "NGN");
+  const dueDateRaw = String(req.body.dueDate || "").trim();
+  const dueDate = dueDateRaw || null;
+
+  if (!id) {
+    return res.status(400).json({ error: "Invalid payment item ID." });
+  }
+  if (!title || title.length > 120) {
+    return res.status(400).json({ error: "Title is required and must be 120 characters or less." });
+  }
+  if (!Number.isFinite(expectedAmount) || expectedAmount <= 0) {
+    return res.status(400).json({ error: "Expected amount must be greater than zero." });
+  }
+  if (!currency) {
+    return res.status(400).json({ error: "Currency must be a 3-letter code (e.g. NGN)." });
+  }
+  if (dueDate && !isValidIsoLikeDate(dueDate)) {
+    return res.status(400).json({ error: "Due date format is invalid." });
+  }
+
+  try {
+    const access = await ensureCanManageContent(req, "payment_items", id);
+    if (access.error === "not_found") {
+      return res.status(404).json({ error: "Payment item not found." });
+    }
+    if (access.error === "forbidden") {
+      return res.status(403).json({ error: "You can only edit your own payment item." });
+    }
+
+    await run(
+      `
+        UPDATE payment_items
+        SET title = ?, description = ?, expected_amount = ?, currency = ?, due_date = ?
+        WHERE id = ?
+      `,
+      [title, description, expectedAmount, currency, dueDate, id]
+    );
+    await logAuditEvent(
+      req,
+      "edit",
+      "payment_item",
+      id,
+      access.row.created_by,
+      `Edited payment item "${title.slice(0, 80)}" (${currency} ${expectedAmount})`
+    );
+    return res.json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not update payment item." });
+  }
+});
+
+app.delete("/api/payment-items/:id", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid payment item ID." });
+  }
+
+  try {
+    const access = await ensureCanManageContent(req, "payment_items", id);
+    if (access.error === "not_found") {
+      return res.status(404).json({ error: "Payment item not found." });
+    }
+    if (access.error === "forbidden") {
+      return res.status(403).json({ error: "You can only delete your own payment item." });
+    }
+
+    const receiptCount = await get("SELECT COUNT(*) AS total FROM payment_receipts WHERE payment_item_id = ?", [id]);
+    if (Number(receiptCount?.total || 0) > 0) {
+      return res.status(409).json({ error: "Cannot delete a payment item that already has receipts." });
+    }
+
+    await run("DELETE FROM payment_items WHERE id = ?", [id]);
+    await logAuditEvent(
+      req,
+      "delete",
+      "payment_item",
+      id,
+      access.row.created_by,
+      `Deleted payment item "${String(access.row.title || "").slice(0, 80)}"`
+    );
+    return res.json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not delete payment item." });
+  }
+});
+
+app.post("/api/payment-receipts", requireStudent, (req, res) => {
+  receiptUpload.single("receiptFile")(req, res, async (err) => {
+    if (err) {
+      const message =
+        err && err.message === "Only JPG, PNG, WEBP, and PDF receipts are allowed."
+          ? err.message
+          : err && err.code === "LIMIT_FILE_SIZE"
+          ? "Receipt file cannot be larger than 5 MB."
+          : "Could not process receipt upload.";
+      return res.status(400).json({ error: message });
+    }
+
+    const paymentItemId = parseResourceId(req.body.paymentItemId);
+    const amountPaid = parseMoneyValue(req.body.amountPaid);
+    const paidAt = String(req.body.paidAt || "").trim();
+    const transactionRef = sanitizeTransactionRef(req.body.transactionRef || "");
+    const note = String(req.body.note || "").trim().slice(0, 300);
+
+    if (!paymentItemId) {
+      return res.status(400).json({ error: "Payment item is required." });
+    }
+    if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
+      return res.status(400).json({ error: "Amount paid must be greater than zero." });
+    }
+    if (!paidAt || !isValidIsoLikeDate(paidAt)) {
+      return res.status(400).json({ error: "Paid date is required and must be valid." });
+    }
+    if (!transactionRef || transactionRef.length < 4) {
+      return res.status(400).json({ error: "Transaction reference must be at least 4 characters." });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "Receipt file is required." });
+    }
+
+    try {
+      const paymentItem = await get("SELECT * FROM payment_items WHERE id = ? LIMIT 1", [paymentItemId]);
+      if (!paymentItem) {
+        return res.status(400).json({ error: "Selected payment item does not exist." });
+      }
+
+      const ocrResult = extractReceiptText(req.file.path);
+      const result = await run(
+        `
+          INSERT INTO payment_receipts (
+            payment_item_id,
+            student_username,
+            amount_paid,
+            paid_at,
+            transaction_ref,
+            receipt_file_path,
+            status,
+            verification_notes,
+            extracted_text
+          )
+          VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?)
+        `,
+        [
+          paymentItemId,
+          req.session.user.username,
+          amountPaid,
+          paidAt,
+          transactionRef,
+          path.resolve(req.file.path),
+          JSON.stringify({ student_note: note }),
+          ocrResult && ocrResult.text ? String(ocrResult.text) : "",
+        ]
+      );
+
+      const receiptRow = await get("SELECT * FROM payment_receipts WHERE id = ?", [result.lastID]);
+      const flags = await buildVerificationFlags(receiptRow, paymentItem);
+      const notesPayload = {
+        student_note: note,
+        verification_flags: flags,
+      };
+      await run("UPDATE payment_receipts SET verification_notes = ? WHERE id = ?", [
+        JSON.stringify(notesPayload),
+        result.lastID,
+      ]);
+
+      await logReceiptEvent(result.lastID, req, "submit", null, "submitted", note || null);
+      await logAuditEvent(
+        req,
+        "create",
+        "payment_receipt",
+        result.lastID,
+        req.session.user.username,
+        `Submitted receipt for "${paymentItem.title}" with ref ${transactionRef}`
+      );
+
+      return res.status(201).json({ ok: true, id: result.lastID, verificationFlags: flags });
+    } catch (submitErr) {
+      if (req.file && req.file.path) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (_cleanupErr) {
+          // Ignore cleanup failure.
+        }
+      }
+      if (String(submitErr?.message || "").includes("UNIQUE constraint failed: payment_receipts.transaction_ref")) {
+        return res.status(409).json({ error: "This transaction reference has already been submitted." });
+      }
+      return res.status(500).json({ error: "Could not submit payment receipt." });
+    }
+  });
+});
+
+app.get("/api/my/payment-receipts", requireAuth, async (req, res) => {
+  if (req.session.user.role !== "student") {
+    return res.status(403).json({ error: "Only students can view this resource." });
+  }
+  try {
+    const rows = await all(
+      `
+        SELECT
+          pr.id,
+          pr.payment_item_id,
+          pr.amount_paid,
+          pr.paid_at,
+          pr.transaction_ref,
+          pr.status,
+          pr.submitted_at,
+          pr.reviewed_by,
+          pr.reviewed_at,
+          pr.rejection_reason,
+          pr.verification_notes,
+          pi.title AS payment_item_title,
+          pi.expected_amount,
+          pi.currency,
+          pi.due_date
+        FROM payment_receipts pr
+        JOIN payment_items pi ON pi.id = pr.payment_item_id
+        WHERE pr.student_username = ?
+        ORDER BY pr.submitted_at DESC, pr.id DESC
+      `,
+      [req.session.user.username]
+    );
+    return res.json(rows);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load your receipt submissions." });
+  }
+});
+
+app.get("/api/teacher/payment-receipts", requireTeacher, async (req, res) => {
+  try {
+    const filters = parseQueueFilters(req.query || {});
+    const query = buildReceiptQueueQuery(filters, 100);
+    const rows = await all(query.sql, query.params);
+    const enriched = await Promise.all(
+      rows.map(async (row) => {
+        const flags = await buildVerificationFlags(row, row);
+        return {
+          ...row,
+          verification_flags: flags,
+        };
+      })
+    );
+    return res.json(enriched);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load payment receipt queue." });
+  }
+});
+
+app.get("/api/admin/payment-receipts", requireAdmin, async (req, res) => {
+  try {
+    const filters = parseQueueFilters(req.query || {});
+    const query = buildReceiptQueueQuery(filters, 250);
+    const rows = await all(query.sql, query.params);
+    const enriched = await Promise.all(
+      rows.map(async (row) => {
+        const flags = await buildVerificationFlags(row, row);
+        return {
+          ...row,
+          verification_flags: flags,
+        };
+      })
+    );
+    return res.json(enriched);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load admin payment receipt queue." });
+  }
+});
+
+async function transitionPaymentReceiptStatus(req, res, nextStatus, actionName, options = {}) {
+  const id = parseResourceId(req.params.id);
+  const rejectionReason = String(req.body?.rejectionReason || "").trim();
+  if (!id) {
+    return res.status(400).json({ error: "Invalid receipt ID." });
+  }
+  if (nextStatus === "rejected" && !rejectionReason) {
+    return res.status(400).json({ error: "Rejection reason is required." });
+  }
+
+  try {
+    const row = await get("SELECT * FROM payment_receipts WHERE id = ? LIMIT 1", [id]);
+    if (!row) {
+      return res.status(404).json({ error: "Receipt not found." });
+    }
+    if (!ensureStatusTransition(row.status, nextStatus)) {
+      return res.status(400).json({ error: `Cannot move receipt from ${row.status} to ${nextStatus}.` });
+    }
+    const paymentItem = await get("SELECT * FROM payment_items WHERE id = ? LIMIT 1", [row.payment_item_id]);
+    if (!paymentItem) {
+      return res.status(400).json({ error: "Payment item for this receipt no longer exists." });
+    }
+    const flags = await buildVerificationFlags(row, paymentItem);
+    let existingNotes = {};
+    try {
+      existingNotes = row.verification_notes ? JSON.parse(row.verification_notes) : {};
+    } catch (_err) {
+      existingNotes = {};
+    }
+    const verificationNotes = {
+      student_note: existingNotes.student_note || null,
+      verification_flags: flags,
+      reviewer_note: String(req.body?.note || "").trim().slice(0, 300) || null,
+    };
+    const reviewedBy = req.session.user.username;
+    const rejectionValue = nextStatus === "rejected" ? rejectionReason : null;
+
+    await run(
+      `
+        UPDATE payment_receipts
+        SET status = ?,
+            reviewed_by = ?,
+            reviewed_at = CURRENT_TIMESTAMP,
+            rejection_reason = ?,
+            verification_notes = ?
+        WHERE id = ?
+      `,
+      [nextStatus, reviewedBy, rejectionValue, JSON.stringify(verificationNotes), id]
+    );
+
+    await logReceiptEvent(
+      id,
+      req,
+      actionName,
+      row.status,
+      nextStatus,
+      nextStatus === "rejected" ? rejectionReason : options.defaultEventNote || null
+    );
+    await logAuditEvent(
+      req,
+      "review",
+      "payment_receipt",
+      id,
+      row.student_username,
+      `${actionName} receipt ref ${row.transaction_ref} (${row.status} -> ${nextStatus})`
+    );
+
+    const updated = await get(
+      `
+        SELECT
+          pr.id,
+          pr.payment_item_id,
+          pr.student_username,
+          pr.amount_paid,
+          pr.paid_at,
+          pr.transaction_ref,
+          pr.status,
+          pr.submitted_at,
+          pr.reviewed_by,
+          pr.reviewed_at,
+          pr.rejection_reason,
+          pr.verification_notes,
+          pr.extracted_text,
+          pi.title AS payment_item_title,
+          pi.expected_amount,
+          pi.currency,
+          pi.due_date,
+          pi.created_by AS payment_item_owner
+        FROM payment_receipts pr
+        JOIN payment_items pi ON pi.id = pr.payment_item_id
+        WHERE pr.id = ?
+        LIMIT 1
+      `,
+      [id]
+    );
+    return res.json({
+      ok: true,
+      receipt: {
+        ...updated,
+        verification_flags: flags,
+      },
+    });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not update payment receipt status." });
+  }
+}
+
+app.post("/api/payment-receipts/:id/under-review", requireTeacher, async (req, res) => {
+  return transitionPaymentReceiptStatus(req, res, "under_review", "move_under_review", {
+    defaultEventNote: "Moved receipt to under review.",
+  });
+});
+
+app.post("/api/payment-receipts/:id/approve", requireTeacher, async (req, res) => {
+  return transitionPaymentReceiptStatus(req, res, "approved", "approve");
+});
+
+app.post("/api/payment-receipts/:id/reject", requireTeacher, async (req, res) => {
+  return transitionPaymentReceiptStatus(req, res, "rejected", "reject");
+});
+
+app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid receipt ID." });
+  }
+  try {
+    const row = await get(
+      `
+        SELECT id, student_username, receipt_file_path
+        FROM payment_receipts
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [id]
+    );
+    if (!row) {
+      return res.status(404).json({ error: "Receipt not found." });
+    }
+    const canAccess =
+      req.session.user.role === "admin" ||
+      req.session.user.role === "teacher" ||
+      req.session.user.username === row.student_username;
+    if (!canAccess) {
+      return res.status(403).json({ error: "You do not have permission to view this receipt file." });
+    }
+    const absolutePath = path.resolve(row.receipt_file_path);
+    const relativeFromReceipts = path.relative(receiptsDir, absolutePath);
+    const isInsideReceipts = relativeFromReceipts && !relativeFromReceipts.startsWith("..") && !path.isAbsolute(relativeFromReceipts);
+    if (!isInsideReceipts || !fs.existsSync(absolutePath)) {
+      return res.status(404).json({ error: "Receipt file is missing." });
+    }
+    return res.sendFile(absolutePath);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not open receipt file." });
   }
 });
 
@@ -1764,13 +2541,31 @@ app.get("/handouts.html", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "handouts.html"));
 });
 
-initDatabase()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`CampusPay Hub server running on http://localhost:${PORT}`);
+app.get("/payments", requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, "payments.html"));
+});
+
+app.get("/payments.html", requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, "payments.html"));
+});
+if (require.main === module) {
+  initDatabase()
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(`CampusPay Hub server running on http://localhost:${PORT}`);
+      });
+    })
+    .catch((err) => {
+      console.error("Failed to initialize database:", err);
+      process.exit(1);
     });
-  })
-  .catch((err) => {
-    console.error("Failed to initialize database:", err);
-    process.exit(1);
-  });
+}
+
+module.exports = {
+  app,
+  initDatabase,
+  db,
+  run,
+  get,
+  all,
+};

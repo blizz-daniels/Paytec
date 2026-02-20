@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Payments & Receipts &bull; CampusPay Hub</title>
+    <link rel="stylesheet" href="assets/style.css" />
+  </head>
+  <body data-page="payments">
+    <header class="topbar">
+      <div class="brand">CampusPay Hub</div>
+      <button id="menuButton" class="menu-btn" aria-label="Toggle navigation">&#9776;</button>
+      <nav id="mainNav" class="nav-links">
+        <a href="index.html">Home</a>
+        <a href="notifications.html">Notifications</a>
+        <a href="handouts.html">Handouts</a>
+        <a class="active" href="payments.html">Payments</a>
+        <a href="/teacher" data-role-link="teacher" hidden>Teacher</a>
+        <button id="profileToggleButton" class="profile-trigger" type="button">Profile</button>
+        <form method="post" action="/logout" class="logout-form">
+          <input type="hidden" name="_csrf" value="" />
+          <button type="submit" class="logout-btn">Log out</button>
+        </form>
+      </nav>
+    </header>
+
+    <main class="container">
+      <section class="page-title">
+        <h1>Payment Receipts</h1>
+        <p>Submit your payment receipt and track verification progress.</p>
+      </section>
+
+      <p id="paymentsError" class="auth-error" hidden></p>
+
+      <section id="studentPaymentsSection" class="grid two-col">
+        <article class="card">
+          <h2>Submit Receipt</h2>
+          <p id="submitReceiptStatus" class="auth-subtitle"></p>
+          <form id="submitReceiptForm" class="auth-form">
+            <label for="receiptPaymentItem">Payment Item</label>
+            <select id="receiptPaymentItem" required></select>
+
+            <label for="receiptAmountPaid">Amount Paid</label>
+            <input id="receiptAmountPaid" type="number" min="0.01" step="0.01" required />
+
+            <label for="receiptPaidAt">Paid Date/Time</label>
+            <input id="receiptPaidAt" type="datetime-local" required />
+
+            <label for="receiptTransactionRef">Transaction Reference</label>
+            <input id="receiptTransactionRef" type="text" maxlength="120" required />
+
+            <label for="receiptFile">Receipt File (JPG, PNG, WEBP, PDF)</label>
+            <input id="receiptFile" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,application/pdf,image/jpeg,image/png,image/webp" required />
+
+            <label for="receiptNote">Note (optional)</label>
+            <textarea id="receiptNote" rows="3" maxlength="300"></textarea>
+
+            <button type="submit" class="btn">Submit Receipt</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <h2>My Receipt Submissions</h2>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Amount</th>
+                  <th>Reference</th>
+                  <th>Status</th>
+                  <th>Submitted</th>
+                  <th>Review Notes</th>
+                </tr>
+              </thead>
+              <tbody id="myReceiptRows"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="reviewPaymentsSection" class="grid two-col" hidden>
+        <article class="card">
+          <h2>Create Payment Item</h2>
+          <p id="paymentItemStatus" class="auth-subtitle"></p>
+          <form id="paymentItemForm" class="auth-form">
+            <label for="paymentItemTitle">Title</label>
+            <input id="paymentItemTitle" type="text" maxlength="120" required />
+
+            <label for="paymentItemDescription">Description</label>
+            <textarea id="paymentItemDescription" rows="3"></textarea>
+
+            <label for="paymentItemAmount">Expected Amount</label>
+            <input id="paymentItemAmount" type="number" min="0.01" step="0.01" required />
+
+            <label for="paymentItemCurrency">Currency</label>
+            <input id="paymentItemCurrency" type="text" maxlength="3" value="NGN" required />
+
+            <label for="paymentItemDueDate">Due Date (optional)</label>
+            <input id="paymentItemDueDate" type="date" />
+
+            <button type="submit" class="btn">Save Payment Item</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <h2>Manage Payment Items</h2>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Title</th>
+                  <th>Amount</th>
+                  <th>Due Date</th>
+                  <th>Owner</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="paymentItemRows"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="receiptQueueSection" class="card" style="margin-top: 1rem;" hidden>
+        <h2>Receipt Verification Queue</h2>
+        <form id="queueFilterForm" class="auth-form" style="margin-bottom: 0.8rem;">
+          <div class="filter-grid">
+            <label>
+              Status
+              <select id="queueStatus">
+                <option value="">All</option>
+                <option value="submitted">Submitted</option>
+                <option value="under_review">Under Review</option>
+                <option value="approved">Approved</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </label>
+            <label>
+              Student
+              <input id="queueStudent" type="text" />
+            </label>
+            <label>
+              Date From
+              <input id="queueDateFrom" type="date" />
+            </label>
+            <label>
+              Date To
+              <input id="queueDateTo" type="date" />
+            </label>
+            <label>
+              Payment Item
+              <select id="queuePaymentItem">
+                <option value="">All</option>
+              </select>
+            </label>
+            <div class="filter-actions">
+              <button type="submit" class="btn btn-secondary">Apply Filters</button>
+            </div>
+          </div>
+        </form>
+
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Student</th>
+                <th>Item</th>
+                <th>Amount</th>
+                <th>Reference</th>
+                <th>Paid Date</th>
+                <th>Status</th>
+                <th>Flags</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="receiptQueueRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="assets/csrf.js"></script>
+    <script src="assets/app.js"></script>
+    <script src="assets/payments.js"></script>
+    <script src="assets/profile.js"></script>
+  </body>
+</html>

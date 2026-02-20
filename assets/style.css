@@ -512,6 +512,16 @@ body.has-profile-panel {
   font-family: inherit;
 }
 
+.auth-form select {
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  font-size: 1rem;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+}
+
 .auth-form input[type="file"]::-webkit-file-upload-button,
 .auth-form input[type="file"]::-ms-browse,
 .auth-form input[type="file"]::file-selector-button {

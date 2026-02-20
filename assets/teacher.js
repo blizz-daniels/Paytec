@@ -208,7 +208,7 @@ function bindManageActions(config) {
     return;
   }
 
-    root.addEventListener("click", async (event) => {
+  root.addEventListener("click", async (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
       return;
