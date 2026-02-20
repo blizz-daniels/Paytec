@@ -76,6 +76,17 @@ window.addEventListener("DOMContentLoaded", () => {
 
   let profileData = null;
 
+  function setButtonBusy(button, isBusy, busyLabel) {
+    if (!button) {
+      return;
+    }
+    if (!button.dataset.defaultLabel) {
+      button.dataset.defaultLabel = button.textContent || "";
+    }
+    button.disabled = !!isBusy;
+    button.textContent = isBusy ? busyLabel : button.dataset.defaultLabel;
+  }
+
   function setStatus(message, isError = false) {
     if (!statusNode) {
       return;
@@ -148,8 +159,14 @@ window.addEventListener("DOMContentLoaded", () => {
       const data = await response.json();
       applyProfile(data);
       setStatus(showStatus ? "Profile saved." : "", false);
+      if (showStatus && window.showToast) {
+        window.showToast("Profile updated.", { type: "success" });
+      }
     } catch (err) {
       setStatus("Unable to load profile right now.", true);
+      if (showStatus && window.showToast) {
+        window.showToast("Unable to load profile right now.", { type: "error" });
+      }
     }
   }
 
@@ -172,8 +189,16 @@ window.addEventListener("DOMContentLoaded", () => {
       const value = displayNameInput?.value?.trim() || "";
       if (!value) {
         setStatus("Display name cannot be empty.", true);
+        if (window.showToast) {
+          window.showToast("Display name cannot be empty.", { type: "error" });
+        }
         return;
       }
+      const submitButton = displayForm.querySelector('button[type="submit"]');
+      const loadingToast = window.showToast
+        ? window.showToast("Saving profile name...", { type: "loading", sticky: true })
+        : null;
+      setButtonBusy(submitButton, true, "Saving...");
       setStatus("Saving display name...", false);
       try {
         const response = await fetch("/api/profile", {
@@ -189,6 +214,14 @@ window.addEventListener("DOMContentLoaded", () => {
         await loadProfile({ showStatus: true });
       } catch (err) {
         setStatus(err?.message || "Could not save display name.", true);
+        if (window.showToast) {
+          window.showToast(err?.message || "Could not save display name.", { type: "error" });
+        }
+      } finally {
+        setButtonBusy(submitButton, false, "");
+        if (loadingToast) {
+          loadingToast.close();
+        }
       }
     });
   }
@@ -199,8 +232,16 @@ window.addEventListener("DOMContentLoaded", () => {
       const file = avatarInput?.files?.[0];
       if (!file) {
         setStatus("Select an image to upload.", true);
+        if (window.showToast) {
+          window.showToast("Select an image to upload.", { type: "error" });
+        }
         return;
       }
+      const submitButton = avatarForm.querySelector('button[type="submit"]');
+      const loadingToast = window.showToast
+        ? window.showToast("Uploading profile picture...", { type: "loading", sticky: true })
+        : null;
+      setButtonBusy(submitButton, true, "Uploading...");
       setStatus("Uploading picture...", false);
       const formData = new FormData();
       formData.append("avatar", file);
@@ -218,6 +259,14 @@ window.addEventListener("DOMContentLoaded", () => {
         await loadProfile({ showStatus: true });
       } catch (err) {
         setStatus(err?.message || "Upload failed.", true);
+        if (window.showToast) {
+          window.showToast(err?.message || "Upload failed.", { type: "error" });
+        }
+      } finally {
+        setButtonBusy(submitButton, false, "");
+        if (loadingToast) {
+          loadingToast.close();
+        }
       }
     });
   }

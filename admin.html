@@ -63,17 +63,37 @@
       <section class="card" style="margin-top: 1rem;">
         <h2>Recent Login Activity</h2>
         <p id="adminError" class="auth-error" hidden></p>
-        <div style="overflow-x: auto;">
-          <table id="loginTable" style="width: 100%; border-collapse: collapse;">
+        <div class="table-wrap">
+          <table id="loginTable" class="data-table">
             <thead>
               <tr>
-                <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.5rem;">Username</th>
-                <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.5rem;">Source</th>
-                <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.5rem;">IP</th>
-                <th style="text-align: left; border-bottom: 1px solid #e4e6f0; padding: 0.5rem;">Time</th>
+                <th>Username</th>
+                <th>Source</th>
+                <th>IP</th>
+                <th>Time</th>
               </tr>
             </thead>
             <tbody id="loginRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 1rem;">
+        <h2>Recent Content Audit Log</h2>
+        <div class="table-wrap">
+          <table id="auditTable" class="data-table">
+            <thead>
+              <tr>
+                <th>Actor</th>
+                <th>Role</th>
+                <th>Action</th>
+                <th>Type</th>
+                <th>Target Owner</th>
+                <th>Summary</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody id="auditRows"></tbody>
           </table>
         </div>
       </section>

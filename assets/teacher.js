@@ -7,6 +7,17 @@ function setStatus(id, message, isError) {
   node.style.color = isError ? "#a52828" : "#1f2333";
 }
 
+function setButtonBusy(button, isBusy, busyLabel) {
+  if (!button) {
+    return;
+  }
+  if (!button.dataset.defaultLabel) {
+    button.dataset.defaultLabel = button.textContent || "";
+  }
+  button.disabled = !!isBusy;
+  button.textContent = isBusy ? busyLabel : button.dataset.defaultLabel;
+}
+
 function escapeHtml(value) {
   return String(value || "")
     .replaceAll("&", "&amp;")
@@ -47,7 +58,7 @@ const manageConfigs = [
     renderDetails(item) {
       return `
         <p>${escapeHtml(item.body || "")}</p>
-        <small>${escapeHtml(item.category || "General")} | Urgent: ${item.is_urgent ? "Yes" : "No"} | By ${escapeHtml(item.created_by || "-")}</small>
+        <small>${escapeHtml(item.category || "General")} | Urgent: ${item.is_urgent ? "Yes" : "No"} | Pinned: ${item.is_pinned ? "Yes" : "No"} | Unread (students): ${Number(item.unread_count || 0)} | By ${escapeHtml(item.created_by || "-")}</small>
       `;
     },
     buildEditPayload(item) {
@@ -67,11 +78,16 @@ const manageConfigs = [
       if (urgentInput === null) {
         return null;
       }
+      const pinnedInput = window.prompt("Pin this notification? (yes/no):", item.is_pinned ? "yes" : "no");
+      if (pinnedInput === null) {
+        return null;
+      }
       return {
         title: title.trim(),
         category: category.trim(),
         body: body.trim(),
         isUrgent: /^(yes|y|true|1)$/i.test(urgentInput.trim()),
+        isPinned: /^(yes|y|true|1)$/i.test(pinnedInput.trim()),
       };
     },
   },
@@ -192,7 +208,7 @@ function bindManageActions(config) {
     return;
   }
 
-  root.addEventListener("click", async (event) => {
+    root.addEventListener("click", async (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
       return;
@@ -215,13 +231,28 @@ function bindManageActions(config) {
       if (!payload) {
         return;
       }
+      const loadingToast = window.showToast
+        ? window.showToast("Updating item...", { type: "loading", sticky: true })
+        : null;
+      setButtonBusy(button, true, "Updating...");
       setStatus(config.statusId, "Updating...", false);
       try {
         await requestJson(`${config.endpoint}/${itemId}`, { method: "PUT", payload });
         setStatus(config.statusId, "Updated successfully.", false);
+        if (window.showToast) {
+          window.showToast("Updated successfully.", { type: "success" });
+        }
         await loadManageData();
       } catch (err) {
         setStatus(config.statusId, err.message, true);
+        if (window.showToast) {
+          window.showToast(err.message || "Update failed.", { type: "error" });
+        }
+      } finally {
+        setButtonBusy(button, false, "");
+        if (loadingToast) {
+          loadingToast.close();
+        }
       }
       return;
     }
@@ -231,13 +262,28 @@ function bindManageActions(config) {
       if (!confirmed) {
         return;
       }
+      const loadingToast = window.showToast
+        ? window.showToast("Deleting item...", { type: "loading", sticky: true })
+        : null;
+      setButtonBusy(button, true, "Deleting...");
       setStatus(config.statusId, "Deleting...", false);
       try {
         await requestJson(`${config.endpoint}/${itemId}`, { method: "DELETE" });
         setStatus(config.statusId, "Deleted successfully.", false);
+        if (window.showToast) {
+          window.showToast("Deleted successfully.", { type: "success" });
+        }
         await loadManageData();
       } catch (err) {
         setStatus(config.statusId, err.message, true);
+        if (window.showToast) {
+          window.showToast(err.message || "Delete failed.", { type: "error" });
+        }
+      } finally {
+        setButtonBusy(button, false, "");
+        if (loadingToast) {
+          loadingToast.close();
+        }
       }
     }
   });
@@ -288,6 +334,9 @@ async function loadManageData() {
     manageConfigs.forEach((config) => {
       setStatus(config.statusId, "Could not load content.", true);
     });
+    if (window.showToast) {
+      window.showToast("Could not refresh managed content.", { type: "error" });
+    }
   }
 }
 
@@ -307,6 +356,11 @@ const notificationForm = document.getElementById("notificationForm");
 if (notificationForm) {
   notificationForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const submitButton = notificationForm.querySelector('button[type="submit"]');
+    const loadingToast = window.showToast
+      ? window.showToast("Publishing notification...", { type: "loading", sticky: true })
+      : null;
+    setButtonBusy(submitButton, true, "Publishing...");
     setStatus("notificationStatus", "Publishing...", false);
 
     const payload = {
@@ -314,16 +368,29 @@ if (notificationForm) {
       category: document.getElementById("notificationCategory").value.trim(),
       body: document.getElementById("notificationBody").value.trim(),
       isUrgent: document.getElementById("notificationUrgent").checked,
+      isPinned: document.getElementById("notificationPinned").checked,
     };
 
     try {
       await submitJson("/api/notifications", payload);
       notificationForm.reset();
       document.getElementById("notificationCategory").value = "General";
+      document.getElementById("notificationPinned").checked = false;
       setStatus("notificationStatus", "Notification published.", false);
+      if (window.showToast) {
+        window.showToast("Notification published.", { type: "success" });
+      }
       await loadManageData();
     } catch (err) {
       setStatus("notificationStatus", err.message, true);
+      if (window.showToast) {
+        window.showToast(err.message || "Could not publish notification.", { type: "error" });
+      }
+    } finally {
+      setButtonBusy(submitButton, false, "");
+      if (loadingToast) {
+        loadingToast.close();
+      }
     }
   });
 }
@@ -332,6 +399,11 @@ const handoutForm = document.getElementById("handoutForm");
 if (handoutForm) {
   handoutForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const submitButton = handoutForm.querySelector('button[type="submit"]');
+    const loadingToast = window.showToast
+      ? window.showToast("Saving handout...", { type: "loading", sticky: true })
+      : null;
+    setButtonBusy(submitButton, true, "Saving...");
     setStatus("handoutStatus", "Saving...", false);
 
     const payload = {
@@ -344,9 +416,20 @@ if (handoutForm) {
       await submitJson("/api/handouts", payload);
       handoutForm.reset();
       setStatus("handoutStatus", "Handout saved.", false);
+      if (window.showToast) {
+        window.showToast("Handout saved.", { type: "success" });
+      }
       await loadManageData();
     } catch (err) {
       setStatus("handoutStatus", err.message, true);
+      if (window.showToast) {
+        window.showToast(err.message || "Could not save handout.", { type: "error" });
+      }
+    } finally {
+      setButtonBusy(submitButton, false, "");
+      if (loadingToast) {
+        loadingToast.close();
+      }
     }
   });
 }
@@ -355,6 +438,11 @@ const paymentForm = document.getElementById("paymentForm");
 if (paymentForm) {
   paymentForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const submitButton = paymentForm.querySelector('button[type="submit"]');
+    const loadingToast = window.showToast
+      ? window.showToast("Publishing payment link...", { type: "loading", sticky: true })
+      : null;
+    setButtonBusy(submitButton, true, "Publishing...");
     setStatus("paymentStatus", "Publishing...", false);
 
     const payload = {
@@ -367,9 +455,20 @@ if (paymentForm) {
       await submitJson("/api/payment-links", payload);
       paymentForm.reset();
       setStatus("paymentStatus", "Payment link published.", false);
+      if (window.showToast) {
+        window.showToast("Payment link published.", { type: "success" });
+      }
       await loadManageData();
     } catch (err) {
       setStatus("paymentStatus", err.message, true);
+      if (window.showToast) {
+        window.showToast(err.message || "Could not publish payment link.", { type: "error" });
+      }
+    } finally {
+      setButtonBusy(submitButton, false, "");
+      if (loadingToast) {
+        loadingToast.close();
+      }
     }
   });
 }
@@ -378,6 +477,11 @@ const sharedFileForm = document.getElementById("sharedFileForm");
 if (sharedFileForm) {
   sharedFileForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const submitButton = sharedFileForm.querySelector('button[type="submit"]');
+    const loadingToast = window.showToast
+      ? window.showToast("Publishing file...", { type: "loading", sticky: true })
+      : null;
+    setButtonBusy(submitButton, true, "Publishing...");
     setStatus("sharedFileStatus", "Publishing...", false);
 
     const payload = {
@@ -390,9 +494,20 @@ if (sharedFileForm) {
       await submitJson("/api/shared-files", payload);
       sharedFileForm.reset();
       setStatus("sharedFileStatus", "Shared file published.", false);
+      if (window.showToast) {
+        window.showToast("Shared file published.", { type: "success" });
+      }
       await loadManageData();
     } catch (err) {
       setStatus("sharedFileStatus", err.message, true);
+      if (window.showToast) {
+        window.showToast(err.message || "Could not publish file.", { type: "error" });
+      }
+    } finally {
+      setButtonBusy(submitButton, false, "");
+      if (loadingToast) {
+        loadingToast.close();
+      }
     }
   });
 }

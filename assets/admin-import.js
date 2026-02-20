@@ -26,19 +26,29 @@ function renderRows(rowsId, rows) {
   if (!rows || !rows.length) {
     const tr = document.createElement("tr");
     tr.innerHTML =
-      '<td colspan="4" style="padding:0.6rem;color:#636b8a;border-bottom:1px solid #f0f2f8;">No rows analyzed yet.</td>';
+      '<td colspan="4" style="color:#636b8a;">No rows analyzed yet.</td>';
     tbody.appendChild(tr);
     return;
   }
 
+  function getStatusBadgeClass(status) {
+    if (status === "error" || status === "duplicate_in_file") {
+      return "status-badge status-badge--error";
+    }
+    if (status === "update") {
+      return "status-badge status-badge--warning";
+    }
+    return "status-badge status-badge--success";
+  }
+
   rows.forEach((row) => {
     const tr = document.createElement("tr");
-    const isError = row.status === "error" || row.status === "duplicate_in_file";
+    const statusText = String(row.status || "-");
     tr.innerHTML = `
-      <td style="padding:0.45rem;border-bottom:1px solid #f0f2f8;">${escapeHtml(row.lineNumber)}</td>
-      <td style="padding:0.45rem;border-bottom:1px solid #f0f2f8;">${escapeHtml(row.identifier || "-")}</td>
-      <td style="padding:0.45rem;border-bottom:1px solid #f0f2f8;color:${isError ? "#a52828" : "#1f2333"};">${escapeHtml(row.status)}</td>
-      <td style="padding:0.45rem;border-bottom:1px solid #f0f2f8;">${escapeHtml(row.message || "-")}</td>
+      <td>${escapeHtml(row.lineNumber)}</td>
+      <td>${escapeHtml(row.identifier || "-")}</td>
+      <td><span class="${getStatusBadgeClass(statusText)}">${escapeHtml(statusText)}</span></td>
+      <td>${escapeHtml(row.message || "-")}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -106,12 +116,31 @@ function bindImportSection(config) {
 
   let latestReportCsv = "";
 
+  function setButtonsBusy(isBusy) {
+    previewButton.disabled = isBusy;
+    reportButton.disabled = isBusy;
+    const submitButton = form.querySelector('button[type="submit"]');
+    if (submitButton) {
+      submitButton.disabled = isBusy;
+    }
+  }
+
   async function run(mode) {
     if (!fileInput.files || !fileInput.files[0]) {
       setStatus(config.statusId, "Select a CSV file first.", true);
+      if (window.showToast) {
+        window.showToast("Select a CSV file first.", { type: "error" });
+      }
       return;
     }
 
+    setButtonsBusy(true);
+    const loadingToast = window.showToast
+      ? window.showToast(mode === "preview" ? "Previewing roster..." : "Importing roster...", {
+          type: "loading",
+          sticky: true,
+        })
+      : null;
     setStatus(
       config.statusId,
       mode === "preview" ? "Previewing roster..." : "Importing roster...",
@@ -130,11 +159,22 @@ function bindImportSection(config) {
       renderRows(config.rowsId, payload.rows || []);
       latestReportCsv = String(payload.reportCsv || "");
       reportButton.hidden = !latestReportCsv;
+      if (window.showToast) {
+        window.showToast(mode === "preview" ? "Preview complete." : "Import complete.", { type: "success" });
+      }
     } catch (err) {
       setStatus(config.statusId, err.message, true);
       renderRows(config.rowsId, []);
       latestReportCsv = "";
       reportButton.hidden = true;
+      if (window.showToast) {
+        window.showToast(err.message || "Import failed.", { type: "error" });
+      }
+    } finally {
+      setButtonsBusy(false);
+      if (loadingToast) {
+        loadingToast.close();
+      }
     }
   }
 
@@ -149,10 +189,16 @@ function bindImportSection(config) {
 
   reportButton.addEventListener("click", () => {
     if (!latestReportCsv) {
+      if (window.showToast) {
+        window.showToast("No report available yet.", { type: "error" });
+      }
       return;
     }
     const suffix = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
     downloadReport(`${config.role}-import-report-${suffix}.csv`, latestReportCsv);
+    if (window.showToast) {
+      window.showToast("Report downloaded.", { type: "success" });
+    }
   });
 
   renderRows(config.rowsId, []);

@@ -15,8 +15,7 @@ function renderRows(rows) {
 
   if (!rows || rows.length === 0) {
     const tr = document.createElement("tr");
-    tr.innerHTML =
-      '<td colspan="4" style="padding: 0.75rem; color: #636b8a;">No login activity yet.</td>';
+    tr.innerHTML = '<td colspan="4" style="color: #636b8a;">No login activity yet.</td>';
     tbody.appendChild(tr);
     return;
   }
@@ -27,10 +26,52 @@ function renderRows(rows) {
     const dateText = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : row.logged_in_at || "-";
 
     tr.innerHTML = `
-      <td style="padding: 0.5rem; border-bottom: 1px solid #f0f2f8;">${row.username || "-"}</td>
-      <td style="padding: 0.5rem; border-bottom: 1px solid #f0f2f8;">${row.source || "-"}</td>
-      <td style="padding: 0.5rem; border-bottom: 1px solid #f0f2f8;">${row.ip || "-"}</td>
-      <td style="padding: 0.5rem; border-bottom: 1px solid #f0f2f8;">${dateText}</td>
+      <td>${row.username || "-"}</td>
+      <td>${row.source || "-"}</td>
+      <td>${row.ip || "-"}</td>
+      <td>${dateText}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderAuditRows(rows) {
+  const tbody = document.getElementById("auditRows");
+  if (!tbody) {
+    return;
+  }
+
+  tbody.innerHTML = "";
+
+  if (!rows || rows.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = '<td colspan="7" style="color: #636b8a;">No content audit events yet.</td>';
+    tbody.appendChild(tr);
+    return;
+  }
+
+  function getActionBadgeClass(action) {
+    if (action === "delete") {
+      return "status-badge status-badge--error";
+    }
+    if (action === "edit") {
+      return "status-badge status-badge--warning";
+    }
+    return "status-badge status-badge--success";
+  }
+
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    const date = row.created_at ? new Date(row.created_at) : null;
+    const dateText = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : row.created_at || "-";
+    tr.innerHTML = `
+      <td>${row.actor_username || "-"}</td>
+      <td><span class="status-badge">${row.actor_role || "-"}</span></td>
+      <td><span class="${getActionBadgeClass(row.action)}">${row.action || "-"}</span></td>
+      <td>${row.content_type || "-"}</td>
+      <td>${row.target_owner || "-"}</td>
+      <td>${row.summary || "-"}</td>
+      <td>${dateText}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -54,10 +95,14 @@ async function loadAdminStats() {
     setText("uniqueLoggedInUsers", stats.uniqueLoggedInUsers || 0);
     setText("todayLogins", stats.todayLogins || 0);
     renderRows(stats.recentLogins || []);
+    renderAuditRows(stats.recentAuditLogs || []);
   } catch (_err) {
     if (errorNode) {
       errorNode.textContent = "Could not load admin stats.";
       errorNode.hidden = false;
+    }
+    if (window.showToast) {
+      window.showToast("Could not load admin stats.", { type: "error" });
     }
   }
 }

@@ -510,8 +510,18 @@ async function initDatabase() {
       body TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT 'General',
       is_urgent INTEGER NOT NULL DEFAULT 0,
+      is_pinned INTEGER NOT NULL DEFAULT 0,
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+ 
+  await run(`
+    CREATE TABLE IF NOT EXISTS notification_reads (
+      notification_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      read_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (notification_id, username)
     )
   `);
 
@@ -558,9 +568,28 @@ async function initDatabase() {
     )
   `);
 
+  await run(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_username TEXT NOT NULL,
+      actor_role TEXT NOT NULL,
+      action TEXT NOT NULL,
+      content_type TEXT NOT NULL,
+      content_id INTEGER,
+      target_owner TEXT,
+      summary TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   const userColumns = await all("PRAGMA table_info(users)");
   if (!userColumns.some((column) => column.name === "role")) {
     await run("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'");
+  }
+ 
+  const notificationColumns = await all("PRAGMA table_info(notifications)");
+  if (!notificationColumns.some((column) => column.name === "is_pinned")) {
+    await run("ALTER TABLE notifications ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
   }
 
   // Ensure at least one admin account exists.
@@ -663,7 +692,7 @@ function parseResourceId(rawValue) {
 }
 
 async function ensureCanManageContent(req, table, id) {
-  const row = await get(`SELECT id, created_by FROM ${table} WHERE id = ? LIMIT 1`, [id]);
+  const row = await get(`SELECT * FROM ${table} WHERE id = ? LIMIT 1`, [id]);
   if (!row) {
     return { error: "not_found" };
   }
@@ -695,6 +724,39 @@ function saveSession(req) {
       resolve();
     });
   });
+}
+
+async function logAuditEvent(req, action, contentType, contentId, targetOwner, summary) {
+  if (!req || !req.session || !req.session.user) {
+    return;
+  }
+  try {
+    await run(
+      `
+        INSERT INTO audit_logs (
+          actor_username,
+          actor_role,
+          action,
+          content_type,
+          content_id,
+          target_owner,
+          summary
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        req.session.user.username,
+        req.session.user.role,
+        action,
+        contentType,
+        contentId || null,
+        targetOwner || null,
+        summary || null,
+      ]
+    );
+  } catch (err) {
+    console.error("Audit logging failed:", err);
+  }
 }
 
 app.get("/robots.txt", (req, res) => {
@@ -904,7 +966,7 @@ app.get("/admin/import", requireAdmin, (_req, res) => {
 
 app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
   try {
-    const [rosterCounts, adminCount, loginCounts, todayCounts, recent] = await Promise.all([
+    const [rosterCounts, adminCount, loginCounts, todayCounts, recent, recentAuditLogs] = await Promise.all([
       get(
         `
           SELECT
@@ -943,6 +1005,14 @@ app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
           LIMIT 20
         `
       ),
+      all(
+        `
+          SELECT actor_username, actor_role, action, content_type, content_id, target_owner, summary, created_at
+          FROM audit_logs
+          ORDER BY created_at DESC, id DESC
+          LIMIT 50
+        `
+      ),
     ]);
 
     return res.json({
@@ -957,9 +1027,26 @@ app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
       uniqueLoggedInUsers: Number(loginCounts.unique_logged_in_users || 0),
       todayLogins: Number(todayCounts.today_logins || 0),
       recentLogins: recent,
+      recentAuditLogs,
     });
   } catch (_err) {
     return res.status(500).json({ error: "Could not load admin stats" });
+  }
+});
+
+app.get("/api/admin/audit-logs", requireAdmin, async (_req, res) => {
+  try {
+    const rows = await all(
+      `
+        SELECT actor_username, actor_role, action, content_type, content_id, target_owner, summary, created_at
+        FROM audit_logs
+        ORDER BY created_at DESC, id DESC
+        LIMIT 100
+      `
+    );
+    return res.json(rows);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load audit logs" });
   }
 });
 
@@ -967,16 +1054,55 @@ app.get("/teacher", requireTeacher, (_req, res) => {
   res.sendFile(path.join(__dirname, "teacher.html"));
 });
 
-app.get("/api/notifications", requireAuth, async (_req, res) => {
+app.get("/api/notifications", requireAuth, async (req, res) => {
   try {
     const rows = await all(
       `
-        SELECT id, title, body, category, is_urgent, created_by, created_at
-        FROM notifications
-        ORDER BY created_at DESC, id DESC
+        SELECT
+          n.id,
+          n.title,
+          n.body,
+          n.category,
+          n.is_urgent,
+          n.is_pinned,
+          n.created_by,
+          n.created_at,
+          CASE WHEN nr.notification_id IS NULL THEN 0 ELSE 1 END AS is_read
+        FROM notifications n
+        LEFT JOIN notification_reads nr
+          ON nr.notification_id = n.id
+         AND nr.username = ?
+        ORDER BY n.is_pinned DESC, n.is_urgent DESC, n.created_at DESC, n.id DESC
+      `
+      ,
+      [req.session.user.username]
+    );
+
+    if (req.session.user.role !== "teacher" && req.session.user.role !== "admin") {
+      return res.json(rows);
+    }
+
+    const unreadRows = await all(
+      `
+        SELECT
+          n.id,
+          (
+            (SELECT COUNT(*) FROM auth_roster WHERE role = 'student')
+            - COUNT(nr.username)
+          ) AS unread_count
+        FROM notifications n
+        LEFT JOIN notification_reads nr
+          ON nr.notification_id = n.id
+         AND nr.username IN (SELECT auth_id FROM auth_roster WHERE role = 'student')
+        GROUP BY n.id
       `
     );
-    return res.json(rows);
+    const unreadById = new Map(unreadRows.map((row) => [row.id, Number(row.unread_count || 0)]));
+    const rowsWithCounts = rows.map((row) => ({
+      ...row,
+      unread_count: unreadById.has(row.id) ? unreadById.get(row.id) : 0,
+    }));
+    return res.json(rowsWithCounts);
   } catch (_err) {
     return res.status(500).json({ error: "Could not load notifications" });
   }
@@ -987,6 +1113,7 @@ app.post("/api/notifications", requireTeacher, async (req, res) => {
   const body = String(req.body.body || "").trim();
   const category = String(req.body.category || "General").trim() || "General";
   const isUrgent = req.body.isUrgent ? 1 : 0;
+  const isPinned = req.body.isPinned ? 1 : 0;
 
   if (!title || !body) {
     return res.status(400).json({ error: "Title and body are required." });
@@ -996,12 +1123,20 @@ app.post("/api/notifications", requireTeacher, async (req, res) => {
   }
 
   try {
-    await run(
+    const result = await run(
       `
-        INSERT INTO notifications (title, body, category, is_urgent, created_by)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO notifications (title, body, category, is_urgent, is_pinned, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)
       `,
-      [title, body, category, isUrgent, req.session.user.username]
+      [title, body, category, isUrgent, isPinned, req.session.user.username]
+    );
+    await logAuditEvent(
+      req,
+      "create",
+      "notification",
+      result.lastID,
+      req.session.user.username,
+      `Created notification "${title.slice(0, 80)}"`
     );
     return res.status(201).json({ ok: true });
   } catch (_err) {
@@ -1015,6 +1150,7 @@ app.put("/api/notifications/:id", requireTeacher, async (req, res) => {
   const body = String(req.body.body || "").trim();
   const category = String(req.body.category || "General").trim() || "General";
   const isUrgent = req.body.isUrgent ? 1 : 0;
+  const isPinned = req.body.isPinned ? 1 : 0;
 
   if (!id) {
     return res.status(400).json({ error: "Invalid notification ID." });
@@ -1038,14 +1174,53 @@ app.put("/api/notifications/:id", requireTeacher, async (req, res) => {
     await run(
       `
         UPDATE notifications
-        SET title = ?, body = ?, category = ?, is_urgent = ?
+        SET title = ?, body = ?, category = ?, is_urgent = ?, is_pinned = ?
         WHERE id = ?
       `,
-      [title, body, category, isUrgent, id]
+      [title, body, category, isUrgent, isPinned, id]
+    );
+    await logAuditEvent(
+      req,
+      "edit",
+      "notification",
+      id,
+      access.row.created_by,
+      `Edited notification "${title.slice(0, 80)}"`
     );
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not update notification." });
+  }
+});
+
+app.post("/api/notifications/:id/read", requireAuth, async (req, res) => {
+  if (req.session.user.role !== "student") {
+    return res.status(403).json({ error: "Only students can mark notifications as read." });
+  }
+  const id = parseResourceId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid notification ID." });
+  }
+
+  try {
+    const row = await get("SELECT id FROM notifications WHERE id = ? LIMIT 1", [id]);
+    if (!row) {
+      return res.status(404).json({ error: "Notification not found." });
+    }
+
+    await run(
+      `
+        INSERT INTO notification_reads (notification_id, username)
+        VALUES (?, ?)
+        ON CONFLICT(notification_id, username) DO UPDATE SET
+          read_at = CURRENT_TIMESTAMP
+      `,
+      [id, req.session.user.username]
+    );
+
+    return res.status(200).json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not mark notification as read." });
   }
 });
 
@@ -1065,6 +1240,14 @@ app.delete("/api/notifications/:id", requireTeacher, async (req, res) => {
     }
 
     await run("DELETE FROM notifications WHERE id = ?", [id]);
+    await logAuditEvent(
+      req,
+      "delete",
+      "notification",
+      id,
+      access.row.created_by,
+      `Deleted notification "${String(access.row.title || "").slice(0, 80)}"`
+    );
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not delete notification." });
@@ -1102,12 +1285,20 @@ app.post("/api/handouts", requireTeacher, async (req, res) => {
   }
 
   try {
-    await run(
+    const result = await run(
       `
         INSERT INTO handouts (title, description, file_url, created_by)
         VALUES (?, ?, ?, ?)
       `,
       [title, description, fileUrl || null, req.session.user.username]
+    );
+    await logAuditEvent(
+      req,
+      "create",
+      "handout",
+      result.lastID,
+      req.session.user.username,
+      `Created handout "${title.slice(0, 80)}"`
     );
     return res.status(201).json({ ok: true });
   } catch (_err) {
@@ -1151,6 +1342,14 @@ app.put("/api/handouts/:id", requireTeacher, async (req, res) => {
       `,
       [title, description, fileUrl || null, id]
     );
+    await logAuditEvent(
+      req,
+      "edit",
+      "handout",
+      id,
+      access.row.created_by,
+      `Edited handout "${title.slice(0, 80)}"`
+    );
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not update handout." });
@@ -1173,6 +1372,14 @@ app.delete("/api/handouts/:id", requireTeacher, async (req, res) => {
     }
 
     await run("DELETE FROM handouts WHERE id = ?", [id]);
+    await logAuditEvent(
+      req,
+      "delete",
+      "handout",
+      id,
+      access.row.created_by,
+      `Deleted handout "${String(access.row.title || "").slice(0, 80)}"`
+    );
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not delete handout." });
@@ -1308,12 +1515,20 @@ app.post("/api/payment-links", requireTeacher, async (req, res) => {
   }
 
   try {
-    await run(
+    const result = await run(
       `
         INSERT INTO payment_links (title, description, payment_url, created_by)
         VALUES (?, ?, ?, ?)
       `,
       [title, description, paymentUrl, req.session.user.username]
+    );
+    await logAuditEvent(
+      req,
+      "create",
+      "payment_link",
+      result.lastID,
+      req.session.user.username,
+      `Created payment link "${title.slice(0, 80)}"`
     );
     return res.status(201).json({ ok: true });
   } catch (_err) {
@@ -1357,6 +1572,14 @@ app.put("/api/payment-links/:id", requireTeacher, async (req, res) => {
       `,
       [title, description, paymentUrl, id]
     );
+    await logAuditEvent(
+      req,
+      "edit",
+      "payment_link",
+      id,
+      access.row.created_by,
+      `Edited payment link "${title.slice(0, 80)}"`
+    );
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not update payment link." });
@@ -1379,6 +1602,14 @@ app.delete("/api/payment-links/:id", requireTeacher, async (req, res) => {
     }
 
     await run("DELETE FROM payment_links WHERE id = ?", [id]);
+    await logAuditEvent(
+      req,
+      "delete",
+      "payment_link",
+      id,
+      access.row.created_by,
+      `Deleted payment link "${String(access.row.title || "").slice(0, 80)}"`
+    );
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not delete payment link." });
@@ -1416,12 +1647,20 @@ app.post("/api/shared-files", requireTeacher, async (req, res) => {
   }
 
   try {
-    await run(
+    const result = await run(
       `
         INSERT INTO shared_files (title, description, file_url, created_by)
         VALUES (?, ?, ?, ?)
       `,
       [title, description, fileUrl, req.session.user.username]
+    );
+    await logAuditEvent(
+      req,
+      "create",
+      "shared_file",
+      result.lastID,
+      req.session.user.username,
+      `Created shared file "${title.slice(0, 80)}"`
     );
     return res.status(201).json({ ok: true });
   } catch (_err) {
@@ -1465,6 +1704,14 @@ app.put("/api/shared-files/:id", requireTeacher, async (req, res) => {
       `,
       [title, description, fileUrl, id]
     );
+    await logAuditEvent(
+      req,
+      "edit",
+      "shared_file",
+      id,
+      access.row.created_by,
+      `Edited shared file "${title.slice(0, 80)}"`
+    );
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not update shared file." });
@@ -1487,6 +1734,14 @@ app.delete("/api/shared-files/:id", requireTeacher, async (req, res) => {
     }
 
     await run("DELETE FROM shared_files WHERE id = ?", [id]);
+    await logAuditEvent(
+      req,
+      "delete",
+      "shared_file",
+      id,
+      access.row.created_by,
+      `Deleted shared file "${String(access.row.title || "").slice(0, 80)}"`
+    );
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not delete shared file." });
