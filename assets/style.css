@@ -1,6 +1,7 @@
 :root {
   --bg: #f7f7fb;
   --surface: #ffffff;
+  --surface-soft: #f8f9ff;
   --text: #1f2333;
   --muted: #636b8a;
   --primary: #4f46e5;
@@ -17,6 +18,20 @@
   --text-md: 1rem;
   --text-lg: 1.18rem;
   --text-xl: clamp(1.65rem, 1.4vw + 1.1rem, 2.25rem);
+}
+
+[data-theme="dark"] {
+  --bg: #0f1424;
+  --surface: #161c2f;
+  --surface-soft: #1d263d;
+  --text: #e6ebff;
+  --muted: #9aa7cc;
+  --primary: #7b8cff;
+  --primary-dark: #5f73ff;
+  --accent: #3dd6c4;
+  --danger: #ff6f7e;
+  --border: #2a3454;
+  --shadow: 0 14px 30px rgba(0, 0, 0, 0.35);
 }
 
 * { box-sizing: border-box; }
@@ -39,7 +54,7 @@ body {
   justify-content: space-between;
   gap: 1rem;
   padding: 1rem 1.25rem;
-  background: rgba(255, 255, 255, 0.92);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
   backdrop-filter: blur(6px);
   border-bottom: 1px solid var(--border);
 }
@@ -53,6 +68,7 @@ body {
   display: none;
   border: 1px solid var(--border);
   background: var(--surface);
+  color: var(--text);
   border-radius: 0.6rem;
   padding: 0.45rem 0.7rem;
 }
@@ -76,8 +92,8 @@ body {
 
 .logout-btn {
   border: 0;
-  background: #fde8e8;
-  color: #b42318;
+  background: color-mix(in srgb, var(--danger) 16%, var(--surface));
+  color: color-mix(in srgb, var(--danger) 86%, #000);
   font-weight: 600;
   padding: 0.45rem 0.8rem;
   border-radius: 0.6rem;
@@ -86,8 +102,22 @@ body {
 
 .nav-links a.active,
 .nav-links a:hover {
-  background: #e8e9ff;
+  background: color-mix(in srgb, var(--primary) 18%, var(--surface));
   color: var(--primary-dark);
+}
+
+.theme-toggle {
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 0.45rem 0.8rem;
+  background: var(--surface-soft);
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  border-color: color-mix(in srgb, var(--primary) 50%, var(--border));
 }
 
 .container {
@@ -254,13 +284,14 @@ body {
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: #eef2ff;
-  color: var(--primary);
+  background: linear-gradient(135deg, #4f46e5 0%, #14b8a6 100%);
+  color: #ffffff;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  box-shadow: 0 8px 16px rgba(79, 70, 229, 0.3);
 }
 
 .profile-panel__avatar img {
@@ -272,6 +303,7 @@ body {
 
 .profile-panel__avatar span {
   font-size: 1.4rem;
+  text-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
 }
 
 .profile-panel__name {
@@ -454,7 +486,7 @@ body.has-profile-panel {
   padding: 1.2rem;
   color: var(--muted);
   border-top: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
 }
 
 .auth-shell {
@@ -659,7 +691,7 @@ body.has-profile-panel {
     position: absolute;
     right: 1rem;
     top: 4.2rem;
-    background: white;
+    background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 0.9rem;
     padding: 0.6rem;

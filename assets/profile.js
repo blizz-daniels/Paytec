@@ -99,6 +99,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!imageEl || !initialEl) {
       return;
     }
+    const firstLetter = String(fallback || "").trim().charAt(0).toUpperCase();
     if (imageUrl) {
       imageEl.src = imageUrl;
       imageEl.hidden = false;
@@ -107,7 +108,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     imageEl.hidden = true;
     initialEl.hidden = false;
-    initialEl.textContent = fallback ? fallback.charAt(0).toUpperCase() : "";
+    initialEl.textContent = firstLetter || "?";
   }
 
   function applyProfile(profile) {

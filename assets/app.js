@@ -35,6 +35,56 @@ async function toggleTeacherLinks() {
 
 toggleTeacherLinks();
 
+(function initThemeToggle() {
+  const storageKey = "campuspay-theme";
+  const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const savedTheme = localStorage.getItem(storageKey);
+  const initialTheme = savedTheme === "dark" || savedTheme === "light" ? savedTheme : prefersDark ? "dark" : "light";
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    const toggleButton = document.getElementById("themeToggleButton");
+    if (toggleButton) {
+      const isDark = theme === "dark";
+      toggleButton.textContent = isDark ? "Light Mode" : "Dark Mode";
+      toggleButton.setAttribute("aria-pressed", isDark ? "true" : "false");
+      toggleButton.setAttribute("aria-label", isDark ? "Switch to light mode" : "Switch to dark mode");
+    }
+  }
+
+  applyTheme(initialTheme);
+
+  if (!nav) {
+    return;
+  }
+
+  let themeButton = document.getElementById("themeToggleButton");
+  if (!themeButton) {
+    themeButton = document.createElement("button");
+    themeButton.type = "button";
+    themeButton.id = "themeToggleButton";
+    themeButton.className = "theme-toggle";
+    const profileButton = nav.querySelector("#profileToggleButton");
+    if (profileButton) {
+      nav.insertBefore(themeButton, profileButton);
+    } else {
+      nav.appendChild(themeButton);
+    }
+  }
+
+  applyTheme(document.documentElement.getAttribute("data-theme") || initialTheme);
+
+  themeButton.addEventListener("click", () => {
+    const current = document.documentElement.getAttribute("data-theme") || "light";
+    const next = current === "dark" ? "light" : "dark";
+    localStorage.setItem(storageKey, next);
+    applyTheme(next);
+    if (window.showToast) {
+      window.showToast(next === "dark" ? "Dark mode enabled." : "Light mode enabled.", { type: "success" });
+    }
+  });
+})();
+
 (function initToastSystem() {
   const hostId = "toastHost";
 
