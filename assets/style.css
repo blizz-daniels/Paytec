@@ -165,12 +165,13 @@ body {
 }
 
 .brand-logo {
-  width: 2rem;
-  height: 2rem;
-  object-fit: contain;
+  width: 2.2rem;
+  height: 2.2rem;
+  object-fit: cover;
+  object-position: center;
   border-radius: 0.4rem;
-  border: 1px solid rgba(244, 209, 129, 0.35);
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
+  border: 1px solid color-mix(in srgb, var(--primary) 45%, var(--border));
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.28);
 }
 
 .brand-copy {
