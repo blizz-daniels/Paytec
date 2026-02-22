@@ -32,11 +32,15 @@ const usersDir = path.join(dataDir, "users");
 fs.mkdirSync(usersDir, { recursive: true });
 const receiptsDir = path.join(dataDir, "receipts");
 fs.mkdirSync(receiptsDir, { recursive: true });
+const statementsDir = path.join(dataDir, "statements");
+fs.mkdirSync(statementsDir, { recursive: true });
 
 const allowedAvatarMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const allowedAvatarExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 const allowedReceiptMimeTypes = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
 const allowedReceiptExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".pdf"]);
+const allowedStatementMimeTypes = new Set(["text/csv", "text/plain", "application/vnd.ms-excel", "application/csv"]);
+const allowedStatementExtensions = new Set([".csv", ".txt"]);
 const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 8;
@@ -82,6 +86,30 @@ const receiptUpload = multer({
       return;
     }
     cb(new Error("Only JPG, PNG, WEBP, and PDF receipts are allowed."));
+  },
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+});
+
+const statementUpload = multer({
+  storage: multer.diskStorage({
+    destination: statementsDir,
+    filename(req, file, cb) {
+      const teacher = String(req.session?.user?.username || "teacher").replace(/[^\w-]/g, "").slice(0, 40) || "teacher";
+      const ext = path.extname(file.originalname || "").toLowerCase() || ".csv";
+      const safeExt = allowedStatementExtensions.has(ext) ? ext : ".csv";
+      const suffix = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+      cb(null, `${teacher}-${suffix}${safeExt}`);
+    },
+  }),
+  fileFilter(_req, file, cb) {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (allowedStatementMimeTypes.has(file.mimetype) || allowedStatementExtensions.has(ext)) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error("Only CSV and TXT statement files are allowed."));
   },
   limits: {
     fileSize: 5 * 1024 * 1024,
@@ -538,6 +566,9 @@ async function initDatabase() {
       category TEXT NOT NULL DEFAULT 'General',
       is_urgent INTEGER NOT NULL DEFAULT 0,
       is_pinned INTEGER NOT NULL DEFAULT 0,
+      expires_at TEXT,
+      related_payment_item_id INTEGER,
+      auto_generated INTEGER NOT NULL DEFAULT 0,
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
@@ -582,8 +613,20 @@ async function initDatabase() {
       expected_amount REAL NOT NULL,
       currency TEXT NOT NULL DEFAULT 'NGN',
       due_date TEXT,
+      available_until TEXT,
+      availability_days INTEGER,
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS teacher_payment_statements (
+      teacher_username TEXT PRIMARY KEY,
+      original_filename TEXT NOT NULL,
+      statement_file_path TEXT NOT NULL,
+      parsed_rows_json TEXT NOT NULL,
+      uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
@@ -626,6 +669,7 @@ async function initDatabase() {
   await run("CREATE INDEX IF NOT EXISTS idx_payment_receipts_status ON payment_receipts(status)");
   await run("CREATE INDEX IF NOT EXISTS idx_payment_receipts_item ON payment_receipts(payment_item_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_payment_receipt_events_receipt ON payment_receipt_events(receipt_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_notifications_payment_item ON notifications(related_payment_item_id)");
 
   await run(`
     CREATE TABLE IF NOT EXISTS user_profiles (
@@ -660,6 +704,15 @@ async function initDatabase() {
   if (!notificationColumns.some((column) => column.name === "is_pinned")) {
     await run("ALTER TABLE notifications ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
   }
+  if (!notificationColumns.some((column) => column.name === "expires_at")) {
+    await run("ALTER TABLE notifications ADD COLUMN expires_at TEXT");
+  }
+  if (!notificationColumns.some((column) => column.name === "related_payment_item_id")) {
+    await run("ALTER TABLE notifications ADD COLUMN related_payment_item_id INTEGER");
+  }
+  if (!notificationColumns.some((column) => column.name === "auto_generated")) {
+    await run("ALTER TABLE notifications ADD COLUMN auto_generated INTEGER NOT NULL DEFAULT 0");
+  }
 
   const paymentItemsColumns = await all("PRAGMA table_info(payment_items)");
   if (!paymentItemsColumns.some((column) => column.name === "description")) {
@@ -670,6 +723,12 @@ async function initDatabase() {
   }
   if (!paymentItemsColumns.some((column) => column.name === "due_date")) {
     await run("ALTER TABLE payment_items ADD COLUMN due_date TEXT");
+  }
+  if (!paymentItemsColumns.some((column) => column.name === "available_until")) {
+    await run("ALTER TABLE payment_items ADD COLUMN available_until TEXT");
+  }
+  if (!paymentItemsColumns.some((column) => column.name === "availability_days")) {
+    await run("ALTER TABLE payment_items ADD COLUMN availability_days INTEGER");
   }
 
   const paymentReceiptColumns = await all("PRAGMA table_info(payment_receipts)");
@@ -820,6 +879,27 @@ function parseMoneyValue(value) {
   return amount;
 }
 
+function parseAvailabilityDays(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+  const days = Number.parseInt(raw, 10);
+  if (!Number.isFinite(days) || days <= 0 || days > 3650) {
+    return null;
+  }
+  return days;
+}
+
+function computeAvailableUntil(availabilityDays) {
+  if (!Number.isFinite(availabilityDays) || availabilityDays <= 0) {
+    return null;
+  }
+  const now = new Date();
+  const end = new Date(now.getTime() + availabilityDays * 24 * 60 * 60 * 1000);
+  return end.toISOString();
+}
+
 function parseCurrency(value) {
   const text = String(value || "NGN").trim().toUpperCase();
   if (!/^[A-Z]{3}$/.test(text)) {
@@ -846,7 +926,7 @@ function sanitizeAssignmentFilter(value) {
 
 function sanitizeBulkReceiptAction(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  const allowed = new Set(["assign", "under_review", "approve", "reject", "note"]);
+  const allowed = new Set(["assign", "under_review", "approve", "reject", "note", "bulk_verify"]);
   return allowed.has(normalized) ? normalized : "";
 }
 
@@ -868,6 +948,109 @@ function parseReceiptIdList(rawValues, limit = 50) {
     }
   }
   return ids;
+}
+
+function normalizeWhitespace(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeStatementName(value) {
+  return normalizeWhitespace(value).toLowerCase();
+}
+
+function normalizeReference(value) {
+  return String(value || "").trim().toLowerCase().slice(0, 120);
+}
+
+function toDateOnly(value) {
+  const date = new Date(String(value || ""));
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function almostSameAmount(left, right, tolerance = 0.01) {
+  const l = Number(left);
+  const r = Number(right);
+  if (!Number.isFinite(l) || !Number.isFinite(r)) {
+    return false;
+  }
+  return Math.abs(l - r) <= tolerance;
+}
+
+function normalizeStatementRowsText(rawText) {
+  const rows = String(rawText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!rows.length) {
+    return [];
+  }
+
+  const headerCells = parseCsvLine(rows[0]).map((cell) =>
+    String(cell || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_")
+  );
+  const findIndex = (...aliases) => {
+    for (const alias of aliases) {
+      const idx = headerCells.indexOf(alias);
+      if (idx !== -1) {
+        return idx;
+      }
+    }
+    return -1;
+  };
+
+  const nameIndex = findIndex("name", "student", "student_name", "student_username", "matric_number", "username");
+  const amountIndex = findIndex("amount", "amount_paid", "paid_amount");
+  const dateIndex = findIndex("date", "paid_at", "payment_date", "paid_date");
+  const refIndex = findIndex("reference", "transaction_ref", "ref", "transaction_reference");
+  if (nameIndex === -1 || amountIndex === -1 || dateIndex === -1) {
+    return [];
+  }
+
+  const normalized = [];
+  for (let i = 1; i < rows.length; i += 1) {
+    const cells = parseCsvLine(rows[i]);
+    const rawName = cells[nameIndex];
+    const rawAmount = cells[amountIndex];
+    const rawDate = cells[dateIndex];
+    const rawRef = refIndex === -1 ? "" : cells[refIndex];
+    const name = normalizeStatementName(rawName);
+    const amount = parseMoneyValue(rawAmount);
+    const date = toDateOnly(rawDate);
+    if (!name || !Number.isFinite(amount) || !date) {
+      continue;
+    }
+    normalized.push({
+      row_number: i + 1,
+      raw_name: normalizeWhitespace(rawName),
+      raw_amount: String(rawAmount || "").trim(),
+      raw_date: String(rawDate || "").trim(),
+      raw_reference: String(rawRef || "").trim(),
+      normalized_name: name,
+      normalized_amount: amount,
+      normalized_date: date,
+      normalized_reference: normalizeReference(rawRef),
+    });
+  }
+  return normalized;
+}
+
+async function getStudentNameVariants(username) {
+  const normalizedUsername = normalizeIdentifier(username);
+  const variants = new Set();
+  if (normalizedUsername) {
+    variants.add(normalizedUsername);
+  }
+  const profile = await getUserProfile(normalizedUsername);
+  if (profile && profile.display_name) {
+    variants.add(normalizeStatementName(profile.display_name));
+  }
+  return variants;
 }
 
 async function ensureCanManageContent(req, table, id) {
@@ -1077,6 +1260,8 @@ function buildReceiptQueueQuery(filters, limit = 100, options = {}) {
       pi.expected_amount,
       pi.currency,
       pi.due_date,
+      pi.available_until,
+      pi.availability_days,
       pi.created_by AS payment_item_owner
     FROM payment_receipts pr
     JOIN payment_items pi ON pi.id = pr.payment_item_id
@@ -1118,6 +1303,139 @@ function getReminderMetadata(daysUntilDue, outstandingAmount) {
     return { level: "soon", text: `Due in ${daysUntilDue} day(s)` };
   }
   return { level: "upcoming", text: `Due in ${daysUntilDue} day(s)` };
+}
+
+async function syncPaymentItemNotification(req, paymentItem) {
+  if (!paymentItem || !paymentItem.id) {
+    return;
+  }
+  const title = `New Payment Item: ${String(paymentItem.title || "").slice(0, 90)}`;
+  const duePart = paymentItem.due_date ? `Due: ${paymentItem.due_date}. ` : "";
+  let availabilityPart = "Available until removed by teacher.";
+  if (paymentItem.available_until) {
+    const availableDate = new Date(paymentItem.available_until);
+    if (!Number.isNaN(availableDate.getTime())) {
+      availabilityPart = `Available until: ${availableDate.toISOString().slice(0, 10)}.`;
+    }
+  }
+  const body = `${duePart}Amount: ${paymentItem.currency} ${Number(paymentItem.expected_amount || 0).toFixed(
+    2
+  )}. ${availabilityPart} ${String(paymentItem.description || "").trim()}`.trim();
+  const existing = await get(
+    "SELECT id FROM notifications WHERE related_payment_item_id = ? AND auto_generated = 1 LIMIT 1",
+    [paymentItem.id]
+  );
+  if (existing) {
+    await run(
+      `
+        UPDATE notifications
+        SET title = ?,
+            body = ?,
+            category = 'Payments',
+            is_urgent = 0,
+            is_pinned = 0,
+            expires_at = ?,
+            created_by = ?
+        WHERE id = ?
+      `,
+      [title.slice(0, 120), body.slice(0, 2000), paymentItem.available_until || null, req.session.user.username, existing.id]
+    );
+    return existing.id;
+  }
+  const result = await run(
+    `
+      INSERT INTO notifications (
+        title,
+        body,
+        category,
+        is_urgent,
+        is_pinned,
+        expires_at,
+        related_payment_item_id,
+        auto_generated,
+        created_by
+      )
+      VALUES (?, ?, 'Payments', 0, 0, ?, ?, 1, ?)
+    `,
+    [title.slice(0, 120), body.slice(0, 2000), paymentItem.available_until || null, paymentItem.id, req.session.user.username]
+  );
+  return result.lastID;
+}
+
+async function getTeacherStatement(teacherUsername) {
+  const row = await get(
+    `
+      SELECT teacher_username, original_filename, statement_file_path, parsed_rows_json, uploaded_at
+      FROM teacher_payment_statements
+      WHERE teacher_username = ?
+      LIMIT 1
+    `,
+    [normalizeIdentifier(teacherUsername)]
+  );
+  if (!row) {
+    return null;
+  }
+  let parsedRows = [];
+  try {
+    parsedRows = JSON.parse(row.parsed_rows_json || "[]");
+  } catch (_err) {
+    parsedRows = [];
+  }
+  return {
+    ...row,
+    parsed_rows: Array.isArray(parsedRows) ? parsedRows : [],
+  };
+}
+
+async function evaluateReceiptAgainstStatement(receiptRow, statementRows) {
+  const studentVariants = await getStudentNameVariants(receiptRow.student_username);
+  const receiptDate = toDateOnly(receiptRow.paid_at);
+  const normalizedRef = normalizeReference(receiptRow.transaction_ref || "");
+  const paidAmount = Number(receiptRow.amount_paid || 0);
+  let matchedRow = null;
+
+  if (normalizedRef) {
+    matchedRow = statementRows.find((entry) => entry.normalized_reference === normalizedRef) || null;
+  }
+  if (!matchedRow) {
+    matchedRow =
+      statementRows.find((entry) => {
+        const nameMatch = studentVariants.has(entry.normalized_name);
+        const amountMatch = almostSameAmount(entry.normalized_amount, paidAmount);
+        const dateMatch = entry.normalized_date === receiptDate;
+        return nameMatch && amountMatch && dateMatch;
+      }) || null;
+  }
+
+  if (!matchedRow) {
+    return {
+      matched: false,
+      compared_by_reference: !!normalizedRef,
+      name_match: false,
+      amount_match: false,
+      date_match: false,
+      match_row_number: null,
+      details: "No matching statement row found for this receipt.",
+    };
+  }
+
+  const nameMatch = studentVariants.has(matchedRow.normalized_name);
+  const amountMatch = almostSameAmount(matchedRow.normalized_amount, paidAmount);
+  const dateMatch = matchedRow.normalized_date === receiptDate;
+  const refMatch = normalizedRef && matchedRow.normalized_reference
+    ? matchedRow.normalized_reference === normalizedRef
+    : null;
+
+  return {
+    matched: !!(nameMatch && amountMatch && dateMatch),
+    compared_by_reference: !!normalizedRef,
+    name_match: nameMatch,
+    amount_match: amountMatch,
+    date_match: dateMatch,
+    reference_match: refMatch,
+    match_row_number: matchedRow.row_number,
+    details: `Matched statement row ${matchedRow.row_number}.`,
+  };
 }
 
 async function isValidReviewerAssignee(identifier) {
@@ -1442,11 +1760,26 @@ app.get("/api/admin/audit-logs", requireAdmin, async (_req, res) => {
 
 app.get("/api/payment-items", requireAuth, async (_req, res) => {
   try {
+    const isStudent = _req.session?.user?.role === "student";
+    const whereClause = isStudent
+      ? "WHERE (pi.available_until IS NULL OR datetime(pi.available_until) > CURRENT_TIMESTAMP)"
+      : "";
     const rows = await all(
       `
-        SELECT id, title, description, expected_amount, currency, due_date, created_by, created_at
-        FROM payment_items
-        ORDER BY created_at DESC, id DESC
+        SELECT
+          pi.id,
+          pi.title,
+          pi.description,
+          pi.expected_amount,
+          pi.currency,
+          pi.due_date,
+          pi.available_until,
+          pi.availability_days,
+          pi.created_by,
+          pi.created_at
+        FROM payment_items pi
+        ${whereClause}
+        ORDER BY pi.created_at DESC, pi.id DESC
       `
     );
     return res.json(rows);
@@ -1462,6 +1795,9 @@ app.post("/api/payment-items", requireTeacher, async (req, res) => {
   const currency = parseCurrency(req.body.currency || "NGN");
   const dueDateRaw = String(req.body.dueDate || "").trim();
   const dueDate = dueDateRaw || null;
+  const hasAvailabilityDays = String(req.body.availabilityDays ?? "").trim() !== "";
+  const availabilityDays = parseAvailabilityDays(req.body.availabilityDays);
+  const availableUntil = hasAvailabilityDays ? computeAvailableUntil(availabilityDays) : null;
 
   if (!title || title.length > 120) {
     return res.status(400).json({ error: "Title is required and must be 120 characters or less." });
@@ -1475,15 +1811,29 @@ app.post("/api/payment-items", requireTeacher, async (req, res) => {
   if (dueDate && !isValidIsoLikeDate(dueDate)) {
     return res.status(400).json({ error: "Due date format is invalid." });
   }
+  if (hasAvailabilityDays && !availabilityDays) {
+    return res.status(400).json({ error: "Availability days must be a whole number between 1 and 3650." });
+  }
 
   try {
     const result = await run(
       `
-        INSERT INTO payment_items (title, description, expected_amount, currency, due_date, created_by)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO payment_items (
+          title,
+          description,
+          expected_amount,
+          currency,
+          due_date,
+          available_until,
+          availability_days,
+          created_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      [title, description, expectedAmount, currency, dueDate, req.session.user.username]
+      [title, description, expectedAmount, currency, dueDate, availableUntil, availabilityDays, req.session.user.username]
     );
+    const inserted = await get("SELECT * FROM payment_items WHERE id = ? LIMIT 1", [result.lastID]);
+    await syncPaymentItemNotification(req, inserted);
     await logAuditEvent(
       req,
       "create",
@@ -1506,6 +1856,9 @@ app.put("/api/payment-items/:id", requireTeacher, async (req, res) => {
   const currency = parseCurrency(req.body.currency || "NGN");
   const dueDateRaw = String(req.body.dueDate || "").trim();
   const dueDate = dueDateRaw || null;
+  const hasAvailabilityDays = String(req.body.availabilityDays ?? "").trim() !== "";
+  const availabilityDays = parseAvailabilityDays(req.body.availabilityDays);
+  const availableUntil = hasAvailabilityDays ? computeAvailableUntil(availabilityDays) : null;
 
   if (!id) {
     return res.status(400).json({ error: "Invalid payment item ID." });
@@ -1522,6 +1875,9 @@ app.put("/api/payment-items/:id", requireTeacher, async (req, res) => {
   if (dueDate && !isValidIsoLikeDate(dueDate)) {
     return res.status(400).json({ error: "Due date format is invalid." });
   }
+  if (hasAvailabilityDays && !availabilityDays) {
+    return res.status(400).json({ error: "Availability days must be a whole number between 1 and 3650." });
+  }
 
   try {
     const access = await ensureCanManageContent(req, "payment_items", id);
@@ -1535,11 +1891,19 @@ app.put("/api/payment-items/:id", requireTeacher, async (req, res) => {
     await run(
       `
         UPDATE payment_items
-        SET title = ?, description = ?, expected_amount = ?, currency = ?, due_date = ?
+        SET title = ?,
+            description = ?,
+            expected_amount = ?,
+            currency = ?,
+            due_date = ?,
+            available_until = ?,
+            availability_days = ?
         WHERE id = ?
       `,
-      [title, description, expectedAmount, currency, dueDate, id]
+      [title, description, expectedAmount, currency, dueDate, availableUntil, availabilityDays, id]
     );
+    const updated = await get("SELECT * FROM payment_items WHERE id = ? LIMIT 1", [id]);
+    await syncPaymentItemNotification(req, updated);
     await logAuditEvent(
       req,
       "edit",
@@ -1575,6 +1939,7 @@ app.delete("/api/payment-items/:id", requireTeacher, async (req, res) => {
     }
 
     await run("DELETE FROM payment_items WHERE id = ?", [id]);
+    await run("DELETE FROM notifications WHERE related_payment_item_id = ? AND auto_generated = 1", [id]);
     await logAuditEvent(
       req,
       "delete",
@@ -1586,6 +1951,117 @@ app.delete("/api/payment-items/:id", requireTeacher, async (req, res) => {
     return res.json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not delete payment item." });
+  }
+});
+
+app.get("/api/teacher/payment-statement", requireTeacher, async (req, res) => {
+  try {
+    const row = await getTeacherStatement(req.session.user.username);
+    if (!row) {
+      return res.json({ hasStatement: false });
+    }
+    return res.json({
+      hasStatement: true,
+      original_filename: row.original_filename,
+      uploaded_at: row.uploaded_at,
+      parsed_row_count: row.parsed_rows.length,
+    });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load teacher statement." });
+  }
+});
+
+app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
+  statementUpload.single("statementFile")(req, res, async (err) => {
+    if (err) {
+      const message =
+        err && err.message === "Only CSV and TXT statement files are allowed."
+          ? err.message
+          : err && err.code === "LIMIT_FILE_SIZE"
+          ? "Statement file cannot be larger than 5 MB."
+          : "Could not process statement upload.";
+      return res.status(400).json({ error: message });
+    }
+    if (!req.file || !req.file.path) {
+      return res.status(400).json({ error: "Statement file is required." });
+    }
+    try {
+      const raw = fs.readFileSync(req.file.path, "utf8");
+      const parsedRows = normalizeStatementRowsText(raw);
+      if (!parsedRows.length) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({
+          error:
+            "Could not parse statement rows. Include CSV/TXT headers with name, amount, and date columns.",
+        });
+      }
+      const teacherUsername = normalizeIdentifier(req.session.user.username);
+      const existing = await get(
+        "SELECT statement_file_path FROM teacher_payment_statements WHERE teacher_username = ? LIMIT 1",
+        [teacherUsername]
+      );
+      await run(
+        `
+          INSERT INTO teacher_payment_statements (
+            teacher_username,
+            original_filename,
+            statement_file_path,
+            parsed_rows_json,
+            uploaded_at
+          )
+          VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(teacher_username) DO UPDATE SET
+            original_filename = excluded.original_filename,
+            statement_file_path = excluded.statement_file_path,
+            parsed_rows_json = excluded.parsed_rows_json,
+            uploaded_at = CURRENT_TIMESTAMP
+        `,
+        [
+          teacherUsername,
+          String(req.file.originalname || "").slice(0, 255) || path.basename(req.file.path),
+          req.file.path,
+          JSON.stringify(parsedRows),
+        ]
+      );
+      if (existing && existing.statement_file_path && existing.statement_file_path !== req.file.path) {
+        fs.unlink(existing.statement_file_path, () => {});
+      }
+      await logAuditEvent(
+        req,
+        "upload",
+        "payment_statement",
+        null,
+        teacherUsername,
+        `Uploaded statement with ${parsedRows.length} parsed row(s).`
+      );
+      return res.status(201).json({
+        ok: true,
+        parsed_row_count: parsedRows.length,
+      });
+    } catch (_err) {
+      return res.status(500).json({ error: "Could not save statement of account." });
+    }
+  });
+});
+
+app.delete("/api/teacher/payment-statement", requireTeacher, async (req, res) => {
+  try {
+    const teacherUsername = normalizeIdentifier(req.session.user.username);
+    const row = await get(
+      "SELECT statement_file_path FROM teacher_payment_statements WHERE teacher_username = ? LIMIT 1",
+      [teacherUsername]
+    );
+    if (!row) {
+      return res.status(404).json({ error: "No uploaded statement found." });
+    }
+    await run("DELETE FROM teacher_payment_statements WHERE teacher_username = ?", [teacherUsername]);
+    if (row.statement_file_path) {
+      fs.unlink(row.statement_file_path, () => {});
+    }
+    await logAuditEvent(req, "delete", "payment_statement", null, teacherUsername, "Deleted uploaded statement.");
+    return res.json({ ok: true });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not delete teacher statement." });
   }
 });
 
@@ -1742,6 +2218,8 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
           pi.expected_amount,
           pi.currency,
           pi.due_date,
+          pi.available_until,
+          pi.availability_days,
           pi.created_by,
           COALESCE(SUM(CASE WHEN pr.status = 'approved' THEN pr.amount_paid ELSE 0 END), 0) AS approved_paid,
           COALESCE(SUM(CASE WHEN pr.status IN ('submitted', 'under_review') THEN pr.amount_paid ELSE 0 END), 0) AS pending_paid
@@ -1749,7 +2227,17 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
         LEFT JOIN payment_receipts pr
           ON pr.payment_item_id = pi.id
          AND pr.student_username = ?
-        GROUP BY pi.id, pi.title, pi.description, pi.expected_amount, pi.currency, pi.due_date, pi.created_by
+        WHERE (pi.available_until IS NULL OR datetime(pi.available_until) > CURRENT_TIMESTAMP)
+        GROUP BY
+          pi.id,
+          pi.title,
+          pi.description,
+          pi.expected_amount,
+          pi.currency,
+          pi.due_date,
+          pi.available_until,
+          pi.availability_days,
+          pi.created_by
         ORDER BY
           CASE WHEN pi.due_date IS NULL OR pi.due_date = '' THEN 1 ELSE 0 END ASC,
           pi.due_date ASC,
@@ -1883,6 +2371,8 @@ async function getReceiptQueueRowById(id) {
         pi.expected_amount,
         pi.currency,
         pi.due_date,
+        pi.available_until,
+        pi.availability_days,
         pi.created_by AS payment_item_owner
       FROM payment_receipts pr
       JOIN payment_items pi ON pi.id = pr.payment_item_id
@@ -1967,6 +2457,7 @@ async function transitionPaymentReceiptStatusById(req, id, nextStatus, actionNam
   }
   const reviewerNote = reviewerNoteRaw || String(existingNotes.reviewer_note || "").trim() || null;
   const verificationNotes = {
+    ...existingNotes,
     student_note: existingNotes.student_note || null,
     verification_flags: flags,
     reviewer_note: reviewerNote,
@@ -2013,6 +2504,84 @@ async function transitionPaymentReceiptStatusById(req, id, nextStatus, actionNam
   return {
     ...updated,
     verification_flags: flags,
+  };
+}
+
+async function persistStatementVerification(receiptId, statementVerification) {
+  const row = await get("SELECT verification_notes FROM payment_receipts WHERE id = ? LIMIT 1", [receiptId]);
+  let current = {};
+  try {
+    current = row?.verification_notes ? JSON.parse(row.verification_notes) : {};
+  } catch (_err) {
+    current = {};
+  }
+  const next = {
+    ...current,
+    statement_verification: statementVerification,
+  };
+  await run("UPDATE payment_receipts SET verification_notes = ? WHERE id = ?", [JSON.stringify(next), receiptId]);
+}
+
+async function verifyReceiptAgainstStatementById(req, id, options = {}) {
+  const row = await getReceiptQueueRowById(id);
+  if (!row) {
+    throw { status: 404, error: "Receipt not found." };
+  }
+  if (row.status === "approved" || row.status === "rejected") {
+    throw { status: 400, error: `Receipt is already ${row.status}.` };
+  }
+  const statement = await getTeacherStatement(req.session.user.username);
+  if (!statement || !Array.isArray(statement.parsed_rows) || !statement.parsed_rows.length) {
+    throw { status: 400, error: "Upload a statement of account (CSV/TXT) before verifying receipts." };
+  }
+  const statementResult = await evaluateReceiptAgainstStatement(row, statement.parsed_rows);
+  const statementVerification = {
+    teacher_username: req.session.user.username,
+    statement_uploaded_at: statement.uploaded_at,
+    statement_filename: statement.original_filename,
+    compared_at: new Date().toISOString(),
+    result: statementResult,
+  };
+  await persistStatementVerification(id, statementVerification);
+
+  let updatedRow = await getReceiptQueueRowById(id);
+  let autoAction = "manual_review_needed";
+  if (statementResult.matched) {
+    if (updatedRow.status === "submitted") {
+      updatedRow = await transitionPaymentReceiptStatusById(req, id, "under_review", "auto_verify_move_under_review", {
+        reviewerNote: "Auto-verify passed. Queue moved to under review.",
+        defaultEventNote: "System verify pre-check passed.",
+      });
+    }
+    if (updatedRow.status === "under_review") {
+      updatedRow = await transitionPaymentReceiptStatusById(req, id, "approved", "auto_verify_approve", {
+        reviewerNote: "Auto-verified using uploaded statement of account.",
+      });
+      autoAction = "approved";
+    }
+  } else {
+    if (updatedRow.status === "submitted") {
+      updatedRow = await transitionPaymentReceiptStatusById(req, id, "under_review", "auto_verify_flagged", {
+        reviewerNote: "Auto-verify found mismatch with statement. Manual review required.",
+        defaultEventNote: "Statement mismatch detected.",
+      });
+    } else {
+      await appendReviewerNoteEvent(
+        id,
+        req,
+        "Auto-verify found mismatch with statement. Manual review required."
+      );
+      updatedRow = await getReceiptQueueRowById(id);
+    }
+  }
+
+  await persistStatementVerification(id, statementVerification);
+  return {
+    receipt: updatedRow,
+    statement_verification: statementVerification,
+    auto_action: autoAction,
+    matched: statementResult.matched,
+    bulk: !!options.bulk,
   };
 }
 
@@ -2136,6 +2705,11 @@ app.post("/api/payment-receipts/bulk", requireTeacher, async (req, res) => {
         results.push({ id, ok: true });
         continue;
       }
+      if (action === "bulk_verify") {
+        const verification = await verifyReceiptAgainstStatementById(req, id, { bulk: true });
+        results.push({ id, ok: true, receipt: verification.receipt, verification });
+        continue;
+      }
 
       const nextStatusByAction = {
         under_review: "under_review",
@@ -2167,6 +2741,22 @@ app.post("/api/payment-receipts/bulk", requireTeacher, async (req, res) => {
     failureCount: results.length - successCount,
     results,
   });
+});
+
+app.post("/api/payment-receipts/:id/verify", requireTeacher, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid receipt ID." });
+  }
+  try {
+    const verification = await verifyReceiptAgainstStatementById(req, id, { bulk: false });
+    return res.json({ ok: true, ...verification });
+  } catch (err) {
+    if (err && err.status && err.error) {
+      return res.status(err.status).json({ error: err.error });
+    }
+    return res.status(500).json({ error: "Could not verify receipt against statement." });
+  }
 });
 
 app.post("/api/payment-receipts/:id/under-review", requireTeacher, async (req, res) => {
@@ -2226,6 +2816,8 @@ app.get("/teacher", requireTeacher, (_req, res) => {
 
 app.get("/api/notifications", requireAuth, async (req, res) => {
   try {
+    const isStudent = req.session.user.role === "student";
+    const whereClause = isStudent ? "WHERE (n.expires_at IS NULL OR datetime(n.expires_at) > CURRENT_TIMESTAMP)" : "";
     const rows = await all(
       `
         SELECT
@@ -2235,6 +2827,9 @@ app.get("/api/notifications", requireAuth, async (req, res) => {
           n.category,
           n.is_urgent,
           n.is_pinned,
+          n.expires_at,
+          n.related_payment_item_id,
+          n.auto_generated,
           n.created_by,
           n.created_at,
           CASE WHEN nr.notification_id IS NULL THEN 0 ELSE 1 END AS is_read
@@ -2242,6 +2837,7 @@ app.get("/api/notifications", requireAuth, async (req, res) => {
         LEFT JOIN notification_reads nr
           ON nr.notification_id = n.id
          AND nr.username = ?
+        ${whereClause}
         ORDER BY n.is_pinned DESC, n.is_urgent DESC, n.created_at DESC, n.id DESC
       `
       ,

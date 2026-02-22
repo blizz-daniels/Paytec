@@ -54,6 +54,9 @@ beforeAll(async () => {
   await run("DELETE FROM payment_receipt_events");
   await run("DELETE FROM payment_receipts");
   await run("DELETE FROM payment_items");
+  await run("DELETE FROM teacher_payment_statements");
+  await run("DELETE FROM notification_reads");
+  await run("DELETE FROM notifications");
   await run("DELETE FROM audit_logs");
   await run("DELETE FROM auth_roster");
   await run("DELETE FROM users WHERE role != 'admin'");
@@ -316,4 +319,80 @@ test("payment item ownership is enforced (teacher vs admin)", async () => {
     dueDate: "",
   });
   expect(adminEdit.status).toBe(200);
+});
+
+test("teacher statement upload + verify can auto-approve matching receipt", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "Auto Verify Fee",
+    description: "Auto verification test",
+    expectedAmount: 22000,
+    currency: "NGN",
+    dueDate: "2026-04-01",
+    availabilityDays: 30,
+  });
+  expect(createItem.status).toBe(201);
+
+  const student = request.agent(app);
+  await login(student, "std_001", "doe");
+  const studentCsrf = await getCsrfToken(student);
+  const submit = await student
+    .post("/api/payment-receipts")
+    .set("X-CSRF-Token", studentCsrf)
+    .field("paymentItemId", String(createItem.body.id))
+    .field("amountPaid", "22000")
+    .field("paidAt", "2026-02-20T10:00:00")
+    .field("transactionRef", "TX-AUTO-VERIFY-001")
+    .attach("receiptFile", Buffer.from("img"), { filename: "auto.png", contentType: "image/png" });
+  expect(submit.status).toBe(201);
+
+  const teacherCsrf = await getCsrfToken(teacher);
+  const statementCsv = ["name,amount,date,reference", "std_001,22000,2026-02-20,TX-AUTO-VERIFY-001"].join("\n");
+  const upload = await teacher
+    .post("/api/teacher/payment-statement")
+    .set("X-CSRF-Token", teacherCsrf)
+    .attach("statementFile", Buffer.from(statementCsv), { filename: "statement.csv", contentType: "text/csv" });
+  expect(upload.status).toBe(201);
+
+  const statementInfo = await teacher.get("/api/teacher/payment-statement");
+  expect(statementInfo.status).toBe(200);
+  expect(statementInfo.body.hasStatement).toBe(true);
+  expect(Number(statementInfo.body.parsed_row_count)).toBeGreaterThan(0);
+
+  const verify = await postJson(teacher, `/api/payment-receipts/${submit.body.id}/verify`, {});
+  expect(verify.status).toBe(200);
+  expect(verify.body.matched).toBe(true);
+  expect(verify.body.receipt.status).toBe("approved");
+});
+
+test("payment item availability controls student visibility in payments and notifications", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "Temporary Item",
+    description: "Expires quickly",
+    expectedAmount: 5000,
+    currency: "NGN",
+    dueDate: "",
+    availabilityDays: 1,
+  });
+  expect(createItem.status).toBe(201);
+  const itemId = createItem.body.id;
+
+  await run("UPDATE payment_items SET available_until = '2001-01-01T00:00:00.000Z' WHERE id = ?", [itemId]);
+  await run(
+    "UPDATE notifications SET expires_at = '2001-01-01T00:00:00.000Z' WHERE related_payment_item_id = ? AND auto_generated = 1",
+    [itemId]
+  );
+
+  const student = request.agent(app);
+  await login(student, "std_001", "doe");
+  const paymentItems = await student.get("/api/payment-items");
+  expect(paymentItems.status).toBe(200);
+  expect((paymentItems.body || []).some((row) => row.id === itemId)).toBe(false);
+
+  const notifications = await student.get("/api/notifications");
+  expect(notifications.status).toBe(200);
+  expect((notifications.body || []).some((row) => Number(row.related_payment_item_id || 0) === itemId)).toBe(false);
 });

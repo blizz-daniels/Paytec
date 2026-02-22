@@ -130,6 +130,9 @@
             <label for="paymentItemDueDate">Due Date (optional)</label>
             <input id="paymentItemDueDate" type="date" />
 
+            <label for="paymentItemAvailabilityDays">Available for (days, optional)</label>
+            <input id="paymentItemAvailabilityDays" type="number" min="1" step="1" placeholder="e.g. 30" />
+
             <button type="submit" class="btn">Save Payment Item</button>
           </form>
         </article>
@@ -150,6 +153,17 @@
               <tbody id="paymentItemRows"></tbody>
             </table>
           </div>
+        </article>
+
+        <article class="card">
+          <h2>Statement of Account</h2>
+          <p id="statementStatus" class="auth-subtitle">No statement uploaded yet.</p>
+          <form id="statementUploadForm" class="auth-form">
+            <label for="statementFile">Upload CSV/TXT Statement</label>
+            <input id="statementFile" type="file" accept=".csv,.txt,text/csv,text/plain" required />
+            <button type="submit" class="btn">Upload Statement</button>
+          </form>
+          <button id="deleteStatementButton" type="button" class="btn btn-secondary" style="margin-top:0.6rem;">Delete Statement</button>
         </article>
       </section>
 
@@ -233,6 +247,7 @@
                 <option value="approve">Approve</option>
                 <option value="reject">Reject</option>
                 <option value="note">Add reviewer note</option>
+                <option value="bulk_verify">Bulk verify (statement check)</option>
               </select>
             </label>
             <label>

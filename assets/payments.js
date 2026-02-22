@@ -122,21 +122,27 @@ const paymentState = {
   ledger: null,
   queueRows: [],
   selectedQueueIds: new Set(),
+  statementInfo: null,
 };
+
+function parseVerificationNotes(row) {
+  try {
+    const raw = row && row.verification_notes ? JSON.parse(row.verification_notes) : null;
+    return raw || {};
+  } catch (_err) {
+    return {};
+  }
+}
 
 function parseFlags(row) {
   if (row && row.verification_flags && typeof row.verification_flags === "object") {
     return row.verification_flags;
   }
-  try {
-    const raw = row && row.verification_notes ? JSON.parse(row.verification_notes) : null;
-    if (raw && raw.verification_flags) {
-      return raw.verification_flags;
-    }
-    return raw || {};
-  } catch (_err) {
-    return {};
+  const notes = parseVerificationNotes(row);
+  if (notes && notes.verification_flags) {
+    return notes.verification_flags;
   }
+  return notes;
 }
 
 function renderPaymentItemSelects(items) {
@@ -284,6 +290,8 @@ function renderQueue(rows) {
   }
   rows.forEach((row) => {
     const flags = parseFlags(row);
+    const notes = parseVerificationNotes(row);
+    const statementResult = notes?.statement_verification?.result || null;
     const sla = getSlaMeta(row);
     const flagsHtml = [
       flags.amount_matches_expected === false
@@ -297,6 +305,11 @@ function renderQueue(rows) {
       flags.duplicate_reference
         ? '<span class="status-badge status-badge--error">Duplicate ref</span>'
         : '<span class="status-badge status-badge--success">Unique ref</span>',
+      statementResult
+        ? statementResult.matched
+          ? '<span class="status-badge status-badge--success">Statement match</span>'
+          : '<span class="status-badge status-badge--warning">Statement mismatch</span>'
+        : '<span class="status-badge">Statement unchecked</span>',
     ].join(" ");
 
     const actions = [];
@@ -304,6 +317,9 @@ function renderQueue(rows) {
     actions.push(`<button class="btn btn-secondary" type="button" data-action="history" data-id="${row.id}">Notes</button>`);
     actions.push(`<button class="btn btn-secondary" type="button" data-action="assign-self" data-id="${row.id}">Assign Me</button>`);
     actions.push(`<button class="btn btn-secondary" type="button" data-action="add-note" data-id="${row.id}">Add Note</button>`);
+    if (row.status === "submitted" || row.status === "under_review") {
+      actions.push(`<button class="btn btn-secondary" type="button" data-action="verify" data-id="${row.id}">Verify</button>`);
+    }
     if (row.status === "submitted") {
       actions.push(`<button class="btn" type="button" data-action="under-review" data-id="${row.id}">Move to Review</button>`);
     }
@@ -379,6 +395,34 @@ async function loadQueue() {
   const validIds = new Set(paymentState.queueRows.map((row) => row.id));
   paymentState.selectedQueueIds = new Set([...paymentState.selectedQueueIds].filter((id) => validIds.has(id)));
   renderQueue(paymentState.queueRows);
+}
+
+function renderStatementStatus() {
+  const statusNode = document.getElementById("statementStatus");
+  const deleteButton = document.getElementById("deleteStatementButton");
+  if (!statusNode) {
+    return;
+  }
+  if (!paymentState.statementInfo || !paymentState.statementInfo.hasStatement) {
+    statusNode.textContent = "No statement uploaded yet.";
+    statusNode.style.color = "#1f2333";
+    if (deleteButton) {
+      deleteButton.disabled = true;
+    }
+    return;
+  }
+  statusNode.textContent = `Current statement: ${paymentState.statementInfo.original_filename} (${paymentState.statementInfo.parsed_row_count} row(s)) uploaded ${formatDate(
+    paymentState.statementInfo.uploaded_at
+  )}.`;
+  statusNode.style.color = "#1f2333";
+  if (deleteButton) {
+    deleteButton.disabled = false;
+  }
+}
+
+async function loadStatementInfo() {
+  paymentState.statementInfo = await requestJson("/api/teacher/payment-statement");
+  renderStatementStatus();
 }
 
 async function loadReviewerNotes(receiptId) {
@@ -471,6 +515,89 @@ function bindStudentSubmit() {
   });
 }
 
+function bindStatementManagement() {
+  const form = document.getElementById("statementUploadForm");
+  const deleteButton = document.getElementById("deleteStatementButton");
+  if (form) {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fileInput = document.getElementById("statementFile");
+      const selectedFile = fileInput?.files?.[0];
+      if (!selectedFile) {
+        setPaymentStatus("statementStatus", "Choose a statement file first.", true);
+        return;
+      }
+      const submitButton = form.querySelector('button[type="submit"]');
+      setButtonBusy(submitButton, true, "Uploading...");
+      const loadingToast = window.showToast
+        ? window.showToast("Uploading statement...", { type: "loading", sticky: true })
+        : null;
+      try {
+        const formData = new FormData();
+        formData.append("statementFile", selectedFile);
+        const response = await fetch("/api/teacher/payment-statement", {
+          method: "POST",
+          credentials: "same-origin",
+          body: formData,
+        });
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (_err) {
+          payload = null;
+        }
+        if (!response.ok) {
+          throw new Error((payload && payload.error) || "Could not upload statement.");
+        }
+        if (window.showToast) {
+          window.showToast(`Statement uploaded (${payload.parsed_row_count} rows).`, { type: "success" });
+        }
+        form.reset();
+        await loadStatementInfo();
+      } catch (err) {
+        setPaymentStatus("statementStatus", err.message || "Could not upload statement.", true);
+        if (window.showToast) {
+          window.showToast(err.message || "Could not upload statement.", { type: "error" });
+        }
+      } finally {
+        setButtonBusy(submitButton, false, "");
+        if (loadingToast) {
+          loadingToast.close();
+        }
+      }
+    });
+  }
+
+  if (deleteButton) {
+    deleteButton.addEventListener("click", async () => {
+      if (!window.confirm("Delete the current statement of account?")) {
+        return;
+      }
+      setButtonBusy(deleteButton, true, "Deleting...");
+      const loadingToast = window.showToast
+        ? window.showToast("Deleting statement...", { type: "loading", sticky: true })
+        : null;
+      try {
+        await requestJson("/api/teacher/payment-statement", { method: "DELETE" });
+        if (window.showToast) {
+          window.showToast("Statement deleted.", { type: "success" });
+        }
+        await loadStatementInfo();
+      } catch (err) {
+        setPaymentStatus("statementStatus", err.message || "Could not delete statement.", true);
+        if (window.showToast) {
+          window.showToast(err.message || "Could not delete statement.", { type: "error" });
+        }
+      } finally {
+        setButtonBusy(deleteButton, false, "");
+        if (loadingToast) {
+          loadingToast.close();
+        }
+      }
+    });
+  }
+}
+
 function bindPaymentItemsManagement() {
   const form = document.getElementById("paymentItemForm");
   const rows = document.getElementById("paymentItemRows");
@@ -492,6 +619,7 @@ function bindPaymentItemsManagement() {
             expectedAmount: document.getElementById("paymentItemAmount").value,
             currency: document.getElementById("paymentItemCurrency").value.trim().toUpperCase(),
             dueDate: document.getElementById("paymentItemDueDate").value,
+            availabilityDays: document.getElementById("paymentItemAvailabilityDays").value,
           },
         });
         form.reset();
@@ -542,6 +670,11 @@ function bindPaymentItemsManagement() {
         if (currency === null) return;
         const dueDate = window.prompt("Due date (YYYY-MM-DD, optional)", item.due_date || "");
         if (dueDate === null) return;
+        const availabilityDays = window.prompt(
+          "Available for how many days? (optional)",
+          item.availability_days ? String(item.availability_days) : ""
+        );
+        if (availabilityDays === null) return;
         const loadingToast = window.showToast
           ? window.showToast("Updating payment item...", { type: "loading", sticky: true })
           : null;
@@ -554,6 +687,7 @@ function bindPaymentItemsManagement() {
               expectedAmount: expectedAmount.trim(),
               currency: currency.trim().toUpperCase(),
               dueDate: dueDate.trim(),
+              availabilityDays: availabilityDays.trim(),
             },
           });
           if (window.showToast) {
@@ -787,6 +921,31 @@ function bindQueueActions() {
         return;
       }
 
+      if (action === "verify") {
+        const loadingToast = window.showToast
+          ? window.showToast("Verifying receipt...", { type: "loading", sticky: true })
+          : null;
+        setButtonBusy(button, true, "Verifying...");
+        try {
+          await requestJson(`/api/payment-receipts/${id}/verify`, { method: "POST", payload: {} });
+          if (window.showToast) {
+            window.showToast("Verification complete.", { type: "success" });
+          }
+          await loadQueue();
+          await loadReviewerNotes(id);
+        } catch (err) {
+          if (window.showToast) {
+            window.showToast(err.message || "Could not verify receipt.", { type: "error" });
+          }
+        } finally {
+          setButtonBusy(button, false, "");
+          if (loadingToast) {
+            loadingToast.close();
+          }
+        }
+        return;
+      }
+
       const endpointByAction = {
         "under-review": `/api/payment-receipts/${id}/under-review`,
         approve: `/api/payment-receipts/${id}/approve`,
@@ -867,10 +1026,11 @@ async function initPaymentsPage() {
     if (studentSection) studentSection.remove();
     if (reviewSection) reviewSection.hidden = false;
     if (queueSection) queueSection.hidden = false;
+    bindStatementManagement();
     bindPaymentItemsManagement();
     bindQueueActions();
     bindBulkActions();
-    await loadQueue();
+    await Promise.all([loadQueue(), loadStatementInfo()]);
   } catch (err) {
     const errorNode = document.getElementById("paymentsError");
     if (errorNode) {
