@@ -1,6 +1,9 @@
 (() => {
   const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
   let csrfTokenPromise = null;
+  function clearCsrfTokenCache() {
+    csrfTokenPromise = null;
+  }
 
   async function loadCsrfToken() {
     if (!csrfTokenPromise) {
@@ -55,6 +58,22 @@
   }
 
   const originalFetch = window.fetch.bind(window);
+  function isInvalidCsrfResponse(response, payload) {
+    if (!response || response.status !== 403) {
+      return false;
+    }
+    const errorText = String(payload?.error || "").toLowerCase();
+    return errorText.includes("csrf");
+  }
+
+  async function parseJsonSafe(response) {
+    try {
+      return await response.clone().json();
+    } catch (_err) {
+      return null;
+    }
+  }
+
   window.fetch = async (input, init = {}) => {
     const method = getRequestMethod(input, init);
     const requestUrl = getRequestUrl(input);
@@ -62,15 +81,27 @@
       return originalFetch(input, init);
     }
 
-    const csrfToken = await loadCsrfToken();
-    const headers = new Headers(init.headers || {});
-    headers.set("X-CSRF-Token", csrfToken);
+    const sendWithToken = async (token) => {
+      const headers = new Headers(init.headers || {});
+      headers.set("X-CSRF-Token", token);
+      return originalFetch(input, {
+        ...init,
+        headers,
+        credentials: init.credentials || "same-origin",
+      });
+    };
 
-    return originalFetch(input, {
-      ...init,
-      headers,
-      credentials: init.credentials || "same-origin",
-    });
+    let csrfToken = await loadCsrfToken();
+    let response = await sendWithToken(csrfToken);
+    const payload = await parseJsonSafe(response);
+    if (!isInvalidCsrfResponse(response, payload)) {
+      return response;
+    }
+
+    clearCsrfTokenCache();
+    csrfToken = await loadCsrfToken();
+    response = await sendWithToken(csrfToken);
+    return response;
   };
 
   async function bindCsrfToForms() {
@@ -113,13 +144,14 @@
       return;
     }
     const tokenField = form.querySelector('input[name="_csrf"]');
-    if (!tokenField || tokenField.value || form.dataset.csrfSubmitting === "true") {
+    if (!tokenField || form.dataset.csrfSubmitting === "true") {
       return;
     }
 
     event.preventDefault();
     form.dataset.csrfSubmitting = "true";
     try {
+      clearCsrfTokenCache();
       tokenField.value = await loadCsrfToken();
       form.submit();
     } catch (_err) {
@@ -129,6 +161,10 @@
     }
   });
   window.addEventListener("DOMContentLoaded", () => {
+    bindCsrfToForms();
+  });
+  window.addEventListener("pageshow", () => {
+    clearCsrfTokenCache();
     bindCsrfToForms();
   });
 })();
