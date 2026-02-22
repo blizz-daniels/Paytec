@@ -2826,7 +2826,7 @@ async function verifyReceiptAgainstStatementById(req, id, options = {}) {
   }
   const statement = await getTeacherStatement(req.session.user.username);
   if (!statement || !Array.isArray(statement.parsed_rows) || !statement.parsed_rows.length) {
-    throw { status: 400, error: "Upload a statement of account (CSV/TXT) before verifying receipts." };
+    throw { status: 400, error: "Upload a statement of account (CSV/TXT/PDF/image) before verifying receipts." };
   }
   const statementResult = await evaluateReceiptAgainstStatement(row, statement.parsed_rows);
   const statementVerification = {
