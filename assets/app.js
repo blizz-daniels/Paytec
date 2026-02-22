@@ -69,6 +69,8 @@ toggleTeacherLinks();
     themeWrap.innerHTML = `
       <input id="themeToggleButton" type="checkbox" role="switch" />
       <span class="theme-switch__track" aria-hidden="true"></span>
+      <span class="theme-switch__icon theme-switch__sun" aria-hidden="true">☀</span>
+      <span class="theme-switch__icon theme-switch__moon" aria-hidden="true">☾</span>
       <span id="themeToggleLabel" class="theme-switch__label">Light</span>
     `;
     const profileButton = nav.querySelector("#profileToggleButton");
