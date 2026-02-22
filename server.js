@@ -1236,7 +1236,7 @@ async function extractTextWithOcrSpace(filePath) {
     return { text: "", confidence: 0, provider: "ocr-space" };
   }
   try {
-    const buffer = fs.readFileSync(filePath);
+    const buffer = await fs.promises.readFile(filePath);
     const mimeType = detectMimeTypeFromPath(filePath);
     const form = new FormData();
     form.append("language", "eng");
@@ -2265,7 +2265,7 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
       let parsedRows = [];
       let extractedText = "";
       if (statementExt === ".csv" || statementExt === ".txt") {
-        const raw = fs.readFileSync(statementPath, "utf8");
+        const raw = await fs.promises.readFile(statementPath, "utf8");
         extractedText = raw;
         parsedRows = normalizeStatementRowsText(raw);
         if (!parsedRows.length) {
@@ -2452,7 +2452,7 @@ app.post("/api/payment-receipts", requireStudent, (req, res) => {
     } catch (submitErr) {
       if (req.file && req.file.path) {
         try {
-          fs.unlinkSync(req.file.path);
+          await fs.promises.unlink(req.file.path);
         } catch (_cleanupErr) {
           // Ignore cleanup failure.
         }
