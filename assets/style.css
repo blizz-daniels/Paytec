@@ -21,6 +21,7 @@
   --text-lg: 1.18rem;
   --text-xl: clamp(1.65rem, 1.4vw + 1.1rem, 2.25rem);
   --sidebar-width: 280px;
+  --header-height: 76px;
 }
 
 [data-theme="dark"] {
@@ -195,10 +196,10 @@ body {
   gap: 0.8rem;
   position: fixed;
   left: 0;
-  top: 0;
+  top: var(--header-height);
   bottom: 0;
   width: var(--sidebar-width);
-  padding: 5.4rem 0.8rem 1rem;
+  padding: 1rem 0.8rem;
   flex-direction: column;
   align-items: stretch;
   background: color-mix(in srgb, var(--surface) 94%, transparent);
