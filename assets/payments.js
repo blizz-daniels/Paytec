@@ -24,6 +24,15 @@ function formatDate(value) {
   return date.toLocaleString();
 }
 
+function formatMoney(value, currency = "NGN") {
+  const amount = Number(value || 0);
+  const safeCurrency = String(currency || "NGN").toUpperCase();
+  if (!Number.isFinite(amount)) {
+    return `${safeCurrency} 0.00`;
+  }
+  return `${safeCurrency} ${amount.toFixed(2)}`;
+}
+
 function statusBadge(status) {
   const normalized = String(status || "").toLowerCase();
   if (normalized === "approved") {
@@ -36,6 +45,44 @@ function statusBadge(status) {
     return '<span class="status-badge status-badge--warning">under review</span>';
   }
   return '<span class="status-badge">submitted</span>';
+}
+
+function reminderBadge(level, text) {
+  const normalized = String(level || "").toLowerCase();
+  if (normalized === "overdue") {
+    return `<span class="status-badge status-badge--error">${escapeHtml(text)}</span>`;
+  }
+  if (normalized === "today" || normalized === "urgent") {
+    return `<span class="status-badge status-badge--warning">${escapeHtml(text)}</span>`;
+  }
+  if (normalized === "settled") {
+    return `<span class="status-badge status-badge--success">${escapeHtml(text)}</span>`;
+  }
+  return `<span class="status-badge">${escapeHtml(text || "No reminder")}</span>`;
+}
+
+function getSlaMeta(row) {
+  const status = String(row?.status || "").toLowerCase();
+  if (status !== "submitted" && status !== "under_review") {
+    return null;
+  }
+  const submittedAt = new Date(row?.submitted_at || "");
+  if (Number.isNaN(submittedAt.getTime())) {
+    return null;
+  }
+  const targetHours = status === "submitted" ? 24 : 8;
+  const elapsedHours = (Date.now() - submittedAt.getTime()) / (1000 * 60 * 60);
+  const remaining = targetHours - elapsedHours;
+  if (remaining >= 0) {
+    return {
+      className: "status-badge status-badge--success",
+      text: `${Math.ceil(remaining)}h left`,
+    };
+  }
+  return {
+    className: "status-badge status-badge--error",
+    text: `${Math.ceil(Math.abs(remaining))}h overdue`,
+  };
 }
 
 function setButtonBusy(button, isBusy, busyLabel) {
@@ -72,7 +119,9 @@ const paymentState = {
   me: null,
   paymentItems: [],
   myReceipts: [],
+  ledger: null,
   queueRows: [],
+  selectedQueueIds: new Set(),
 };
 
 function parseFlags(row) {
@@ -113,6 +162,59 @@ function renderPaymentItemSelects(items) {
   });
 }
 
+function renderLedger(ledger) {
+  const summary = ledger && ledger.summary ? ledger.summary : {};
+  const nextDueItem = ledger && ledger.nextDueItem ? ledger.nextDueItem : null;
+  const defaultCurrency = (nextDueItem && nextDueItem.currency) || "NGN";
+
+  const mapping = [
+    ["ledgerTotalDue", formatMoney(summary.totalDue, defaultCurrency)],
+    ["ledgerApprovedPaid", formatMoney(summary.totalApprovedPaid, defaultCurrency)],
+    ["ledgerPendingPaid", formatMoney(summary.totalPendingPaid, defaultCurrency)],
+    ["ledgerOutstanding", formatMoney(summary.totalOutstanding, defaultCurrency)],
+    ["ledgerOverdueCount", String(Number(summary.overdueCount || 0))],
+    ["ledgerDueSoonCount", String(Number(summary.dueSoonCount || 0))],
+  ];
+  mapping.forEach(([id, text]) => {
+    const node = document.getElementById(id);
+    if (node) {
+      node.textContent = text;
+    }
+  });
+
+  const nextDueNode = document.getElementById("ledgerNextDue");
+  if (nextDueNode) {
+    if (!nextDueItem) {
+      nextDueNode.textContent = "No upcoming due item.";
+    } else {
+      nextDueNode.textContent = `${nextDueItem.title} (${formatMoney(nextDueItem.outstanding, nextDueItem.currency)}) - ${nextDueItem.reminder_text}`;
+    }
+  }
+}
+
+function renderReminderCalendar(ledger) {
+  const tbody = document.getElementById("paymentReminderRows");
+  if (!tbody) {
+    return;
+  }
+  const items = ledger && Array.isArray(ledger.items) ? ledger.items : [];
+  tbody.innerHTML = "";
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:#636b8a;">No payment items available.</td></tr>';
+    return;
+  }
+
+  items.forEach((item) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(item.title || "-")}</td>
+      <td>${escapeHtml(item.due_date || "No due date")}</td>
+      <td>${reminderBadge(item.reminder_level, item.reminder_text)}</td>
+      <td>${escapeHtml(formatMoney(item.outstanding, item.currency))}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
 function renderMyReceipts(rows) {
   const tbody = document.getElementById("myReceiptRows");
   if (!tbody) {
@@ -129,7 +231,7 @@ function renderMyReceipts(rows) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(row.payment_item_title || "-")}</td>
-      <td>${escapeHtml(row.currency || "NGN")} ${escapeHtml(row.amount_paid)}</td>
+      <td>${escapeHtml(formatMoney(row.amount_paid, row.currency))}</td>
       <td>${escapeHtml(row.transaction_ref || "-")}</td>
       <td>${statusBadge(row.status)}</td>
       <td>${escapeHtml(formatDate(row.submitted_at))}</td>
@@ -141,7 +243,7 @@ function renderMyReceipts(rows) {
 
 function renderPaymentItemsTable(items) {
   const tbody = document.getElementById("paymentItemRows");
-  if (!tbody) {
+  if (!tbody || !paymentState.me) {
     return;
   }
   tbody.innerHTML = "";
@@ -154,7 +256,7 @@ function renderPaymentItemsTable(items) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(item.title)}</td>
-      <td>${escapeHtml(item.currency)} ${escapeHtml(item.expected_amount)}</td>
+      <td>${escapeHtml(formatMoney(item.expected_amount, item.currency))}</td>
       <td>${escapeHtml(item.due_date || "-")}</td>
       <td>${escapeHtml(item.created_by)}</td>
       <td>
@@ -168,16 +270,21 @@ function renderPaymentItemsTable(items) {
 
 function renderQueue(rows) {
   const tbody = document.getElementById("receiptQueueRows");
+  const selectAllNode = document.getElementById("queueSelectAll");
   if (!tbody) {
     return;
   }
   tbody.innerHTML = "";
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="color:#636b8a;">No receipts match the current filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="color:#636b8a;">No receipts match the current filters.</td></tr>';
+    if (selectAllNode) {
+      selectAllNode.checked = false;
+    }
     return;
   }
   rows.forEach((row) => {
     const flags = parseFlags(row);
+    const sla = getSlaMeta(row);
     const flagsHtml = [
       flags.amount_matches_expected === false
         ? '<span class="status-badge status-badge--error">Amount mismatch</span>'
@@ -194,6 +301,9 @@ function renderQueue(rows) {
 
     const actions = [];
     actions.push(`<a class="btn btn-secondary" href="/api/payment-receipts/${row.id}/file" target="_blank" rel="noopener noreferrer">Open File</a>`);
+    actions.push(`<button class="btn btn-secondary" type="button" data-action="history" data-id="${row.id}">Notes</button>`);
+    actions.push(`<button class="btn btn-secondary" type="button" data-action="assign-self" data-id="${row.id}">Assign Me</button>`);
+    actions.push(`<button class="btn btn-secondary" type="button" data-action="add-note" data-id="${row.id}">Add Note</button>`);
     if (row.status === "submitted") {
       actions.push(`<button class="btn" type="button" data-action="under-review" data-id="${row.id}">Move to Review</button>`);
     }
@@ -203,19 +313,33 @@ function renderQueue(rows) {
         `<button class="btn" type="button" data-action="reject" data-id="${row.id}" style="background:#b42318;">Reject</button>`
       );
     }
+
+    const assignedText = row.assigned_reviewer ? `Assigned: ${row.assigned_reviewer}` : "Unassigned";
+    const slaHtml = sla ? `<span class="${sla.className}">${escapeHtml(sla.text)}</span>` : '<span class="status-badge">N/A</span>';
+    const checkedAttr = paymentState.selectedQueueIds.has(row.id) ? "checked" : "";
+
     const tr = document.createElement("tr");
     tr.innerHTML = `
+      <td><input type="checkbox" class="queue-select-row" data-id="${row.id}" ${checkedAttr} /></td>
       <td>${escapeHtml(row.student_username || "-")}</td>
       <td>${escapeHtml(row.payment_item_title || "-")}</td>
-      <td>${escapeHtml(row.currency || "NGN")} ${escapeHtml(row.amount_paid)}</td>
+      <td>${escapeHtml(formatMoney(row.amount_paid, row.currency))}</td>
       <td>${escapeHtml(row.transaction_ref || "-")}</td>
       <td>${escapeHtml(formatDate(row.paid_at))}</td>
       <td>${statusBadge(row.status)}</td>
+      <td>${escapeHtml(assignedText)}</td>
+      <td>${slaHtml}</td>
       <td>${flagsHtml}</td>
       <td>${actions.join(" ")}</td>
     `;
     tbody.appendChild(tr);
   });
+
+  if (selectAllNode) {
+    const selectableRows = rows.length;
+    const selectedCount = rows.filter((row) => paymentState.selectedQueueIds.has(row.id)).length;
+    selectAllNode.checked = selectableRows > 0 && selectedCount === selectableRows;
+  }
 }
 
 async function loadPaymentItems() {
@@ -229,6 +353,12 @@ async function loadStudentReceipts() {
   renderMyReceipts(paymentState.myReceipts);
 }
 
+async function loadStudentLedger() {
+  paymentState.ledger = await requestJson("/api/my/payment-ledger");
+  renderLedger(paymentState.ledger);
+  renderReminderCalendar(paymentState.ledger);
+}
+
 async function loadQueue() {
   const endpoint = paymentState.me.role === "admin" ? "/api/admin/payment-receipts" : "/api/teacher/payment-receipts";
   const params = new URLSearchParams();
@@ -237,16 +367,50 @@ async function loadQueue() {
   const dateFrom = document.getElementById("queueDateFrom")?.value || "";
   const dateTo = document.getElementById("queueDateTo")?.value || "";
   const paymentItemId = document.getElementById("queuePaymentItem")?.value || "";
+  const assignment = document.getElementById("queueAssignment")?.value || "all";
   if (status) params.set("status", status);
   if (student) params.set("student", student);
   if (dateFrom) params.set("dateFrom", dateFrom);
   if (dateTo) params.set("dateTo", dateTo);
   if (paymentItemId) params.set("paymentItemId", paymentItemId);
+  if (assignment) params.set("assignment", assignment);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   paymentState.queueRows = await requestJson(`${endpoint}${suffix}`);
+  const validIds = new Set(paymentState.queueRows.map((row) => row.id));
+  paymentState.selectedQueueIds = new Set([...paymentState.selectedQueueIds].filter((id) => validIds.has(id)));
   renderQueue(paymentState.queueRows);
 }
 
+async function loadReviewerNotes(receiptId) {
+  const rowsNode = document.getElementById("reviewerHistoryRows");
+  const statusNode = document.getElementById("reviewerHistoryStatus");
+  if (!rowsNode || !statusNode) {
+    return;
+  }
+  try {
+    statusNode.textContent = `Loading notes for receipt #${receiptId}...`;
+    const rows = await requestJson(`/api/payment-receipts/${receiptId}/notes`);
+    if (!rows.length) {
+      rowsNode.innerHTML = '<tr><td colspan="3" style="color:#636b8a;">No reviewer notes yet for this receipt.</td></tr>';
+    } else {
+      rowsNode.innerHTML = rows
+        .map(
+          (row) => `
+            <tr>
+              <td>${escapeHtml(formatDate(row.created_at))}</td>
+              <td>${escapeHtml(row.reviewer_username || "-")}</td>
+              <td>${escapeHtml(row.note || "-")}</td>
+            </tr>
+          `
+        )
+        .join("");
+    }
+    statusNode.textContent = `Showing ${rows.length} note(s) for receipt #${receiptId}.`;
+  } catch (err) {
+    rowsNode.innerHTML = '<tr><td colspan="3" style="color:#a52828;">Could not load notes history.</td></tr>';
+    statusNode.textContent = err.message || "Could not load notes history.";
+  }
+}
 function bindStudentSubmit() {
   const form = document.getElementById("submitReceiptForm");
   if (!form) {
@@ -292,7 +456,7 @@ function bindStudentSubmit() {
       if (window.showToast) {
         window.showToast("Receipt submitted successfully.", { type: "success" });
       }
-      await loadStudentReceipts();
+      await Promise.all([loadStudentReceipts(), loadStudentLedger()]);
     } catch (err) {
       setPaymentStatus("submitReceiptStatus", err.message, true);
       if (window.showToast) {
@@ -433,9 +597,73 @@ function bindPaymentItemsManagement() {
   }
 }
 
+function getSelectedQueueIds() {
+  return paymentState.queueRows.filter((row) => paymentState.selectedQueueIds.has(row.id)).map((row) => row.id);
+}
+
+function bindBulkActions() {
+  const form = document.getElementById("bulkActionForm");
+  if (!form) {
+    return;
+  }
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const selectedIds = getSelectedQueueIds();
+    if (!selectedIds.length) {
+      setPaymentStatus("bulkActionStatus", "Select at least one receipt first.", true);
+      return;
+    }
+    const action = document.getElementById("bulkActionType")?.value || "";
+    if (!action) {
+      setPaymentStatus("bulkActionStatus", "Choose a bulk action.", true);
+      return;
+    }
+    const payload = {
+      action,
+      receiptIds: selectedIds,
+      assignee: document.getElementById("bulkAssignee")?.value.trim() || "",
+      rejectionReason: document.getElementById("bulkRejectionReason")?.value.trim() || "",
+      note: document.getElementById("bulkReviewerNote")?.value.trim() || "",
+    };
+    const submitButton = form.querySelector('button[type="submit"]');
+    setButtonBusy(submitButton, true, "Applying...");
+    setPaymentStatus("bulkActionStatus", `Applying ${action} to ${selectedIds.length} receipt(s)...`, false);
+    const loadingToast = window.showToast
+      ? window.showToast("Applying bulk action...", { type: "loading", sticky: true })
+      : null;
+    try {
+      const result = await requestJson("/api/payment-receipts/bulk", { method: "POST", payload });
+      setPaymentStatus(
+        "bulkActionStatus",
+        `Bulk action complete. Success: ${result.successCount}, Failed: ${result.failureCount}.`,
+        result.failureCount > 0
+      );
+      if (window.showToast) {
+        window.showToast(
+          `Bulk action complete. Success: ${result.successCount}, Failed: ${result.failureCount}.`,
+          { type: result.failureCount > 0 ? "warning" : "success" }
+        );
+      }
+      paymentState.selectedQueueIds.clear();
+      form.reset();
+      await loadQueue();
+    } catch (err) {
+      setPaymentStatus("bulkActionStatus", err.message || "Could not apply bulk action.", true);
+      if (window.showToast) {
+        window.showToast(err.message || "Could not apply bulk action.", { type: "error" });
+      }
+    } finally {
+      setButtonBusy(submitButton, false, "");
+      if (loadingToast) {
+        loadingToast.close();
+      }
+    }
+  });
+}
 function bindQueueActions() {
   const queueRows = document.getElementById("receiptQueueRows");
   const filterForm = document.getElementById("queueFilterForm");
+  const selectAllNode = document.getElementById("queueSelectAll");
 
   if (filterForm) {
     filterForm.addEventListener("submit", async (event) => {
@@ -455,7 +683,38 @@ function bindQueueActions() {
     });
   }
 
+  if (selectAllNode) {
+    selectAllNode.addEventListener("change", () => {
+      if (selectAllNode.checked) {
+        paymentState.queueRows.forEach((row) => paymentState.selectedQueueIds.add(row.id));
+      } else {
+        paymentState.selectedQueueIds.clear();
+      }
+      renderQueue(paymentState.queueRows);
+    });
+  }
+
   if (queueRows) {
+    queueRows.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+      if (!target.classList.contains("queue-select-row")) {
+        return;
+      }
+      const id = Number.parseInt(target.dataset.id || "", 10);
+      if (!Number.isFinite(id) || id <= 0) {
+        return;
+      }
+      if (target.checked) {
+        paymentState.selectedQueueIds.add(id);
+      } else {
+        paymentState.selectedQueueIds.delete(id);
+      }
+      renderQueue(paymentState.queueRows);
+    });
+
     queueRows.addEventListener("click", async (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) {
@@ -470,6 +729,64 @@ function bindQueueActions() {
       if (!Number.isFinite(id) || id <= 0) {
         return;
       }
+
+      if (action === "history") {
+        await loadReviewerNotes(id);
+        return;
+      }
+
+      if (action === "assign-self") {
+        const loadingToast = window.showToast
+          ? window.showToast("Assigning receipt...", { type: "loading", sticky: true })
+          : null;
+        setButtonBusy(button, true, "Assigning...");
+        try {
+          await requestJson(`/api/payment-receipts/${id}/assign`, { method: "POST", payload: {} });
+          if (window.showToast) {
+            window.showToast("Receipt assigned.", { type: "success" });
+          }
+          await loadQueue();
+        } catch (err) {
+          if (window.showToast) {
+            window.showToast(err.message || "Could not assign receipt.", { type: "error" });
+          }
+        } finally {
+          setButtonBusy(button, false, "");
+          if (loadingToast) {
+            loadingToast.close();
+          }
+        }
+        return;
+      }
+
+      if (action === "add-note") {
+        const note = window.prompt("Enter reviewer note:");
+        if (note === null) {
+          return;
+        }
+        const loadingToast = window.showToast
+          ? window.showToast("Saving reviewer note...", { type: "loading", sticky: true })
+          : null;
+        setButtonBusy(button, true, "Saving...");
+        try {
+          await requestJson(`/api/payment-receipts/${id}/notes`, { method: "POST", payload: { note: note.trim() } });
+          if (window.showToast) {
+            window.showToast("Reviewer note saved.", { type: "success" });
+          }
+          await loadReviewerNotes(id);
+        } catch (err) {
+          if (window.showToast) {
+            window.showToast(err.message || "Could not save reviewer note.", { type: "error" });
+          }
+        } finally {
+          setButtonBusy(button, false, "");
+          if (loadingToast) {
+            loadingToast.close();
+          }
+        }
+        return;
+      }
+
       const endpointByAction = {
         "under-review": `/api/payment-receipts/${id}/under-review`,
         approve: `/api/payment-receipts/${id}/approve`,
@@ -487,6 +804,10 @@ function bindQueueActions() {
         }
         payload.rejectionReason = reason.trim();
       }
+      const note = window.prompt("Optional reviewer note (leave blank to skip):", "");
+      if (note !== null && note.trim()) {
+        payload.note = note.trim();
+      }
       const loadingToast = window.showToast
         ? window.showToast("Updating receipt status...", { type: "loading", sticky: true })
         : null;
@@ -497,6 +818,7 @@ function bindQueueActions() {
           window.showToast("Receipt status updated.", { type: "success" });
         }
         await loadQueue();
+        await loadReviewerNotes(id);
       } catch (err) {
         if (window.showToast) {
           window.showToast(err.message || "Could not update receipt status.", { type: "error" });
@@ -529,7 +851,16 @@ async function initPaymentsPage() {
       if (reviewSection) reviewSection.remove();
       if (queueSection) queueSection.remove();
       bindStudentSubmit();
-      await loadStudentReceipts();
+      await Promise.all([loadStudentReceipts(), loadStudentLedger()]);
+      if (paymentState.ledger && paymentState.ledger.summary && window.showToast) {
+        const overdueCount = Number(paymentState.ledger.summary.overdueCount || 0);
+        const dueSoonCount = Number(paymentState.ledger.summary.dueSoonCount || 0);
+        if (overdueCount > 0) {
+          window.showToast(`You have ${overdueCount} overdue payment reminder(s).`, { type: "error" });
+        } else if (dueSoonCount > 0) {
+          window.showToast(`You have ${dueSoonCount} payment(s) due soon.`, { type: "warning" });
+        }
+      }
       return;
     }
 
@@ -538,6 +869,7 @@ async function initPaymentsPage() {
     if (queueSection) queueSection.hidden = false;
     bindPaymentItemsManagement();
     bindQueueActions();
+    bindBulkActions();
     await loadQueue();
   } catch (err) {
     const errorNode = document.getElementById("paymentsError");

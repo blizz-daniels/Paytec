@@ -34,6 +34,37 @@
 
       <section id="studentPaymentsSection" class="grid two-col" hidden>
         <article class="card">
+          <h2>My Payment Ledger</h2>
+          <div class="grid two-col">
+            <p><strong>Total Due:</strong> <span id="ledgerTotalDue">-</span></p>
+            <p><strong>Approved Paid:</strong> <span id="ledgerApprovedPaid">-</span></p>
+            <p><strong>Pending Review:</strong> <span id="ledgerPendingPaid">-</span></p>
+            <p><strong>Outstanding:</strong> <span id="ledgerOutstanding">-</span></p>
+            <p><strong>Overdue Items:</strong> <span id="ledgerOverdueCount">0</span></p>
+            <p><strong>Due Soon:</strong> <span id="ledgerDueSoonCount">0</span></p>
+          </div>
+          <p><strong>Next Due:</strong> <span id="ledgerNextDue">No upcoming due item.</span></p>
+        </article>
+
+        <article class="card">
+          <h2>Due-Date Reminder Calendar</h2>
+          <p class="auth-subtitle">Auto-generated reminders based on payment due dates.</p>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Payment Item</th>
+                  <th>Due Date</th>
+                  <th>Status</th>
+                  <th>Outstanding</th>
+                </tr>
+              </thead>
+              <tbody id="paymentReminderRows"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card">
           <h2>Submit Receipt</h2>
           <p id="submitReceiptStatus" class="auth-subtitle"></p>
           <form id="submitReceiptForm" class="auth-form">
@@ -149,6 +180,14 @@
               <input id="queueDateTo" type="date" />
             </label>
             <label>
+              Assignment
+              <select id="queueAssignment">
+                <option value="all">All</option>
+                <option value="mine">Assigned to me</option>
+                <option value="unassigned">Unassigned only</option>
+              </select>
+            </label>
+            <label>
               Payment Item
               <select id="queuePaymentItem">
                 <option value="">All</option>
@@ -164,12 +203,15 @@
           <table class="data-table">
             <thead>
               <tr>
+                <th><input id="queueSelectAll" type="checkbox" aria-label="Select all receipts" /></th>
                 <th>Student</th>
                 <th>Item</th>
                 <th>Amount</th>
                 <th>Reference</th>
                 <th>Paid Date</th>
                 <th>Status</th>
+                <th>Assignment</th>
+                <th>SLA</th>
                 <th>Flags</th>
                 <th>Actions</th>
               </tr>
@@ -177,6 +219,56 @@
             <tbody id="receiptQueueRows"></tbody>
           </table>
         </div>
+
+        <article class="card" style="margin-top:0.9rem;">
+          <h3>Bulk Reviewer Actions</h3>
+          <p id="bulkActionStatus" class="auth-subtitle"></p>
+          <form id="bulkActionForm" class="auth-form">
+            <label>
+              Action
+              <select id="bulkActionType" required>
+                <option value="">Choose action</option>
+                <option value="assign">Assign reviewer</option>
+                <option value="under_review">Move to under review</option>
+                <option value="approve">Approve</option>
+                <option value="reject">Reject</option>
+                <option value="note">Add reviewer note</option>
+              </select>
+            </label>
+            <label>
+              Assignee (optional; default is you)
+              <input id="bulkAssignee" type="text" placeholder="teacher_code or admin username" />
+            </label>
+            <label>
+              Rejection reason (required for reject)
+              <input id="bulkRejectionReason" type="text" maxlength="300" />
+            </label>
+            <label>
+              Reviewer note (optional)
+              <textarea id="bulkReviewerNote" rows="3" maxlength="500"></textarea>
+            </label>
+            <button type="submit" class="btn">Apply to Selected Receipts</button>
+          </form>
+        </article>
+
+        <article class="card" style="margin-top:0.9rem;">
+          <h3>Reviewer Notes History</h3>
+          <p id="reviewerHistoryStatus" class="auth-subtitle">Select a receipt to view notes history.</p>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Reviewer</th>
+                  <th>Note</th>
+                </tr>
+              </thead>
+              <tbody id="reviewerHistoryRows">
+                <tr><td colspan="3" style="color:#636b8a;">No receipt selected.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
       </section>
     </main>
 
