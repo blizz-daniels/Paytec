@@ -43,12 +43,15 @@ toggleTeacherLinks();
 
   function applyTheme(theme) {
     document.documentElement.setAttribute("data-theme", theme);
-    const toggleButton = document.getElementById("themeToggleButton");
-    if (toggleButton) {
+    const toggleInput = document.getElementById("themeToggleButton");
+    const toggleLabel = document.getElementById("themeToggleLabel");
+    if (toggleInput) {
       const isDark = theme === "dark";
-      toggleButton.textContent = isDark ? "Light Mode" : "Dark Mode";
-      toggleButton.setAttribute("aria-pressed", isDark ? "true" : "false");
-      toggleButton.setAttribute("aria-label", isDark ? "Switch to light mode" : "Switch to dark mode");
+      toggleInput.checked = isDark;
+      toggleInput.setAttribute("aria-label", isDark ? "Switch to light mode" : "Switch to dark mode");
+    }
+    if (toggleLabel) {
+      toggleLabel.textContent = theme === "dark" ? "Dark" : "Light";
     }
   }
 
@@ -58,23 +61,31 @@ toggleTeacherLinks();
     return;
   }
 
-  let themeButton = document.getElementById("themeToggleButton");
-  if (!themeButton) {
-    themeButton = document.createElement("button");
-    themeButton.type = "button";
-    themeButton.id = "themeToggleButton";
-    themeButton.className = "theme-toggle";
+  let themeWrap = document.getElementById("themeToggleWrap");
+  if (!themeWrap) {
+    themeWrap = document.createElement("label");
+    themeWrap.id = "themeToggleWrap";
+    themeWrap.className = "theme-switch";
+    themeWrap.innerHTML = `
+      <input id="themeToggleButton" type="checkbox" role="switch" />
+      <span class="theme-switch__track" aria-hidden="true"></span>
+      <span id="themeToggleLabel" class="theme-switch__label">Light</span>
+    `;
     const profileButton = nav.querySelector("#profileToggleButton");
     if (profileButton) {
-      nav.insertBefore(themeButton, profileButton);
+      nav.insertBefore(themeWrap, profileButton);
     } else {
-      nav.appendChild(themeButton);
+      nav.appendChild(themeWrap);
     }
   }
 
   applyTheme(document.documentElement.getAttribute("data-theme") || initialTheme);
 
-  themeButton.addEventListener("click", () => {
+  const themeInput = document.getElementById("themeToggleButton");
+  if (!themeInput) {
+    return;
+  }
+  themeInput.addEventListener("change", () => {
     const current = document.documentElement.getAttribute("data-theme") || "light";
     const next = current === "dark" ? "light" : "dark";
     localStorage.setItem(storageKey, next);
