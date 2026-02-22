@@ -1,6 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { execFile } = require("child_process");
+const { promisify } = require("util");
 const bcrypt = require("bcryptjs");
 const express = require("express");
 const multer = require("multer");
@@ -39,13 +41,26 @@ const allowedAvatarMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]
 const allowedAvatarExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 const allowedReceiptMimeTypes = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
 const allowedReceiptExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".pdf"]);
-const allowedStatementMimeTypes = new Set(["text/csv", "text/plain", "application/vnd.ms-excel", "application/csv"]);
-const allowedStatementExtensions = new Set([".csv", ".txt"]);
+const allowedStatementMimeTypes = new Set([
+  "text/csv",
+  "text/plain",
+  "application/vnd.ms-excel",
+  "application/csv",
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+const allowedStatementExtensions = new Set([".csv", ".txt", ".pdf", ".jpg", ".jpeg", ".png", ".webp"]);
 const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 8;
 const LOGIN_RATE_LIMIT_BLOCK_MS = 15 * 60 * 1000;
 const loginAttempts = new Map();
+const execFileAsync = promisify(execFile);
+const OCR_PROVIDER = String(process.env.OCR_PROVIDER || "none").trim().toLowerCase();
+const OCR_SPACE_API_KEY = String(process.env.OCR_SPACE_API_KEY || "").trim();
+const OCR_SPACE_ENDPOINT = String(process.env.OCR_SPACE_ENDPOINT || "https://api.ocr.space/parse/image").trim();
 
 const avatarUpload = multer({
   storage: multer.diskStorage({
@@ -109,7 +124,7 @@ const statementUpload = multer({
       cb(null, true);
       return;
     }
-    cb(new Error("Only CSV and TXT statement files are allowed."));
+    cb(new Error("Only CSV, TXT, PDF, JPG, PNG, and WEBP statement files are allowed."));
   },
   limits: {
     fileSize: 5 * 1024 * 1024,
@@ -1040,6 +1055,222 @@ function normalizeStatementRowsText(rawText) {
   return normalized;
 }
 
+function parseDateToken(value) {
+  const token = String(value || "").trim();
+  if (!token) {
+    return "";
+  }
+  const isoCandidate = token.replace(/\./g, "-").replace(/\//g, "-");
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(isoCandidate)) {
+    const [y, m, d] = isoCandidate.split("-").map((entry) => Number.parseInt(entry, 10));
+    if (y > 1900 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    }
+  }
+  if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(isoCandidate)) {
+    const [a, b, y] = isoCandidate.split("-").map((entry) => Number.parseInt(entry, 10));
+    if (y > 1900) {
+      const asDayFirst = `${String(y).padStart(4, "0")}-${String(b).padStart(2, "0")}-${String(a).padStart(2, "0")}`;
+      const parsed = new Date(asDayFirst);
+      if (!Number.isNaN(parsed.getTime())) {
+        return asDayFirst;
+      }
+    }
+  }
+  const parsed = new Date(token);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  return parsed.toISOString().slice(0, 10);
+}
+
+function parseAmountToken(value) {
+  const token = String(value || "");
+  if (!token) {
+    return null;
+  }
+  const normalized = token.replace(/[^\d.,-]/g, "").replace(/,/g, "");
+  const amount = Number.parseFloat(normalized);
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+  return amount;
+}
+
+function parseStatementRowsFromLooseText(rawText) {
+  const lines = String(rawText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 6);
+  const parsedRows = [];
+  const dateRegex = /\b(\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2}|\d{1,2}[\/.-]\d{1,2}[\/.-]\d{4})\b/;
+  const amountRegex = /\b(?:NGN|N|USD|EUR|GBP)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})|[0-9]+(?:\.[0-9]{2}))\b/i;
+  const refRegex = /\b(?:TX|REF|RRR)[-:\s]*([A-Z0-9-]{4,})\b/i;
+
+  lines.forEach((line, idx) => {
+    const dateMatch = line.match(dateRegex);
+    const amountMatch = line.match(amountRegex);
+    if (!dateMatch || !amountMatch) {
+      return;
+    }
+    const normalizedDate = parseDateToken(dateMatch[1]);
+    const normalizedAmount = parseAmountToken(amountMatch[1]);
+    if (!normalizedDate || !Number.isFinite(normalizedAmount)) {
+      return;
+    }
+    let nameToken = line;
+    nameToken = nameToken.replace(dateMatch[0], " ");
+    nameToken = nameToken.replace(amountMatch[0], " ");
+    const refMatch = line.match(refRegex);
+    if (refMatch) {
+      nameToken = nameToken.replace(refMatch[0], " ");
+    }
+    const cleanedName = normalizeWhitespace(nameToken.replace(/[_|,:;]+/g, " "));
+    if (!cleanedName) {
+      return;
+    }
+    parsedRows.push({
+      row_number: idx + 1,
+      raw_name: cleanedName,
+      raw_amount: amountMatch[1],
+      raw_date: dateMatch[1],
+      raw_reference: refMatch ? refMatch[1] : "",
+      normalized_name: normalizeStatementName(cleanedName),
+      normalized_amount: normalizedAmount,
+      normalized_date: normalizedDate,
+      normalized_reference: normalizeReference(refMatch ? refMatch[1] : ""),
+    });
+  });
+
+  return parsedRows;
+}
+
+function parseReceiptTextCandidates(rawText) {
+  const text = String(rawText || "");
+  const names = [];
+  const amounts = [];
+  const dates = [];
+  const references = [];
+
+  const amountRegex = /\b(?:NGN|N|USD|EUR|GBP)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})|[0-9]+(?:\.[0-9]{2}))\b/gi;
+  let amountMatch = amountRegex.exec(text);
+  while (amountMatch) {
+    const parsed = parseAmountToken(amountMatch[1]);
+    if (Number.isFinite(parsed)) {
+      amounts.push(parsed);
+    }
+    amountMatch = amountRegex.exec(text);
+  }
+
+  const dateRegex = /\b(\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2}|\d{1,2}[\/.-]\d{1,2}[\/.-]\d{4})\b/g;
+  let dateMatch = dateRegex.exec(text);
+  while (dateMatch) {
+    const parsed = parseDateToken(dateMatch[1]);
+    if (parsed) {
+      dates.push(parsed);
+    }
+    dateMatch = dateRegex.exec(text);
+  }
+
+  const refRegex = /\b(?:TX|REF|RRR)[-:\s]*([A-Z0-9-]{4,})\b/gi;
+  let refMatch = refRegex.exec(text);
+  while (refMatch) {
+    references.push(normalizeReference(refMatch[1]));
+    refMatch = refRegex.exec(text);
+  }
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => normalizeWhitespace(line))
+    .filter(Boolean);
+  lines.forEach((line) => {
+    if (/name|paid|amount|date|ref|receipt/i.test(line)) {
+      return;
+    }
+    if (line.length >= 4 && line.length <= 80 && /[a-z]/i.test(line)) {
+      names.push(normalizeStatementName(line));
+    }
+  });
+
+  return {
+    names: Array.from(new Set(names)),
+    amounts: Array.from(new Set(amounts)),
+    dates: Array.from(new Set(dates)),
+    references: Array.from(new Set(references)),
+  };
+}
+
+function detectMimeTypeFromPath(filePath) {
+  const ext = path.extname(String(filePath || "")).toLowerCase();
+  if (ext === ".pdf") return "application/pdf";
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".csv") return "text/csv";
+  if (ext === ".txt") return "text/plain";
+  return "application/octet-stream";
+}
+
+async function extractTextWithLocalTesseract(filePath) {
+  const outBase = `${filePath}-ocr-${Date.now()}`;
+  try {
+    await execFileAsync("tesseract", [filePath, outBase, "--dpi", "300"]);
+    const outPath = `${outBase}.txt`;
+    if (!fs.existsSync(outPath)) {
+      return { text: "", confidence: 0, provider: "tesseract-local" };
+    }
+    const text = fs.readFileSync(outPath, "utf8");
+    fs.unlink(outPath, () => {});
+    return {
+      text: String(text || ""),
+      confidence: text ? 0.6 : 0,
+      provider: "tesseract-local",
+    };
+  } catch (_err) {
+    return { text: "", confidence: 0, provider: "tesseract-local" };
+  }
+}
+
+async function extractTextWithOcrSpace(filePath) {
+  if (!OCR_SPACE_API_KEY) {
+    return { text: "", confidence: 0, provider: "ocr-space" };
+  }
+  try {
+    const buffer = fs.readFileSync(filePath);
+    const mimeType = detectMimeTypeFromPath(filePath);
+    const form = new FormData();
+    form.append("language", "eng");
+    form.append("isOverlayRequired", "false");
+    form.append("OCREngine", "2");
+    form.append("file", new Blob([buffer], { type: mimeType }), path.basename(filePath));
+
+    const response = await fetch(OCR_SPACE_ENDPOINT, {
+      method: "POST",
+      headers: {
+        apikey: OCR_SPACE_API_KEY,
+      },
+      body: form,
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      return { text: "", confidence: 0, provider: "ocr-space" };
+    }
+    const lines = Array.isArray(payload?.ParsedResults) ? payload.ParsedResults : [];
+    const text = lines.map((entry) => String(entry?.ParsedText || "")).join("\n").trim();
+    const hasError = Boolean(payload?.IsErroredOnProcessing);
+    if (hasError) {
+      return { text: "", confidence: 0, provider: "ocr-space" };
+    }
+    return {
+      text,
+      confidence: text ? 0.75 : 0,
+      provider: "ocr-space",
+    };
+  } catch (_err) {
+    return { text: "", confidence: 0, provider: "ocr-space" };
+  }
+}
+
 async function getStudentNameVariants(username) {
   const normalizedUsername = normalizeIdentifier(username);
   const variants = new Set();
@@ -1177,11 +1408,32 @@ async function buildVerificationFlags(receiptRow, paymentItemRow) {
   };
 }
 
-function extractReceiptText(_filePath) {
+async function extractReceiptText(filePath) {
+  const resolved = path.resolve(String(filePath || ""));
+  if (!resolved || !fs.existsSync(resolved)) {
+    return {
+      text: "",
+      confidence: 0,
+      provider: "none",
+    };
+  }
+
+  if (OCR_PROVIDER === "ocrspace") {
+    const remote = await extractTextWithOcrSpace(resolved);
+    if (remote.text) {
+      return remote;
+    }
+  }
+
+  const local = await extractTextWithLocalTesseract(resolved);
+  if (local.text) {
+    return local;
+  }
+
   return {
     text: "",
     confidence: 0,
-    provider: "none",
+    provider: OCR_PROVIDER === "ocrspace" ? "ocr-space" : "none",
   };
 }
 
@@ -1376,33 +1628,55 @@ async function getTeacherStatement(teacherUsername) {
     return null;
   }
   let parsedRows = [];
+  let extractedText = "";
   try {
-    parsedRows = JSON.parse(row.parsed_rows_json || "[]");
+    const payload = JSON.parse(row.parsed_rows_json || "[]");
+    if (Array.isArray(payload)) {
+      parsedRows = payload;
+    } else if (payload && Array.isArray(payload.parsed_rows)) {
+      parsedRows = payload.parsed_rows;
+      extractedText = String(payload.extracted_text || "");
+    }
   } catch (_err) {
     parsedRows = [];
   }
   return {
     ...row,
     parsed_rows: Array.isArray(parsedRows) ? parsedRows : [],
+    extracted_text: extractedText,
   };
 }
 
 async function evaluateReceiptAgainstStatement(receiptRow, statementRows) {
   const studentVariants = await getStudentNameVariants(receiptRow.student_username);
+  const parsedFromReceiptText = parseReceiptTextCandidates(receiptRow.extracted_text || "");
   const receiptDate = toDateOnly(receiptRow.paid_at);
   const normalizedRef = normalizeReference(receiptRow.transaction_ref || "");
   const paidAmount = Number(receiptRow.amount_paid || 0);
+  const candidateRefs = Array.from(
+    new Set([normalizedRef].concat(parsedFromReceiptText.references || []).filter(Boolean))
+  );
+  const candidateDates = Array.from(
+    new Set([receiptDate].concat(parsedFromReceiptText.dates || []).filter(Boolean))
+  );
+  const candidateAmounts = Array.from(
+    new Set([paidAmount].concat(parsedFromReceiptText.amounts || []).filter((value) => Number.isFinite(value)))
+  );
+  const candidateNames = new Set([...studentVariants, ...(parsedFromReceiptText.names || [])]);
   let matchedRow = null;
 
-  if (normalizedRef) {
-    matchedRow = statementRows.find((entry) => entry.normalized_reference === normalizedRef) || null;
+  for (const reference of candidateRefs) {
+    matchedRow = statementRows.find((entry) => entry.normalized_reference === reference) || null;
+    if (matchedRow) {
+      break;
+    }
   }
   if (!matchedRow) {
     matchedRow =
       statementRows.find((entry) => {
-        const nameMatch = studentVariants.has(entry.normalized_name);
-        const amountMatch = almostSameAmount(entry.normalized_amount, paidAmount);
-        const dateMatch = entry.normalized_date === receiptDate;
+        const nameMatch = candidateNames.has(entry.normalized_name);
+        const amountMatch = candidateAmounts.some((amount) => almostSameAmount(entry.normalized_amount, amount));
+        const dateMatch = candidateDates.includes(entry.normalized_date);
         return nameMatch && amountMatch && dateMatch;
       }) || null;
   }
@@ -1410,7 +1684,7 @@ async function evaluateReceiptAgainstStatement(receiptRow, statementRows) {
   if (!matchedRow) {
     return {
       matched: false,
-      compared_by_reference: !!normalizedRef,
+      compared_by_reference: candidateRefs.length > 0,
       name_match: false,
       amount_match: false,
       date_match: false,
@@ -1419,16 +1693,16 @@ async function evaluateReceiptAgainstStatement(receiptRow, statementRows) {
     };
   }
 
-  const nameMatch = studentVariants.has(matchedRow.normalized_name);
-  const amountMatch = almostSameAmount(matchedRow.normalized_amount, paidAmount);
-  const dateMatch = matchedRow.normalized_date === receiptDate;
-  const refMatch = normalizedRef && matchedRow.normalized_reference
-    ? matchedRow.normalized_reference === normalizedRef
+  const nameMatch = candidateNames.has(matchedRow.normalized_name);
+  const amountMatch = candidateAmounts.some((amount) => almostSameAmount(matchedRow.normalized_amount, amount));
+  const dateMatch = candidateDates.includes(matchedRow.normalized_date);
+  const refMatch = candidateRefs.length && matchedRow.normalized_reference
+    ? candidateRefs.includes(matchedRow.normalized_reference)
     : null;
 
   return {
     matched: !!(nameMatch && amountMatch && dateMatch),
-    compared_by_reference: !!normalizedRef,
+    compared_by_reference: candidateRefs.length > 0,
     name_match: nameMatch,
     amount_match: amountMatch,
     date_match: dateMatch,
@@ -1975,7 +2249,7 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
   statementUpload.single("statementFile")(req, res, async (err) => {
     if (err) {
       const message =
-        err && err.message === "Only CSV and TXT statement files are allowed."
+        err && err.message === "Only CSV, TXT, PDF, JPG, PNG, and WEBP statement files are allowed."
           ? err.message
           : err && err.code === "LIMIT_FILE_SIZE"
           ? "Statement file cannot be larger than 5 MB."
@@ -1986,13 +2260,30 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
       return res.status(400).json({ error: "Statement file is required." });
     }
     try {
-      const raw = fs.readFileSync(req.file.path, "utf8");
-      const parsedRows = normalizeStatementRowsText(raw);
+      const statementPath = path.resolve(req.file.path);
+      const statementExt = path.extname(String(req.file.originalname || req.file.path)).toLowerCase();
+      let parsedRows = [];
+      let extractedText = "";
+      if (statementExt === ".csv" || statementExt === ".txt") {
+        const raw = fs.readFileSync(statementPath, "utf8");
+        extractedText = raw;
+        parsedRows = normalizeStatementRowsText(raw);
+        if (!parsedRows.length) {
+          parsedRows = parseStatementRowsFromLooseText(raw);
+        }
+      } else {
+        const ocrResult = await extractReceiptText(statementPath);
+        extractedText = ocrResult.text || "";
+        parsedRows = normalizeStatementRowsText(extractedText);
+        if (!parsedRows.length) {
+          parsedRows = parseStatementRowsFromLooseText(extractedText);
+        }
+      }
       if (!parsedRows.length) {
         fs.unlink(req.file.path, () => {});
         return res.status(400).json({
           error:
-            "Could not parse statement rows. Include CSV/TXT headers with name, amount, and date columns.",
+            "Could not parse statement rows. Use a clear CSV/TXT/PDF/image with name, amount, and date values.",
         });
       }
       const teacherUsername = normalizeIdentifier(req.session.user.username);
@@ -2005,11 +2296,11 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
           INSERT INTO teacher_payment_statements (
             teacher_username,
             original_filename,
-            statement_file_path,
-            parsed_rows_json,
-            uploaded_at
-          )
-          VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+          statement_file_path,
+          parsed_rows_json,
+          uploaded_at
+        )
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
           ON CONFLICT(teacher_username) DO UPDATE SET
             original_filename = excluded.original_filename,
             statement_file_path = excluded.statement_file_path,
@@ -2019,8 +2310,11 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
         [
           teacherUsername,
           String(req.file.originalname || "").slice(0, 255) || path.basename(req.file.path),
-          req.file.path,
-          JSON.stringify(parsedRows),
+          statementPath,
+          JSON.stringify({
+            parsed_rows: parsedRows,
+            extracted_text: extractedText.slice(0, 300000),
+          }),
         ]
       );
       if (existing && existing.statement_file_path && existing.statement_file_path !== req.file.path) {
@@ -2105,7 +2399,7 @@ app.post("/api/payment-receipts", requireStudent, (req, res) => {
         return res.status(400).json({ error: "Selected payment item does not exist." });
       }
 
-      const ocrResult = extractReceiptText(req.file.path);
+      const ocrResult = await extractReceiptText(req.file.path);
       const result = await run(
         `
           INSERT INTO payment_receipts (
