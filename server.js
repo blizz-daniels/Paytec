@@ -739,6 +739,8 @@ async function getUserProfile(username) {
 }
 
 async function initDatabase() {
+  await run("PRAGMA foreign_keys = ON");
+
   await run(`
     CREATE TABLE IF NOT EXISTS users (
       username TEXT PRIMARY KEY,
@@ -920,7 +922,8 @@ async function initDatabase() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(payment_item_id, student_username),
-      UNIQUE(payment_reference)
+      UNIQUE(payment_reference),
+      FOREIGN KEY (payment_item_id) REFERENCES payment_items(id) ON UPDATE CASCADE ON DELETE CASCADE
     )
   `);
 
@@ -947,7 +950,9 @@ async function initDatabase() {
       reasons_json TEXT NOT NULL DEFAULT '[]',
       reviewed_by TEXT,
       reviewed_at TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (matched_obligation_id) REFERENCES payment_obligations(id) ON UPDATE CASCADE ON DELETE SET NULL,
+      FOREIGN KEY (payment_item_hint_id) REFERENCES payment_items(id) ON UPDATE CASCADE ON DELETE SET NULL
     )
   `);
 
@@ -961,7 +966,9 @@ async function initDatabase() {
       decision TEXT NOT NULL DEFAULT 'pending',
       decided_by TEXT,
       decided_at TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (obligation_id) REFERENCES payment_obligations(id) ON UPDATE CASCADE ON DELETE SET NULL,
+      FOREIGN KEY (transaction_id) REFERENCES payment_transactions(id) ON UPDATE CASCADE ON DELETE CASCADE
     )
   `);
 
@@ -973,7 +980,8 @@ async function initDatabase() {
       status TEXT NOT NULL DEFAULT 'open',
       assigned_to TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (match_id) REFERENCES payment_matches(id) ON UPDATE CASCADE ON DELETE CASCADE
     )
   `);
 
@@ -986,7 +994,9 @@ async function initDatabase() {
       actor_role TEXT NOT NULL,
       action TEXT NOT NULL,
       note TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (transaction_id) REFERENCES payment_transactions(id) ON UPDATE CASCADE ON DELETE SET NULL,
+      FOREIGN KEY (obligation_id) REFERENCES payment_obligations(id) ON UPDATE CASCADE ON DELETE SET NULL
     )
   `);
 
@@ -1015,6 +1025,7 @@ async function initDatabase() {
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_status ON payment_transactions(status)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_ref ON payment_transactions(normalized_txn_ref)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_date ON payment_transactions(normalized_paid_date)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_amount ON payment_transactions(amount)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_checksum ON payment_transactions(checksum)");
   await runMigrationSql("CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_transactions_source_checksum ON payment_transactions(source, checksum)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_student_hint ON payment_transactions(student_hint_username)");
@@ -3392,71 +3403,73 @@ async function ingestNormalizedTransaction(input, options = {}) {
     return { ok: false, error: "Invalid transaction payload." };
   }
   try {
-    if (normalized.sourceEventId) {
-      const byEvent = await get("SELECT * FROM payment_transactions WHERE source_event_id = ? LIMIT 1", [normalized.sourceEventId]);
-      if (byEvent) {
-        return { ok: true, inserted: false, idempotent: true, duplicateKey: "source_event_id", transaction: byEvent };
+    return await withSqlTransaction(async () => {
+      if (normalized.sourceEventId) {
+        const byEvent = await get("SELECT * FROM payment_transactions WHERE source_event_id = ? LIMIT 1", [normalized.sourceEventId]);
+        if (byEvent) {
+          return { ok: true, inserted: false, idempotent: true, duplicateKey: "source_event_id", transaction: byEvent };
+        }
       }
-    }
-    if (normalized.source === "statement_upload" && normalized.checksum) {
-      const byChecksum = await get(
-        "SELECT * FROM payment_transactions WHERE source = ? AND checksum = ? LIMIT 1",
-        [normalized.source, normalized.checksum]
+      if (normalized.source === "statement_upload" && normalized.checksum) {
+        const byChecksum = await get(
+          "SELECT * FROM payment_transactions WHERE source = ? AND checksum = ? LIMIT 1",
+          [normalized.source, normalized.checksum]
+        );
+        if (byChecksum) {
+          return { ok: true, inserted: false, idempotent: true, duplicateKey: "checksum", transaction: byChecksum };
+        }
+      }
+      const insert = await run(
+        `
+          INSERT INTO payment_transactions (
+            txn_ref,
+            amount,
+            paid_at,
+            payer_name,
+            source,
+            source_event_id,
+            source_file_name,
+            normalized_txn_ref,
+            normalized_paid_date,
+            normalized_payer_name,
+            student_hint_username,
+            payment_item_hint_id,
+            checksum,
+            raw_payload_json,
+            status,
+            reasons_json
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unmatched', '[]')
+        `,
+        [
+          normalized.txnRef || "",
+          normalized.amount,
+          normalized.paidAt,
+          normalized.payerName || "",
+          normalized.source,
+          normalized.sourceEventId || null,
+          normalized.sourceFileName || "",
+          normalized.normalizedTxnRef || "",
+          normalized.normalizedPaidDate || "",
+          normalized.normalizedPayerName || "",
+          normalized.studentHintUsername || null,
+          normalized.paymentItemHintId || null,
+          normalized.checksum || null,
+          JSON.stringify(normalized.rawPayload || {}),
+        ]
       );
-      if (byChecksum) {
-        return { ok: true, inserted: false, idempotent: true, duplicateKey: "checksum", transaction: byChecksum };
-      }
-    }
-    const insert = await run(
-      `
-        INSERT INTO payment_transactions (
-          txn_ref,
-          amount,
-          paid_at,
-          payer_name,
-          source,
-          source_event_id,
-          source_file_name,
-          normalized_txn_ref,
-          normalized_paid_date,
-          normalized_payer_name,
-          student_hint_username,
-          payment_item_hint_id,
-          checksum,
-          raw_payload_json,
-          status,
-          reasons_json
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unmatched', '[]')
-      `,
-      [
-        normalized.txnRef || "",
-        normalized.amount,
-        normalized.paidAt,
-        normalized.payerName || "",
-        normalized.source,
-        normalized.sourceEventId || null,
-        normalized.sourceFileName || "",
-        normalized.normalizedTxnRef || "",
-        normalized.normalizedPaidDate || "",
-        normalized.normalizedPayerName || "",
-        normalized.studentHintUsername || null,
-        normalized.paymentItemHintId || null,
-        normalized.checksum || null,
-        JSON.stringify(normalized.rawPayload || {}),
-      ]
-    );
-    const reconciled = await reconcileTransactionById(insert.lastID, {
-      actorReq: options.actorReq || null,
-      allowAutoApprove: options.allowAutoApprove !== false,
-      force: true,
+      const reconciled = await reconcileTransactionById(insert.lastID, {
+        actorReq: options.actorReq || null,
+        allowAutoApprove: options.allowAutoApprove !== false,
+        force: true,
+      });
+      return {
+        ok: true,
+        inserted: true,
+        idempotent: false,
+        transaction: reconciled || (await get("SELECT * FROM payment_transactions WHERE id = ? LIMIT 1", [insert.lastID])),
+      };
     });
-    return {
-      ok: true,
-      inserted: true,
-      idempotent: false,
-      transaction: reconciled || (await get("SELECT * FROM payment_transactions WHERE id = ? LIMIT 1", [insert.lastID])),
-    };
   } catch (err) {
     const message = String(err?.message || "");
     if (message.includes("source_event_id")) {

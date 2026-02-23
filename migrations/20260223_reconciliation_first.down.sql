@@ -8,6 +8,7 @@ DROP INDEX IF EXISTS idx_payment_matches_decision;
 DROP INDEX IF EXISTS idx_payment_matches_obligation;
 DROP INDEX IF EXISTS idx_payment_transactions_source_checksum;
 DROP INDEX IF EXISTS idx_payment_transactions_checksum;
+DROP INDEX IF EXISTS idx_payment_transactions_amount;
 DROP INDEX IF EXISTS idx_payment_transactions_date;
 DROP INDEX IF EXISTS idx_payment_transactions_ref;
 DROP INDEX IF EXISTS idx_payment_transactions_status;

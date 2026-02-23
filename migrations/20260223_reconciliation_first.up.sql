@@ -1,5 +1,6 @@
 -- Reconciliation-first migration (non-destructive)
 -- Preserves legacy payment_receipts and related tables.
+PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS payment_obligations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -13,7 +14,8 @@ CREATE TABLE IF NOT EXISTS payment_obligations (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(payment_item_id, student_username),
-  UNIQUE(payment_reference)
+  UNIQUE(payment_reference),
+  FOREIGN KEY (payment_item_id) REFERENCES payment_items(id) ON UPDATE CASCADE ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS payment_transactions (
@@ -38,7 +40,9 @@ CREATE TABLE IF NOT EXISTS payment_transactions (
   reasons_json TEXT NOT NULL DEFAULT '[]',
   reviewed_by TEXT,
   reviewed_at TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (matched_obligation_id) REFERENCES payment_obligations(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  FOREIGN KEY (payment_item_hint_id) REFERENCES payment_items(id) ON UPDATE CASCADE ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS payment_matches (
@@ -50,7 +54,9 @@ CREATE TABLE IF NOT EXISTS payment_matches (
   decision TEXT NOT NULL DEFAULT 'pending',
   decided_by TEXT,
   decided_at TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (obligation_id) REFERENCES payment_obligations(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  FOREIGN KEY (transaction_id) REFERENCES payment_transactions(id) ON UPDATE CASCADE ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS reconciliation_exceptions (
@@ -60,7 +66,8 @@ CREATE TABLE IF NOT EXISTS reconciliation_exceptions (
   status TEXT NOT NULL DEFAULT 'open',
   assigned_to TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (match_id) REFERENCES payment_matches(id) ON UPDATE CASCADE ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS reconciliation_events (
@@ -71,7 +78,9 @@ CREATE TABLE IF NOT EXISTS reconciliation_events (
   actor_role TEXT NOT NULL,
   action TEXT NOT NULL,
   note TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (transaction_id) REFERENCES payment_transactions(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  FOREIGN KEY (obligation_id) REFERENCES payment_obligations(id) ON UPDATE CASCADE ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -94,6 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_payment_obligations_reference ON payment_obligati
 CREATE INDEX IF NOT EXISTS idx_payment_transactions_status ON payment_transactions(status);
 CREATE INDEX IF NOT EXISTS idx_payment_transactions_ref ON payment_transactions(normalized_txn_ref);
 CREATE INDEX IF NOT EXISTS idx_payment_transactions_date ON payment_transactions(normalized_paid_date);
+CREATE INDEX IF NOT EXISTS idx_payment_transactions_amount ON payment_transactions(amount);
 CREATE INDEX IF NOT EXISTS idx_payment_transactions_checksum ON payment_transactions(checksum);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_transactions_source_checksum ON payment_transactions(source, checksum);
 
