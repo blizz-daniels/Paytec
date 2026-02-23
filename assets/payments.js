@@ -258,14 +258,14 @@ function renderLedger(ledger) {
 }
 
 function renderReminderCalendar(ledger) {
-  const tbody = document.getElementById("paymentReminderRows");
-  if (!tbody) {
+  const container = document.getElementById("paymentReminderRows");
+  if (!container) {
     return;
   }
   const items = ledger && Array.isArray(ledger.items) ? ledger.items : [];
-  tbody.innerHTML = "";
+  container.innerHTML = "";
   if (!items.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:#636b8a;">No payment items available.</td></tr>';
+    container.innerHTML = '<p class="details-tile-list__empty">No payment items available.</p>';
     return;
   }
 
@@ -277,16 +277,34 @@ function renderReminderCalendar(ledger) {
           2
         )}">Pay with Paystack</button>`
       : '<span class="status-badge status-badge--success">settled</span>';
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHtml(item.title || "-")}</td>
-      <td>${escapeHtml(item.due_date || "No due date")}</td>
-      <td>${reminderBadge(item.reminder_level, item.reminder_text)}</td>
-      <td>${escapeHtml(formatMoney(item.outstanding, item.currency))}</td>
-      <td>${paystackStateBadge(item)}</td>
-      <td>${actionHtml}</td>
+    const tile = document.createElement("article");
+    tile.className = "details-tile";
+    tile.innerHTML = `
+      <div class="details-tile__fields">
+        <div class="details-tile__field">
+          <p class="details-tile__label">Payment item</p>
+          <p class="details-tile__value">${escapeHtml(item.title || "-")}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Due date</p>
+          <p class="details-tile__value">${escapeHtml(item.due_date || "No due date")}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Status</p>
+          <p class="details-tile__value">${reminderBadge(item.reminder_level, item.reminder_text)}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Outstanding</p>
+          <p class="details-tile__value">${escapeHtml(formatMoney(item.outstanding, item.currency))}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Paystack state</p>
+          <p class="details-tile__value">${paystackStateBadge(item)}</p>
+        </div>
+      </div>
+      <div class="details-tile__actions">${actionHtml}</div>
     `;
-    tbody.appendChild(tr);
+    container.appendChild(tile);
   });
 }
 
@@ -313,55 +331,91 @@ function renderPaymentTimeline(ledger) {
   });
 }
 function renderMyReceipts(rows) {
-  const tbody = document.getElementById("myReceiptRows");
-  if (!tbody) {
+  const container = document.getElementById("myReceiptRows");
+  if (!container) {
     return;
   }
-  tbody.innerHTML = "";
+  container.innerHTML = "";
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:#636b8a;">No receipts submitted yet.</td></tr>';
+    container.innerHTML = '<p class="details-tile-list__empty">No receipts submitted yet.</p>';
     return;
   }
   rows.forEach((row) => {
     const flags = parseFlags(row);
     const reviewNotes = row.rejection_reason || flags.reviewer_note || "-";
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHtml(row.payment_item_title || "-")}</td>
-      <td>${escapeHtml(formatMoney(row.amount_paid, row.currency))}</td>
-      <td>${escapeHtml(row.transaction_ref || "-")}</td>
-      <td>${statusBadge(row.status)}</td>
-      <td>${escapeHtml(formatDate(row.submitted_at))}</td>
-      <td>${escapeHtml(reviewNotes)}</td>
+    const tile = document.createElement("article");
+    tile.className = "details-tile";
+    tile.innerHTML = `
+      <div class="details-tile__fields">
+        <div class="details-tile__field">
+          <p class="details-tile__label">Payment item</p>
+          <p class="details-tile__value">${escapeHtml(row.payment_item_title || "-")}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Amount</p>
+          <p class="details-tile__value">${escapeHtml(formatMoney(row.amount_paid, row.currency))}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Reference</p>
+          <p class="details-tile__value">${escapeHtml(row.transaction_ref || "-")}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Status</p>
+          <p class="details-tile__value">${statusBadge(row.status)}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Submitted</p>
+          <p class="details-tile__value">${escapeHtml(formatDate(row.submitted_at))}</p>
+        </div>
+        <div class="details-tile__field details-tile__field--full">
+          <p class="details-tile__label">Review notes</p>
+          <p class="details-tile__value details-tile__value--normal">${escapeHtml(reviewNotes)}</p>
+        </div>
+      </div>
     `;
-    tbody.appendChild(tr);
+    container.appendChild(tile);
   });
 }
 
 function renderPaymentItemsTable(items) {
-  const tbody = document.getElementById("paymentItemRows");
-  if (!tbody || !paymentState.me) {
+  const container = document.getElementById("paymentItemRows");
+  if (!container || !paymentState.me) {
     return;
   }
-  tbody.innerHTML = "";
+  container.innerHTML = "";
   const manageable = items.filter((item) => paymentState.me.role === "admin" || item.created_by === paymentState.me.username);
   if (!manageable.length) {
-    tbody.innerHTML = '<tr><td colspan="5" style="color:#636b8a;">No payment items yet.</td></tr>';
+    container.innerHTML = '<p class="details-tile-list__empty">No payment items yet.</p>';
     return;
   }
   manageable.forEach((item) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHtml(item.title)}</td>
-      <td>${escapeHtml(formatMoney(item.expected_amount, item.currency))}</td>
-      <td>${escapeHtml(item.due_date || "-")}</td>
-      <td>${escapeHtml(item.created_by)}</td>
-      <td>
+    const tile = document.createElement("article");
+    tile.className = "details-tile";
+    tile.innerHTML = `
+      <div class="details-tile__fields">
+        <div class="details-tile__field">
+          <p class="details-tile__label">Title</p>
+          <p class="details-tile__value">${escapeHtml(item.title || "-")}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Amount</p>
+          <p class="details-tile__value">${escapeHtml(formatMoney(item.expected_amount, item.currency))}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Due date</p>
+          <p class="details-tile__value">${escapeHtml(item.due_date || "-")}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Owner</p>
+          <p class="details-tile__value">${escapeHtml(item.created_by || "-")}</p>
+        </div>
+      </div>
+      <div class="details-tile__actions">
         <button class="btn btn-secondary" type="button" data-action="edit-item" data-id="${item.id}">Edit</button>
         <button class="btn" type="button" data-action="delete-item" data-id="${item.id}" style="background:#b42318;">Delete</button>
-      </td>
+      </div>
     `;
-    tbody.appendChild(tr);
+    container.appendChild(tile);
   });
 }
 

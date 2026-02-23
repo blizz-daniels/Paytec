@@ -50,21 +50,7 @@
           <h2>Due-Date Reminder Calendar</h2>
           <p class="auth-subtitle">Auto-generated reminders based on payment due dates.</p>
           <p id="paystackCheckoutStatus" class="auth-subtitle"></p>
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Payment Item</th>
-                  <th>Due Date</th>
-                  <th>Status</th>
-                  <th>Outstanding</th>
-                  <th>Paystack State</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody id="paymentReminderRows"></tbody>
-            </table>
-          </div>
+          <div id="paymentReminderRows" class="details-tile-list" aria-live="polite"></div>
         </article>
 
         <article class="card">
@@ -113,21 +99,7 @@
 
         <article class="card">
           <h2>My Receipt Submissions</h2>
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th>Amount</th>
-                  <th>Reference</th>
-                  <th>Status</th>
-                  <th>Submitted</th>
-                  <th>Review Notes</th>
-                </tr>
-              </thead>
-              <tbody id="myReceiptRows"></tbody>
-            </table>
-          </div>
+          <div id="myReceiptRows" class="details-tile-list" aria-live="polite"></div>
         </article>
       </section>
 
@@ -160,20 +132,7 @@
 
         <article class="card">
           <h2>Manage Payment Items</h2>
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Title</th>
-                  <th>Amount</th>
-                  <th>Due Date</th>
-                  <th>Owner</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="paymentItemRows"></tbody>
-            </table>
-          </div>
+          <div id="paymentItemRows" class="details-tile-list" aria-live="polite"></div>
         </article>
 
         <article class="card">
