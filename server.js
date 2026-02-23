@@ -52,12 +52,37 @@ const allowedStatementMimeTypes = new Set([
   "text/plain",
   "application/vnd.ms-excel",
   "application/csv",
+  "application/json",
+  "application/xml",
+  "text/xml",
+  "text/tab-separated-values",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
+  "application/rtf",
+  "application/octet-stream",
   "application/pdf",
   "image/jpeg",
   "image/png",
   "image/webp",
 ]);
-const allowedStatementExtensions = new Set([".csv", ".txt", ".pdf", ".jpg", ".jpeg", ".png", ".webp"]);
+const allowedStatementExtensions = new Set([
+  ".csv",
+  ".txt",
+  ".tsv",
+  ".json",
+  ".xml",
+  ".pdf",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".xls",
+  ".xlsx",
+  ".doc",
+  ".docx",
+  ".rtf",
+]);
 const allowedHandoutMimeTypes = new Set([
   "application/pdf",
   "application/msword",
@@ -83,6 +108,10 @@ const execFileAsync = promisify(execFile);
 const OCR_PROVIDER = String(process.env.OCR_PROVIDER || "none").trim().toLowerCase();
 const OCR_SPACE_API_KEY = String(process.env.OCR_SPACE_API_KEY || "").trim();
 const OCR_SPACE_ENDPOINT = String(process.env.OCR_SPACE_ENDPOINT || "https://api.ocr.space/parse/image").trim();
+const STATEMENT_PARSER_PROVIDER = String(process.env.STATEMENT_PARSER_PROVIDER || "none").trim().toLowerCase();
+const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || "").trim();
+const OPENAI_API_BASE_URL = String(process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1").trim().replace(/\/$/, "");
+const OPENAI_STATEMENT_MODEL = String(process.env.OPENAI_STATEMENT_MODEL || "gpt-4o-mini").trim();
 
 const avatarUpload = multer({
   storage: multer.diskStorage({
@@ -146,7 +175,11 @@ const statementUpload = multer({
       cb(null, true);
       return;
     }
-    cb(new Error("Only CSV, TXT, PDF, JPG, PNG, and WEBP statement files are allowed."));
+    cb(
+      new Error(
+        "Only CSV, TXT, TSV, JSON, XML, PDF, JPG, PNG, WEBP, XLS/XLSX, DOC/DOCX, and RTF statement files are allowed."
+      )
+    );
   },
   limits: {
     fileSize: 5 * 1024 * 1024,
@@ -1364,6 +1397,178 @@ function parseStatementRowsFromLooseText(rawText) {
   return parsedRows;
 }
 
+function isLikelyOcrFileExtension(ext) {
+  return [".pdf", ".png", ".jpg", ".jpeg", ".webp"].includes(String(ext || "").toLowerCase());
+}
+
+function isLikelyTextStatementExtension(ext) {
+  return [
+    ".csv",
+    ".txt",
+    ".tsv",
+    ".json",
+    ".xml",
+    ".rtf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+  ].includes(String(ext || "").toLowerCase());
+}
+
+function parseAiStatementPayload(content) {
+  if (typeof content !== "string" || !content.trim()) {
+    return null;
+  }
+  try {
+    return JSON.parse(content);
+  } catch (_err) {
+    const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (!fenced || !fenced[1]) {
+      return null;
+    }
+    try {
+      return JSON.parse(fenced[1]);
+    } catch (__err) {
+      return null;
+    }
+  }
+}
+
+function normalizeStatementRowsFromAi(rows) {
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  const normalized = [];
+  rows.forEach((entry, idx) => {
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+    const rawName = String(entry.name || entry.student || "").trim();
+    const rawDescription = String(entry.description || entry.narration || "").trim();
+    const rawAmount = String(entry.amount || entry.credit || "").trim();
+    const rawDate = String(entry.date || "").trim();
+    const rawReference = String(entry.reference || entry.transaction_ref || entry.ref || "").trim();
+    const name = normalizeStatementName(rawName || rawDescription);
+    const amount = parseAmountToken(rawAmount);
+    const date = parseDateToken(rawDate);
+    if (!name || !Number.isFinite(amount) || !date) {
+      return;
+    }
+    normalized.push({
+      row_number: Number.parseInt(entry.line_number, 10) || idx + 1,
+      raw_name: normalizeWhitespace(rawName),
+      raw_description: normalizeWhitespace(rawDescription),
+      raw_credit: rawAmount,
+      raw_debit: "",
+      raw_amount: rawAmount,
+      raw_date: rawDate,
+      raw_reference: rawReference,
+      normalized_name: name,
+      normalized_description: normalizeStatementName(rawDescription),
+      normalized_amount: Math.abs(amount),
+      normalized_date: date,
+      normalized_reference: normalizeReference(rawReference),
+    });
+  });
+  return normalized;
+}
+
+async function parseStatementRowsWithAi(rawText, context = {}) {
+  if (STATEMENT_PARSER_PROVIDER !== "openai" || !OPENAI_API_KEY) {
+    return [];
+  }
+  const text = String(rawText || "").trim();
+  if (!text) {
+    return [];
+  }
+  const promptText = text.slice(0, 50000);
+  const instructions = [
+    "Extract payment statement rows from the text.",
+    "Return strict JSON with shape: {\"rows\":[{\"line_number\":number,\"name\":string,\"description\":string,\"amount\":string,\"date\":string,\"reference\":string}]}",
+    "Keep only rows that look like actual payment credits relevant to students.",
+    "date must be original token from input; amount should be a number-like string.",
+    "Do not include explanations or markdown.",
+  ].join(" ");
+  const filename = String(context.filename || "").trim();
+
+  try {
+    const response = await fetch(`${OPENAI_API_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: OPENAI_STATEMENT_MODEL,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: instructions },
+          {
+            role: "user",
+            content: `filename=${filename || "unknown"}\n\nstatement_text:\n${promptText}`,
+          },
+        ],
+      }),
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const payload = await response.json();
+    const content = String(payload?.choices?.[0]?.message?.content || "");
+    const parsed = parseAiStatementPayload(content);
+    const candidateRows = parsed?.rows;
+    return normalizeStatementRowsFromAi(candidateRows);
+  } catch (_err) {
+    return [];
+  }
+}
+
+async function parseStatementRowsFromUpload(statementPath, originalFilename) {
+  const ext = path.extname(String(originalFilename || statementPath || "")).toLowerCase();
+  let extractedText = "";
+  if (isLikelyOcrFileExtension(ext)) {
+    const ocrResult = await extractReceiptText(statementPath);
+    extractedText = String(ocrResult?.text || "");
+  } else {
+    try {
+      extractedText = await fs.promises.readFile(statementPath, "utf8");
+    } catch (_err) {
+      extractedText = "";
+    }
+  }
+  let parsedRows = normalizeStatementRowsText(extractedText);
+  if (!parsedRows.length) {
+    parsedRows = parseStatementRowsFromLooseText(extractedText);
+  }
+  if (!parsedRows.length) {
+    const aiRows = await parseStatementRowsWithAi(extractedText, { filename: originalFilename, extension: ext });
+    if (aiRows.length) {
+      parsedRows = aiRows;
+    }
+  }
+  if (!parsedRows.length && isLikelyTextStatementExtension(ext)) {
+    try {
+      const fallbackText = await fs.promises.readFile(statementPath, { encoding: "latin1" });
+      const bestEffortText = String(fallbackText || "");
+      if (bestEffortText && bestEffortText !== extractedText) {
+        extractedText = extractedText || bestEffortText;
+        const aiRows = await parseStatementRowsWithAi(bestEffortText, { filename: originalFilename, extension: ext });
+        if (aiRows.length) {
+          parsedRows = aiRows;
+        }
+      }
+    } catch (_err) {
+      // Ignore fallback read errors.
+    }
+  }
+  return {
+    extractedText,
+    parsedRows,
+  };
+}
+
 function parseReceiptTextCandidates(rawText) {
   const text = String(rawText || "");
   const names = [];
@@ -2472,7 +2677,9 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
   statementUpload.single("statementFile")(req, res, async (err) => {
     if (err) {
       const message =
-        err && err.message === "Only CSV, TXT, PDF, JPG, PNG, and WEBP statement files are allowed."
+        err &&
+        err.message ===
+          "Only CSV, TXT, TSV, JSON, XML, PDF, JPG, PNG, WEBP, XLS/XLSX, DOC/DOCX, and RTF statement files are allowed."
           ? err.message
           : err && err.code === "LIMIT_FILE_SIZE"
           ? "Statement file cannot be larger than 5 MB."
@@ -2484,29 +2691,14 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
     }
     try {
       const statementPath = path.resolve(req.file.path);
-      const statementExt = path.extname(String(req.file.originalname || req.file.path)).toLowerCase();
-      let parsedRows = [];
-      let extractedText = "";
-      if (statementExt === ".csv" || statementExt === ".txt") {
-        const raw = await fs.promises.readFile(statementPath, "utf8");
-        extractedText = raw;
-        parsedRows = normalizeStatementRowsText(raw);
-        if (!parsedRows.length) {
-          parsedRows = parseStatementRowsFromLooseText(raw);
-        }
-      } else {
-        const ocrResult = await extractReceiptText(statementPath);
-        extractedText = ocrResult.text || "";
-        parsedRows = normalizeStatementRowsText(extractedText);
-        if (!parsedRows.length) {
-          parsedRows = parseStatementRowsFromLooseText(extractedText);
-        }
-      }
+      const parsedResult = await parseStatementRowsFromUpload(statementPath, req.file.originalname || req.file.path);
+      const parsedRows = parsedResult.parsedRows;
+      const extractedText = parsedResult.extractedText;
       if (!parsedRows.length) {
         fs.unlink(req.file.path, () => {});
         return res.status(400).json({
           error:
-            "Could not parse statement rows. Use a clear CSV/TXT/PDF/image containing description or name, credit/amount, date, and transaction reference.",
+            "Could not parse statement rows. Use a clear statement file with name/description, amount, date, and transaction reference.",
         });
       }
       const teacherUsername = normalizeIdentifier(req.session.user.username);

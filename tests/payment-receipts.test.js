@@ -366,6 +366,50 @@ test("teacher statement upload + verify can auto-approve matching receipt", asyn
   expect(verify.body.receipt.status).toBe("approved");
 });
 
+test("teacher statement upload accepts extended formats for verification parsing", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "XML Verify Fee",
+    description: "Extended format test",
+    expectedAmount: 18000,
+    currency: "NGN",
+    dueDate: "2026-05-01",
+    availabilityDays: 30,
+  });
+  expect(createItem.status).toBe(201);
+
+  const student = request.agent(app);
+  await login(student, "std_001", "doe");
+  const studentCsrf = await getCsrfToken(student);
+  const submit = await student
+    .post("/api/payment-receipts")
+    .set("X-CSRF-Token", studentCsrf)
+    .field("paymentItemId", String(createItem.body.id))
+    .field("amountPaid", "18000")
+    .field("paidAt", "2026-02-21T10:00:00")
+    .field("transactionRef", "TX-XML-VERIFY-001")
+    .attach("receiptFile", Buffer.from("img"), { filename: "auto-xml.png", contentType: "image/png" });
+  expect(submit.status).toBe(201);
+
+  const teacherCsrf = await getCsrfToken(teacher);
+  const statementXmlLikeLine = "std_001 amount 18000 date 2026-02-21 ref TX-XML-VERIFY-001";
+  const upload = await teacher
+    .post("/api/teacher/payment-statement")
+    .set("X-CSRF-Token", teacherCsrf)
+    .attach("statementFile", Buffer.from(statementXmlLikeLine), {
+      filename: "statement.xml",
+      contentType: "application/xml",
+    });
+  expect(upload.status).toBe(201);
+  expect(Number(upload.body.parsed_row_count || 0)).toBeGreaterThan(0);
+
+  const verify = await postJson(teacher, `/api/payment-receipts/${submit.body.id}/verify`, {});
+  expect(verify.status).toBe(200);
+  expect(verify.body.matched).toBe(true);
+  expect(verify.body.receipt.status).toBe("approved");
+});
+
 test("payment item availability controls student visibility in payments and notifications", async () => {
   const teacher = request.agent(app);
   await login(teacher, "teach_001", "teach");

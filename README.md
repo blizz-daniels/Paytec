@@ -77,13 +77,21 @@ For each receipt, the system computes and stores verification flags in `verifica
 
 These flags are shown in teacher/admin queue UI and support manual decision making.
 
-## OCR Integration Placeholder
+## OCR + AI Statement Parsing
 
-Current implementation includes a placeholder hook:
+Receipt and statement extraction supports:
 
-- `extractReceiptText(filePath) -> { text: "", confidence: 0, provider: "none" }`
+- OCR providers via `OCR_PROVIDER`:
+  - `none` (default)
+  - `ocrspace` (requires `OCR_SPACE_API_KEY`)
+- AI-assisted statement row extraction via `STATEMENT_PARSER_PROVIDER=openai` (requires `OPENAI_API_KEY`)
 
-No external OCR provider is integrated yet. This is intentionally structured for future extension.
+Statement upload accepts CSV, TXT, TSV, JSON, XML, PDF, JPG, PNG, WEBP, XLS/XLSX, DOC/DOCX, and RTF.
+
+Parsing order for statement uploads:
+- Structured table parse (`normalizeStatementRowsText`)
+- Loose-line parse (`parseStatementRowsFromLooseText`)
+- AI fallback parse (`parseStatementRowsWithAi`)
 
 ## Audit + Event Logging
 
