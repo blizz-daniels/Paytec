@@ -135,19 +135,27 @@
           <div id="paymentItemRows" class="details-tile-list" aria-live="polite"></div>
         </article>
 
-        <article class="card">
+        <article class="card statement-card">
           <h2>Statement of Account</h2>
-          <p id="statementStatus" class="auth-subtitle">No statement uploaded yet.</p>
-          <form id="statementUploadForm" class="auth-form">
-            <label for="statementFile">Upload Statement (CSV/TXT/TSV/JSON/XML/PDF/Image/Excel/Word/RTF)</label>
-            <input id="statementFile" type="file" accept=".csv,.txt,.tsv,.json,.xml,.pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx,.rtf,text/csv,text/plain,text/tab-separated-values,application/json,application/xml,text/xml,application/pdf,image/jpeg,image/png,image/webp,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf" required />
-            <label style="display:flex;gap:0.4rem;align-items:center;">
+          <p id="statementStatus" class="auth-subtitle statement-card__status">No statement uploaded yet.</p>
+          <form id="statementUploadForm" class="auth-form statement-card__form">
+            <div class="statement-card__field">
+              <label for="statementFile">Statement file</label>
+              <p class="statement-card__hint">Accepted: CSV, TXT, TSV, JSON, XML, PDF, image, Excel, Word, and RTF.</p>
+              <input id="statementFile" type="file" accept=".csv,.txt,.tsv,.json,.xml,.pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx,.rtf,text/csv,text/plain,text/tab-separated-values,application/json,application/xml,text/xml,application/pdf,image/jpeg,image/png,image/webp,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf" required />
+            </div>
+            <div class="statement-card__toggle">
               <input id="statementDryRun" type="checkbox" />
-              Dry run (preview parse + reconcile only, no DB writes)
-            </label>
-            <button type="submit" class="btn">Upload Statement</button>
+              <label for="statementDryRun">
+                <span class="statement-card__toggle-title">Dry run mode</span>
+                <span class="statement-card__toggle-copy">Preview parse and reconcile only. No database writes.</span>
+              </label>
+            </div>
+            <div class="statement-card__actions">
+              <button type="submit" class="btn">Upload Statement</button>
+              <button id="deleteStatementButton" type="button" class="btn btn-secondary">Delete Statement</button>
+            </div>
           </form>
-          <button id="deleteStatementButton" type="button" class="btn btn-secondary" style="margin-top:0.6rem;">Delete Statement</button>
         </article>
       </section>
 

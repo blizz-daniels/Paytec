@@ -4,7 +4,7 @@ function setPaymentStatus(id, message, isError) {
     return;
   }
   node.textContent = message;
-  node.style.color = isError ? "#a52828" : "#1f2333";
+  node.style.color = isError ? "var(--danger)" : "var(--text)";
 }
 
 function escapeHtml(value) {
@@ -662,7 +662,7 @@ function renderStatementStatus() {
   }
   if (!paymentState.statementInfo || !paymentState.statementInfo.hasStatement) {
     statusNode.textContent = "No statement uploaded yet.";
-    statusNode.style.color = "#1f2333";
+    statusNode.style.color = "var(--muted)";
     if (deleteButton) {
       deleteButton.disabled = true;
     }
@@ -672,7 +672,7 @@ function renderStatementStatus() {
   statusNode.textContent = `Current statement: ${paymentState.statementInfo.original_filename} (${paymentState.statementInfo.parsed_row_count} parsed row(s)${
     unparsedCount > 0 ? `, ${unparsedCount} unparsed` : ""
   }) uploaded ${formatDate(paymentState.statementInfo.uploaded_at)}.`;
-  statusNode.style.color = "#1f2333";
+  statusNode.style.color = "var(--text)";
   if (deleteButton) {
     deleteButton.disabled = false;
   }

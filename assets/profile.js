@@ -32,7 +32,7 @@ window.addEventListener("DOMContentLoaded", () => {
           <img data-profile-image alt="Profile picture" hidden />
           <span data-profile-initial></span>
         </div>
-        <div>
+        <div class="profile-panel__identity">
           <p class="profile-panel__name" data-profile-name>Loading...</p>
           <p class="profile-panel__role" data-profile-role></p>
         </div>

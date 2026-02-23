@@ -563,6 +563,7 @@ body {
 .profile-panel__avatar {
   width: 56px;
   height: 56px;
+  flex: 0 0 56px;
   border-radius: 50%;
   background: linear-gradient(135deg, #4f46e5 0%, #14b8a6 100%);
   color: #ffffff;
@@ -572,6 +573,11 @@ body {
   justify-content: center;
   overflow: hidden;
   box-shadow: 0 8px 16px rgba(79, 70, 229, 0.3);
+}
+
+.profile-panel__identity {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .profile-panel__avatar img {
@@ -590,6 +596,8 @@ body {
   margin: 0;
   font-size: 1.2rem;
   font-weight: 700;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 
 .profile-panel__role {
@@ -600,6 +608,7 @@ body {
 
 .profile-panel__close {
   margin-left: auto;
+  flex-shrink: 0;
   border: none;
   background: none;
   cursor: pointer;
@@ -1039,6 +1048,93 @@ body.has-profile-panel {
   }
 
   .details-tile__fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.statement-card {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.statement-card__status {
+  margin: 0;
+  padding: 0.62rem 0.72rem;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--surface-soft) 70%, #fff);
+}
+
+.statement-card__form {
+  gap: 0.72rem;
+}
+
+.statement-card__field {
+  display: grid;
+  gap: 0.38rem;
+}
+
+.statement-card__field label {
+  margin: 0;
+}
+
+.statement-card__hint {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.statement-card__toggle {
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--surface-soft) 60%, #fff);
+  padding: 0.62rem 0.72rem;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.62rem;
+  align-items: start;
+}
+
+.statement-card__toggle input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.12rem;
+  accent-color: var(--primary);
+}
+
+.statement-card__toggle label {
+  margin: 0;
+  display: grid;
+  gap: 0.16rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.statement-card__toggle-title {
+  font-size: 0.93rem;
+}
+
+.statement-card__toggle-copy {
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.statement-card__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.statement-card__actions .btn {
+  width: 100%;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .statement-card__actions {
     grid-template-columns: 1fr;
   }
 }
