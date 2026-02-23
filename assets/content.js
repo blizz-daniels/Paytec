@@ -189,6 +189,85 @@ function renderNotifications(items) {
   });
 }
 
+function renderNotificationFeed(notifications, sharedFiles) {
+  const root = document.getElementById("notificationsList");
+  if (!root) {
+    return;
+  }
+
+  const feedItems = []
+    .concat(
+      notifications.map((item) => ({ kind: "notification", created_at: item.created_at, item })),
+      sharedFiles.map((item) => ({ kind: "shared", created_at: item.created_at, item }))
+    )
+    .sort((a, b) => {
+      const aTime = new Date(a.created_at || 0).getTime();
+      const bTime = new Date(b.created_at || 0).getTime();
+      return bTime - aTime;
+    });
+
+  root.innerHTML = "";
+  if (!feedItems.length) {
+    root.innerHTML = '<article class="card"><p>No notifications or shared files match your filters.</p></article>';
+    return;
+  }
+
+  feedItems.forEach((entry) => {
+    if (entry.kind === "notification") {
+      const notification = entry.item;
+      const article = document.createElement("article");
+      const pinnedTag = notification.is_pinned ? '<span class="tag tag-pinned">Pinned</span>' : "";
+      const readBadge =
+        contentState.user && contentState.user.role === "student"
+          ? `<span class="${notification.is_read ? "tag tag-read" : "tag tag-unread"}">${notification.is_read ? "Read" : "Unread"}</span>`
+          : "";
+      const unreadInfo =
+        contentState.user && (contentState.user.role === "teacher" || contentState.user.role === "admin")
+          ? `<small>Unread students: ${escapeHtml(String(Number(notification.unread_count || 0)))}</small>`
+          : "";
+      const actionButton = canMarkRead(notification)
+        ? `<button class="btn btn-secondary mark-read-btn" data-id="${notification.id}" type="button">Mark as read</button>`
+        : "";
+      const reactionBar = buildReactionBar(notification, "notification");
+      article.className = notification.is_urgent ? "card update urgent" : "card update";
+      article.innerHTML = `
+        <p>${pinnedTag} <span class="tag">${escapeHtml(notification.category || "General")}</span> ${readBadge}</p>
+        <h2>${escapeHtml(notification.title)}</h2>
+        <p>${escapeHtml(notification.body)}</p>
+        ${reactionBar}
+        ${unreadInfo}
+        ${actionButton}
+        <small>Posted by: ${escapeHtml(notification.created_by)} &bull; ${escapeHtml(formatDate(notification.created_at))}</small>
+      `;
+      root.appendChild(article);
+      return;
+    }
+
+    const shared = entry.item;
+    const article = document.createElement("article");
+    const reactionBar = buildReactionBar(shared, "shared");
+    const fileUrl = String(shared.file_url || "");
+    const lowered = fileUrl.toLowerCase();
+    let mediaHtml = "";
+    if (lowered.endsWith(".png")) {
+      mediaHtml = `<img class="post-media" src="${escapeHtml(fileUrl)}" alt="${escapeHtml(shared.title || "Shared image")}" loading="lazy" />`;
+    } else if (lowered.endsWith(".mp4") || lowered.endsWith(".webm") || lowered.endsWith(".mov")) {
+      mediaHtml = `<video class="post-media" controls preload="metadata" src="${escapeHtml(fileUrl)}"></video>`;
+    }
+    article.className = "card update";
+    article.innerHTML = `
+      <p><span class="tag">Shared File</span></p>
+      <h2>${escapeHtml(shared.title)}</h2>
+      <p>${escapeHtml(shared.description)}</p>
+      ${mediaHtml}
+      ${reactionBar}
+      <a href="${escapeHtml(shared.file_url)}" class="text-link" target="_blank" rel="noopener noreferrer">Open File</a>
+      <small>Posted by: ${escapeHtml(shared.created_by)} &bull; ${escapeHtml(formatDate(shared.created_at))}</small>
+    `;
+    root.appendChild(article);
+  });
+}
+
 function renderHandouts(items) {
   const root = document.getElementById("handoutsList");
   if (!root) {
@@ -455,7 +534,10 @@ function bindNotificationReadActions() {
 
 function getPageSources(page) {
   if (page === "notifications") {
-    return [{ type: "notification", items: contentState.data.notifications }];
+    return [
+      { type: "notification", items: contentState.data.notifications },
+      { type: "shared", items: contentState.data.sharedFiles },
+    ];
   }
   if (page === "handouts") {
     return [{ type: "handout", items: contentState.data.handouts }];
@@ -530,8 +612,9 @@ function renderPageFromState() {
   }
 
   if (page === "notifications") {
-    const filtered = applyFilters(contentState.data.notifications, "notification");
-    renderNotifications(filtered);
+    const filteredNotifications = applyFilters(contentState.data.notifications, "notification");
+    const filteredShared = applyFilters(contentState.data.sharedFiles, "shared");
+    renderNotificationFeed(filteredNotifications, filteredShared);
     return;
   }
 
@@ -675,15 +758,17 @@ async function loadContent() {
 
   try {
     if (page === "notifications") {
-      const [meRes, notificationsRes] = await Promise.all([
+      const [meRes, notificationsRes, sharedFilesRes] = await Promise.all([
         fetch("/api/me", { credentials: "same-origin" }),
         fetch("/api/notifications", { credentials: "same-origin" }),
+        fetch("/api/shared-files", { credentials: "same-origin" }),
       ]);
-      if (!meRes.ok || !notificationsRes.ok) {
+      if (!meRes.ok || !notificationsRes.ok || !sharedFilesRes.ok) {
         throw new Error("notifications");
       }
       contentState.user = await meRes.json();
       contentState.data.notifications = await notificationsRes.json();
+      contentState.data.sharedFiles = await sharedFilesRes.json();
       refreshFilterChoices();
       renderPageFromState();
       return;
