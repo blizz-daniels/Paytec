@@ -76,6 +76,7 @@ body {
 }
 
 [data-theme="dark"] .profile-panel__form input[type="text"],
+[data-theme="dark"] .profile-panel__form input[type="email"],
 [data-theme="dark"] .profile-panel__form input[type="file"] {
   background: #11141c;
 }
@@ -647,6 +648,7 @@ body {
 }
 
 .profile-panel__form input[type="text"],
+.profile-panel__form input[type="email"],
 .profile-panel__form input[type="file"] {
   border: 1px solid var(--border);
   border-radius: 0.75rem;

@@ -428,6 +428,36 @@ function normalizeDisplayName(value) {
   return String(value || "").trim();
 }
 
+function normalizeProfileEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isValidProfileEmail(value) {
+  const normalized = normalizeProfileEmail(value);
+  if (!normalized || normalized.length > 254) {
+    return false;
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(normalized)) {
+    return false;
+  }
+  const domain = String(normalized.split("@")[1] || "");
+  if (!domain || domain === "localhost" || domain.endsWith(".local")) {
+    return false;
+  }
+  return true;
+}
+
+function resolvePaystackCheckoutEmail(username, profileEmail) {
+  const candidates = [profileEmail, username];
+  for (const candidate of candidates) {
+    const normalized = normalizeProfileEmail(candidate);
+    if (isValidProfileEmail(normalized)) {
+      return normalized;
+    }
+  }
+  return "";
+}
+
 function getClientIp(req) {
   return String(req.ip || req.headers["x-forwarded-for"] || "unknown").trim();
 }
@@ -738,6 +768,31 @@ async function upsertProfileDisplayName(username, displayName) {
   );
 }
 
+async function upsertProfileEmail(username, email) {
+  if (!email) {
+    return;
+  }
+  const normalizedEmail = normalizeProfileEmail(email);
+  if (!isValidProfileEmail(normalizedEmail)) {
+    return;
+  }
+  const profile = await getUserProfile(username);
+  const displayName =
+    profile && profile.display_name ? profile.display_name : deriveDisplayNameFromIdentifier(username);
+
+  await run(
+    `
+      INSERT INTO user_profiles (username, display_name, email, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(username) DO UPDATE SET
+        email = excluded.email,
+        updated_at = CURRENT_TIMESTAMP,
+        display_name = COALESCE(user_profiles.display_name, excluded.display_name)
+    `,
+    [username, displayName, normalizedEmail]
+  );
+}
+
 async function upsertProfileImage(username, imageUrl) {
   if (!imageUrl) {
     return;
@@ -762,7 +817,7 @@ async function upsertProfileImage(username, imageUrl) {
 async function getUserProfile(username) {
   return get(
     `
-      SELECT display_name, nickname, profile_image_url
+      SELECT display_name, nickname, profile_image_url, email
       FROM user_profiles
       WHERE username = ?
     `,
@@ -1099,6 +1154,7 @@ async function initDatabase() {
       display_name TEXT,
       nickname TEXT,
       profile_image_url TEXT,
+      email TEXT,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -1121,7 +1177,12 @@ async function initDatabase() {
   if (!userColumns.some((column) => column.name === "role")) {
     await run("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'");
   }
- 
+
+  const profileColumns = await all("PRAGMA table_info(user_profiles)");
+  if (!profileColumns.some((column) => column.name === "email")) {
+    await run("ALTER TABLE user_profiles ADD COLUMN email TEXT");
+  }
+
   const notificationColumns = await all("PRAGMA table_info(notifications)");
   if (!notificationColumns.some((column) => column.name === "is_pinned")) {
     await run("ALTER TABLE notifications ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
@@ -4490,11 +4551,13 @@ app.get("/api/me", requireAuth, async (req, res) => {
       profile && profile.display_name
         ? profile.display_name
         : deriveDisplayNameFromIdentifier(req.session.user.username);
+    const email = profile && isValidProfileEmail(profile.email) ? normalizeProfileEmail(profile.email) : null;
     return res.json({
       username: req.session.user.username,
       role: req.session.user.role,
       displayName,
       profileImageUrl: profile ? profile.profile_image_url : null,
+      email,
     });
   } catch (_err) {
     return res.status(500).json({ error: "Could not load profile." });
@@ -4515,6 +4578,23 @@ app.post("/api/profile", requireAuth, async (req, res) => {
     return res.json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not update profile." });
+  }
+});
+
+app.post("/api/profile/email", requireAuth, async (req, res) => {
+  const email = normalizeProfileEmail(req.body?.email || "");
+  if (!email) {
+    return res.status(400).json({ error: "Email address cannot be empty." });
+  }
+  if (!isValidProfileEmail(email)) {
+    return res.status(400).json({ error: "Enter a valid email address." });
+  }
+
+  try {
+    await upsertProfileEmail(req.session.user.username, email);
+    return res.json({ ok: true, email });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not update email address." });
   }
 });
 
@@ -5102,7 +5182,14 @@ app.post("/api/payments/paystack/initialize", requireStudent, async (req, res) =
       obligation_id: Number(obligation.id),
       payment_reference: String(obligation.payment_reference || ""),
     };
-    const email = `${normalizeIdentifier(req.session.user.username) || "student"}@paytec.local`;
+    const profile = await getUserProfile(req.session.user.username);
+    const email = resolvePaystackCheckoutEmail(req.session.user.username, profile ? profile.email : "");
+    if (!email) {
+      return res.status(400).json({
+        error: "Add a valid email address in your profile before paying with Paystack.",
+        code: "paystack_initialize_email_required",
+      });
+    }
     const initializePayload = await paystackClient.initializeTransaction({
       email,
       amount: amountKobo,
@@ -5131,6 +5218,7 @@ app.post("/api/payments/paystack/initialize", requireStudent, async (req, res) =
         status: "initiated",
         payload: {
           request: {
+            email,
             amount,
             amount_kobo: amountKobo,
             metadata,

@@ -95,6 +95,29 @@ beforeAll(async () => {
     `,
     [surnameHashDoe, surnameHashRoe, surnameHashTeach, surnameHashTutor]
   );
+
+  await run(
+    `
+      INSERT INTO user_profiles (username, display_name, email, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(username) DO UPDATE SET
+        display_name = excluded.display_name,
+        email = excluded.email,
+        updated_at = CURRENT_TIMESTAMP
+    `,
+    ["std_001", "Std 001", "std_001@example.com"]
+  );
+  await run(
+    `
+      INSERT INTO user_profiles (username, display_name, email, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(username) DO UPDATE SET
+        display_name = excluded.display_name,
+        email = excluded.email,
+        updated_at = CURRENT_TIMESTAMP
+    `,
+    ["std_002", "Std 002", "std_002@example.com"]
+  );
 });
 
 afterEach(() => {
@@ -546,6 +569,8 @@ test("paystack initialize validates ownership and amount constraints", async () 
   expect(valid.body.access_code).toBeTruthy();
   expect(valid.body.reference).toBeTruthy();
   expect(fetchSpy).toHaveBeenCalledTimes(1);
+  const requestBody = JSON.parse(String(fetchSpy.mock.calls?.[0]?.[1]?.body || "{}"));
+  expect(requestBody.email).toBe("std_001@example.com");
 
   const sessionRow = await get("SELECT status, amount FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [
     valid.body.reference,
@@ -553,6 +578,37 @@ test("paystack initialize validates ownership and amount constraints", async () 
   expect(sessionRow).toBeTruthy();
   expect(sessionRow.status).toBe("initiated");
   expect(Number(sessionRow.amount || 0)).toBeCloseTo(15000, 2);
+});
+
+test("paystack initialize rejects when profile email is missing and username is not an email", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "Paystack Email Required",
+    description: "Requires real customer email",
+    expectedAmount: 14000,
+    currency: "NGN",
+    dueDate: "2026-07-20",
+  });
+  expect(createItem.status).toBe(201);
+
+  const student = request.agent(app);
+  await login(student, "std_002", "roe");
+  const ledger = await student.get("/api/my/payment-ledger");
+  expect(ledger.status).toBe(200);
+  const row = (ledger.body?.items || []).find((entry) => Number(entry.id) === Number(createItem.body.id));
+  expect(row).toBeTruthy();
+
+  await run("UPDATE user_profiles SET email = NULL WHERE username = ?", ["std_002"]);
+  const fetchSpy = jest.spyOn(global, "fetch");
+
+  const init = await postJson(student, "/api/payments/paystack/initialize", {
+    obligationId: row.obligation_id,
+    amount: 1000,
+  });
+  expect(init.status).toBe(400);
+  expect(init.body.code).toBe("paystack_initialize_email_required");
+  expect(fetchSpy).not.toHaveBeenCalled();
 });
 
 test("paystack callback redirects safely and does not auto-approve without webhook", async () => {

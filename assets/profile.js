@@ -54,6 +54,19 @@ window.addEventListener("DOMContentLoaded", () => {
         <input id="profileDisplayName" name="displayName" type="text" maxlength="60" placeholder="How should we call you?" />
         <button type="submit" class="btn">Save name</button>
       </form>
+      <form id="profileEmailForm" class="profile-panel__form">
+        <label for="profileEmailAddress">Email address (used for Paystack)</label>
+        <input
+          id="profileEmailAddress"
+          name="email"
+          type="email"
+          maxlength="254"
+          placeholder="name@example.com"
+          autocomplete="email"
+          required
+        />
+        <button type="submit" class="btn">Save email</button>
+      </form>
       <form id="profileAvatarForm" class="profile-panel__form">
         <label for="profileAvatarInput">Profile picture (PNG, JPG, WEBP)</label>
         <input id="profileAvatarInput" name="avatar" type="file" accept="image/png,image/jpeg,image/webp" />
@@ -69,6 +82,8 @@ window.addEventListener("DOMContentLoaded", () => {
   const profileInitialEl = panel.querySelector("[data-profile-initial]");
   const displayNameInput = panel.querySelector("#profileDisplayName");
   const displayForm = panel.querySelector("#profileDisplayForm");
+  const emailInput = panel.querySelector("#profileEmailAddress");
+  const emailForm = panel.querySelector("#profileEmailForm");
   const avatarForm = panel.querySelector("#profileAvatarForm");
   const avatarInput = panel.querySelector("#profileAvatarInput");
   const statusNode = panel.querySelector("[data-profile-status]");
@@ -130,6 +145,9 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     if (displayNameInput) {
       displayNameInput.value = displayName;
+    }
+    if (emailInput) {
+      emailInput.value = profile.email || "";
     }
     if (homeGreetingName) {
       homeGreetingName.textContent = displayName;
@@ -264,6 +282,49 @@ window.addEventListener("DOMContentLoaded", () => {
         setStatus(err?.message || "Upload failed.", true);
         if (window.showToast) {
           window.showToast(err?.message || "Upload failed.", { type: "error" });
+        }
+      } finally {
+        setButtonBusy(submitButton, false, "");
+        if (loadingToast) {
+          loadingToast.close();
+        }
+      }
+    });
+  }
+
+  if (emailForm) {
+    emailForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const value = emailInput?.value?.trim() || "";
+      if (!value) {
+        setStatus("Email address cannot be empty.", true);
+        if (window.showToast) {
+          window.showToast("Email address cannot be empty.", { type: "error" });
+        }
+        return;
+      }
+      const submitButton = emailForm.querySelector('button[type="submit"]');
+      const loadingToast = window.showToast
+        ? window.showToast("Saving email address...", { type: "loading", sticky: true })
+        : null;
+      setButtonBusy(submitButton, true, "Saving...");
+      setStatus("Saving email address...", false);
+      try {
+        const response = await fetch("/api/profile/email", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: value }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Could not save your email address.");
+        }
+        await loadProfile({ showStatus: true });
+      } catch (err) {
+        setStatus(err?.message || "Could not save email address.", true);
+        if (window.showToast) {
+          window.showToast(err?.message || "Could not save email address.", { type: "error" });
         }
       } finally {
         setButtonBusy(submitButton, false, "");
