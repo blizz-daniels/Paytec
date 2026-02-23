@@ -3386,7 +3386,7 @@ app.get("/api/notifications", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/api/notifications/:id/reaction", requireStudent, async (req, res) => {
+app.post("/api/notifications/:id/reaction", requireAuth, async (req, res) => {
   const id = parseResourceId(req.params.id);
   const rawReaction = String(req.body.reaction || "").trim().toLowerCase();
   if (!id) {
@@ -3397,9 +3397,15 @@ app.post("/api/notifications/:id/reaction", requireStudent, async (req, res) => 
   }
 
   try {
-    const row = await get("SELECT id FROM notifications WHERE id = ? LIMIT 1", [id]);
+    const row = await get(
+      "SELECT id, auto_generated, related_payment_item_id FROM notifications WHERE id = ? LIMIT 1",
+      [id]
+    );
     if (!row) {
       return res.status(404).json({ error: "Notification not found." });
+    }
+    if (Number(row.auto_generated || 0) === 1 || Number(row.related_payment_item_id || 0) > 0) {
+      return res.status(400).json({ error: "Payment item notifications cannot be reacted to." });
     }
     if (!rawReaction) {
       await run("DELETE FROM notification_reactions WHERE notification_id = ? AND username = ?", [
@@ -3424,7 +3430,7 @@ app.post("/api/notifications/:id/reaction", requireStudent, async (req, res) => 
   }
 });
 
-app.post("/api/handouts/:id/reaction", requireStudent, async (req, res) => {
+app.post("/api/handouts/:id/reaction", requireAuth, async (req, res) => {
   const id = parseResourceId(req.params.id);
   const rawReaction = String(req.body.reaction || "").trim().toLowerCase();
   if (!id) {
@@ -3461,7 +3467,7 @@ app.post("/api/handouts/:id/reaction", requireStudent, async (req, res) => {
   }
 });
 
-app.post("/api/shared-files/:id/reaction", requireStudent, async (req, res) => {
+app.post("/api/shared-files/:id/reaction", requireAuth, async (req, res) => {
   const id = parseResourceId(req.params.id);
   const rawReaction = String(req.body.reaction || "").trim().toLowerCase();
   if (!id) {

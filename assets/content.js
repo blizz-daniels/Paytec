@@ -53,7 +53,7 @@ function canMarkRead(item) {
 }
 
 function canReactToContent() {
-  return !!(contentState.user && contentState.user.role === "student");
+  return !!contentState.user;
 }
 
 function normalizeReactionCounts(value) {
@@ -174,7 +174,10 @@ function renderNotifications(items) {
     const actionButton = canMarkRead(item)
       ? `<button class="btn btn-secondary mark-read-btn" data-id="${item.id}" type="button">Mark as read</button>`
       : "";
-    const reactionBar = buildReactionBar(item, "notification");
+    const reactionBar =
+      item && (item.auto_generated || item.related_payment_item_id)
+        ? ""
+        : buildReactionBar(item, "notification");
     article.className = item.is_urgent ? "card update urgent" : "card update";
     article.innerHTML = `
       <p>${pinnedTag} <span class="tag">${escapeHtml(item.category || "General")}</span> ${readBadge}</p>
@@ -228,7 +231,10 @@ function renderNotificationFeed(notifications, sharedFiles) {
       const actionButton = canMarkRead(notification)
         ? `<button class="btn btn-secondary mark-read-btn" data-id="${notification.id}" type="button">Mark as read</button>`
         : "";
-      const reactionBar = buildReactionBar(notification, "notification");
+      const reactionBar =
+        notification && (notification.auto_generated || notification.related_payment_item_id)
+          ? ""
+          : buildReactionBar(notification, "notification");
       article.className = notification.is_urgent ? "card update urgent" : "card update";
       article.innerHTML = `
         <p>${pinnedTag} <span class="tag">${escapeHtml(notification.category || "General")}</span> ${readBadge}</p>
@@ -348,7 +354,10 @@ function renderHomeNotifications(items) {
   items.forEach((item) => {
     const article = document.createElement("article");
     const pinnedTag = item.is_pinned ? '<span class="tag tag-pinned">Pinned</span> ' : "";
-    const reactionBar = buildReactionBar(item, "notification");
+    const reactionBar =
+      item && (item.auto_generated || item.related_payment_item_id)
+        ? ""
+        : buildReactionBar(item, "notification");
     article.className = item.is_urgent ? "update urgent" : "update";
     article.innerHTML = `
       <p>${pinnedTag}<span class="tag">${escapeHtml(item.category || "General")}</span></p>
