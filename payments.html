@@ -65,6 +65,24 @@
         </article>
 
         <article class="card">
+          <h2>Payment Timeline</h2>
+          <p class="auth-subtitle">Recent reconciliation status updates.</p>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Payment Item</th>
+                  <th>Action</th>
+                  <th>Note</th>
+                </tr>
+              </thead>
+              <tbody id="paymentTimelineRows"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card">
           <h2>Submit Receipt</h2>
           <p id="submitReceiptStatus" class="auth-subtitle"></p>
           <form id="submitReceiptForm" class="auth-form">
@@ -80,8 +98,8 @@
             <label for="receiptTransactionRef">Transaction Reference</label>
             <input id="receiptTransactionRef" type="text" maxlength="120" required />
 
-            <label for="receiptFile">Receipt File (JPG, PNG, WEBP, PDF)</label>
-            <input id="receiptFile" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,application/pdf,image/jpeg,image/png,image/webp" required />
+            <label for="receiptFile">Receipt File (optional fallback: JPG, PNG, WEBP, PDF)</label>
+            <input id="receiptFile" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,application/pdf,image/jpeg,image/png,image/webp" />
 
             <label for="receiptNote">Note (optional)</label>
             <textarea id="receiptNote" rows="3" maxlength="300"></textarea>
@@ -161,6 +179,10 @@
           <form id="statementUploadForm" class="auth-form">
             <label for="statementFile">Upload Statement (CSV/TXT/TSV/JSON/XML/PDF/Image/Excel/Word/RTF)</label>
             <input id="statementFile" type="file" accept=".csv,.txt,.tsv,.json,.xml,.pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx,.rtf,text/csv,text/plain,text/tab-separated-values,application/json,application/xml,text/xml,application/pdf,image/jpeg,image/png,image/webp,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf" required />
+            <label style="display:flex;gap:0.4rem;align-items:center;">
+              <input id="statementDryRun" type="checkbox" />
+              Dry run (preview parse + reconcile only, no DB writes)
+            </label>
             <button type="submit" class="btn">Upload Statement</button>
           </form>
           <button id="deleteStatementButton" type="button" class="btn btn-secondary" style="margin-top:0.6rem;">Delete Statement</button>
@@ -168,17 +190,48 @@
       </section>
 
       <section id="receiptQueueSection" class="card" style="margin-top: 1rem;" hidden>
-        <h2>Receipt Verification Queue</h2>
+        <h2>Reconciliation Exception Queue</h2>
+        <div class="grid two-col" style="margin-bottom:0.8rem;">
+          <article class="card">
+            <h3>Auto Approved</h3>
+            <p id="reconAutoApproved" class="auth-subtitle">0</p>
+          </article>
+          <article class="card">
+            <h3>Exceptions</h3>
+            <p id="reconExceptions" class="auth-subtitle">0</p>
+          </article>
+          <article class="card">
+            <h3>Unresolved Obligations</h3>
+            <p id="reconUnresolved" class="auth-subtitle">0</p>
+          </article>
+          <article class="card">
+            <h3>Duplicates</h3>
+            <p id="reconDuplicates" class="auth-subtitle">0</p>
+          </article>
+        </div>
         <form id="queueFilterForm" class="auth-form" style="margin-bottom: 0.8rem;">
           <div class="filter-grid">
             <label>
               Status
               <select id="queueStatus">
-                <option value="">All</option>
-                <option value="submitted">Submitted</option>
-                <option value="under_review">Under Review</option>
-                <option value="approved">Approved</option>
+                <option value="all">All Exceptions</option>
+                <option value="needs_review">Needs Review</option>
+                <option value="unmatched">Unmatched</option>
+                <option value="duplicate">Duplicate</option>
+                <option value="needs_student_confirmation">Needs Student Confirmation</option>
                 <option value="rejected">Rejected</option>
+              </select>
+            </label>
+            <label>
+              Reason
+              <select id="queueReason">
+                <option value="all">All</option>
+                <option value="exact_reference">Exact Reference</option>
+                <option value="amount_match">Amount Match</option>
+                <option value="payer_hint_match">Payer Hint Match</option>
+                <option value="ambiguous_candidate">Ambiguous Candidate</option>
+                <option value="no_candidate">No Candidate</option>
+                <option value="duplicate_transaction">Duplicate</option>
               </select>
             </label>
             <label>
@@ -192,14 +245,6 @@
             <label>
               Date To
               <input id="queueDateTo" type="date" />
-            </label>
-            <label>
-              Assignment
-              <select id="queueAssignment">
-                <option value="all">All</option>
-                <option value="mine">Assigned to me</option>
-                <option value="unassigned">Unassigned only</option>
-              </select>
             </label>
             <label>
               Payment Item
@@ -217,21 +262,25 @@
           <table class="data-table">
             <thead>
               <tr>
-                <th><input id="queueSelectAll" type="checkbox" aria-label="Select all receipts" /></th>
+                <th><input id="queueSelectAll" type="checkbox" aria-label="Select all transactions" /></th>
+                <th>Txn ID</th>
                 <th>Student</th>
                 <th>Item</th>
                 <th>Amount</th>
                 <th>Reference</th>
-                <th>Paid Date</th>
+                <th>Source</th>
                 <th>Status</th>
-                <th>Assignment</th>
-                <th>SLA</th>
-                <th>Flags</th>
+                <th>Reasons</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody id="receiptQueueRows"></tbody>
           </table>
+        </div>
+        <div style="display:flex;gap:0.6rem;align-items:center;margin-top:0.65rem;">
+          <button id="queuePrevPage" type="button" class="btn btn-secondary">Previous</button>
+          <button id="queueNextPage" type="button" class="btn btn-secondary">Next</button>
+          <span id="queuePageInfo" class="auth-subtitle">Page 1</span>
         </div>
 
         <article class="card" style="margin-top:0.9rem;">
@@ -242,17 +291,15 @@
               Action
               <select id="bulkActionType" required>
                 <option value="">Choose action</option>
-                <option value="assign">Assign reviewer</option>
-                <option value="under_review">Move to under review</option>
                 <option value="approve">Approve</option>
                 <option value="reject">Reject</option>
-                <option value="note">Add reviewer note</option>
-                <option value="bulk_verify">Bulk verify (statement check)</option>
+                <option value="request_student_confirmation">Request student confirmation</option>
+                <option value="merge_duplicates">Merge duplicates to primary transaction</option>
               </select>
             </label>
             <label>
-              Assignee (optional; default is you)
-              <input id="bulkAssignee" type="text" placeholder="teacher_code or admin username" />
+              Primary transaction ID (for merge duplicates)
+              <input id="bulkPrimaryTransactionId" type="number" min="1" step="1" />
             </label>
             <label>
               Rejection reason (required for reject)
@@ -262,27 +309,8 @@
               Reviewer note (optional)
               <textarea id="bulkReviewerNote" rows="3" maxlength="500"></textarea>
             </label>
-            <button type="submit" class="btn">Apply to Selected Receipts</button>
+            <button type="submit" class="btn">Apply to Selected Transactions</button>
           </form>
-        </article>
-
-        <article class="card" style="margin-top:0.9rem;">
-          <h3>Reviewer Notes History</h3>
-          <p id="reviewerHistoryStatus" class="auth-subtitle">Select a receipt to view notes history.</p>
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Reviewer</th>
-                  <th>Note</th>
-                </tr>
-              </thead>
-              <tbody id="reviewerHistoryRows">
-                <tr><td colspan="3" style="color:#636b8a;">No receipt selected.</td></tr>
-              </tbody>
-            </table>
-          </div>
         </article>
       </section>
     </main>

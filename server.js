@@ -118,6 +118,15 @@ const STATEMENT_PARSER_PROVIDER = String(process.env.STATEMENT_PARSER_PROVIDER |
 const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || "").trim();
 const OPENAI_API_BASE_URL = String(process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1").trim().replace(/\/$/, "");
 const OPENAI_STATEMENT_MODEL = String(process.env.OPENAI_STATEMENT_MODEL || "gpt-4o-mini").trim();
+const GATEWAY_WEBHOOK_SECRET = String(process.env.GATEWAY_WEBHOOK_SECRET || "").trim();
+const PAYMENT_REFERENCE_PREFIX = String(process.env.PAYMENT_REFERENCE_PREFIX || "PAYTEC").trim().toUpperCase();
+const PAYMENT_REFERENCE_TENANT_ID = String(
+  process.env.PAYMENT_REFERENCE_TENANT_ID || process.env.SCHOOL_ID || process.env.TENANT_ID || "default-school"
+)
+  .trim()
+  .toLowerCase();
+const AUTO_RECONCILE_CONFIDENCE = Number.parseFloat(String(process.env.AUTO_RECONCILE_CONFIDENCE || "0.9"));
+const REVIEW_RECONCILE_CONFIDENCE = Number.parseFloat(String(process.env.REVIEW_RECONCILE_CONFIDENCE || "0.65"));
 
 const avatarUpload = multer({
   storage: multer.diskStorage({
@@ -320,6 +329,39 @@ function all(sql, params = []) {
   });
 }
 
+async function runMigrationSql(sql, params = []) {
+  try {
+    return await run(sql, params);
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (
+      /duplicate column name/i.test(message) ||
+      /already exists/i.test(message) ||
+      /no such column/i.test(message) ||
+      /UNIQUE constraint failed/i.test(message)
+    ) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+async function withSqlTransaction(work) {
+  await run("BEGIN IMMEDIATE TRANSACTION");
+  try {
+    const result = await work();
+    await run("COMMIT");
+    return result;
+  } catch (err) {
+    try {
+      await run("ROLLBACK");
+    } catch (_rollbackErr) {
+      // ignore
+    }
+    throw err;
+  }
+}
+
 function parseCsvLine(line) {
   const values = [];
   let current = "";
@@ -446,6 +488,9 @@ function rejectCsrf(req, res) {
 
 function requireCsrf(req, res, next) {
   if (CSRF_SAFE_METHODS.has(req.method)) {
+    return next();
+  }
+  if (req.path === "/api/payments/webhook") {
     return next();
   }
   const expectedToken = req.session ? req.session.csrfToken : "";
@@ -862,14 +907,129 @@ async function initDatabase() {
     )
   `);
 
-  await run("CREATE INDEX IF NOT EXISTS idx_payment_receipts_student ON payment_receipts(student_username)");
-  await run("CREATE INDEX IF NOT EXISTS idx_payment_receipts_status ON payment_receipts(status)");
-  await run("CREATE INDEX IF NOT EXISTS idx_payment_receipts_item ON payment_receipts(payment_item_id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_payment_receipt_events_receipt ON payment_receipt_events(receipt_id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_notifications_payment_item ON notifications(related_payment_item_id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_notification_reactions_notification ON notification_reactions(notification_id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_handout_reactions_handout ON handout_reactions(handout_id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_shared_file_reactions_shared_file ON shared_file_reactions(shared_file_id)");
+  await run(`
+    CREATE TABLE IF NOT EXISTS payment_obligations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_item_id INTEGER NOT NULL,
+      student_username TEXT NOT NULL,
+      expected_amount REAL NOT NULL,
+      due_date TEXT,
+      payment_reference TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'unpaid',
+      amount_paid_total REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(payment_item_id, student_username),
+      UNIQUE(payment_reference)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS payment_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      txn_ref TEXT,
+      amount REAL NOT NULL,
+      paid_at TEXT NOT NULL,
+      payer_name TEXT,
+      source TEXT NOT NULL,
+      source_event_id TEXT UNIQUE,
+      source_file_name TEXT,
+      normalized_txn_ref TEXT,
+      normalized_paid_date TEXT,
+      normalized_payer_name TEXT,
+      student_hint_username TEXT,
+      payment_item_hint_id INTEGER,
+      checksum TEXT,
+      raw_payload_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'unmatched',
+      matched_obligation_id INTEGER,
+      confidence REAL NOT NULL DEFAULT 0,
+      reasons_json TEXT NOT NULL DEFAULT '[]',
+      reviewed_by TEXT,
+      reviewed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS payment_matches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      obligation_id INTEGER,
+      transaction_id INTEGER NOT NULL UNIQUE,
+      confidence REAL NOT NULL DEFAULT 0,
+      reasons_json TEXT NOT NULL DEFAULT '[]',
+      decision TEXT NOT NULL DEFAULT 'pending',
+      decided_by TEXT,
+      decided_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS reconciliation_exceptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      match_id INTEGER NOT NULL UNIQUE,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      assigned_to TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS reconciliation_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transaction_id INTEGER,
+      obligation_id INTEGER,
+      actor_username TEXT NOT NULL,
+      actor_role TEXT NOT NULL,
+      action TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_id TEXT,
+      actor_role TEXT,
+      event_type TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id INTEGER,
+      before_json TEXT,
+      after_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_receipts_student ON payment_receipts(student_username)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_receipts_status ON payment_receipts(status)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_receipts_item ON payment_receipts(payment_item_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_receipt_events_receipt ON payment_receipt_events(receipt_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_obligations_student ON payment_obligations(student_username)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_obligations_item ON payment_obligations(payment_item_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_obligations_status ON payment_obligations(status)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_obligations_reference ON payment_obligations(payment_reference)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_status ON payment_transactions(status)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_ref ON payment_transactions(normalized_txn_ref)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_date ON payment_transactions(normalized_paid_date)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_checksum ON payment_transactions(checksum)");
+  await runMigrationSql("CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_transactions_source_checksum ON payment_transactions(source, checksum)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_student_hint ON payment_transactions(student_hint_username)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_item_hint ON payment_transactions(payment_item_hint_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_obligation ON payment_transactions(matched_obligation_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_matches_obligation ON payment_matches(obligation_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_matches_decision ON payment_matches(decision)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_reconciliation_exceptions_reason ON reconciliation_exceptions(reason)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_reconciliation_exceptions_status ON reconciliation_exceptions(status)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_reconciliation_events_tx ON reconciliation_events(transaction_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_audit_events_entity ON audit_events(entity_type, entity_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_notifications_payment_item ON notifications(related_payment_item_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_notification_reactions_notification ON notification_reactions(notification_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_handout_reactions_handout ON handout_reactions(handout_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_shared_file_reactions_shared_file ON shared_file_reactions(shared_file_id)");
 
   await run(`
     CREATE TABLE IF NOT EXISTS user_profiles (
@@ -913,6 +1073,18 @@ async function initDatabase() {
   if (!notificationColumns.some((column) => column.name === "auto_generated")) {
     await run("ALTER TABLE notifications ADD COLUMN auto_generated INTEGER NOT NULL DEFAULT 0");
   }
+  if (!notificationColumns.some((column) => column.name === "user_id")) {
+    await run("ALTER TABLE notifications ADD COLUMN user_id TEXT");
+  }
+  if (!notificationColumns.some((column) => column.name === "type")) {
+    await run("ALTER TABLE notifications ADD COLUMN type TEXT");
+  }
+  if (!notificationColumns.some((column) => column.name === "payload_json")) {
+    await run("ALTER TABLE notifications ADD COLUMN payload_json TEXT");
+  }
+  if (!notificationColumns.some((column) => column.name === "read_at")) {
+    await run("ALTER TABLE notifications ADD COLUMN read_at TEXT");
+  }
 
   const paymentItemsColumns = await all("PRAGMA table_info(payment_items)");
   if (!paymentItemsColumns.some((column) => column.name === "description")) {
@@ -954,6 +1126,64 @@ async function initDatabase() {
     await run("ALTER TABLE payment_receipts ADD COLUMN extracted_text TEXT");
   }
 
+  const obligationColumns = await all("PRAGMA table_info(payment_obligations)");
+  if (obligationColumns.length) {
+    if (!obligationColumns.some((column) => column.name === "payment_reference")) {
+      await run("ALTER TABLE payment_obligations ADD COLUMN payment_reference TEXT");
+    }
+    if (!obligationColumns.some((column) => column.name === "status")) {
+      await run("ALTER TABLE payment_obligations ADD COLUMN status TEXT NOT NULL DEFAULT 'unpaid'");
+    }
+    if (!obligationColumns.some((column) => column.name === "amount_paid_total")) {
+      await run("ALTER TABLE payment_obligations ADD COLUMN amount_paid_total REAL NOT NULL DEFAULT 0");
+    }
+    if (!obligationColumns.some((column) => column.name === "updated_at")) {
+      await run("ALTER TABLE payment_obligations ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+    await run(`
+      UPDATE payment_obligations
+      SET payment_reference = COALESCE(NULLIF(payment_reference, ''), 'LEGACY-' || payment_item_id || '-' || student_username)
+      WHERE payment_reference IS NULL OR payment_reference = ''
+    `);
+  }
+
+  const transactionColumns = await all("PRAGMA table_info(payment_transactions)");
+  if (transactionColumns.length) {
+    if (!transactionColumns.some((column) => column.name === "checksum")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN checksum TEXT");
+    }
+    if (!transactionColumns.some((column) => column.name === "raw_payload_json")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN raw_payload_json TEXT NOT NULL DEFAULT '{}'");
+    }
+    if (!transactionColumns.some((column) => column.name === "source")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN source TEXT NOT NULL DEFAULT 'statement_upload'");
+    }
+    if (!transactionColumns.some((column) => column.name === "source_event_id")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN source_event_id TEXT");
+    }
+    if (!transactionColumns.some((column) => column.name === "normalized_txn_ref")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN normalized_txn_ref TEXT");
+    }
+    if (!transactionColumns.some((column) => column.name === "normalized_paid_date")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN normalized_paid_date TEXT");
+    }
+    if (!transactionColumns.some((column) => column.name === "normalized_payer_name")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN normalized_payer_name TEXT");
+    }
+    if (!transactionColumns.some((column) => column.name === "status")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN status TEXT NOT NULL DEFAULT 'unmatched'");
+    }
+    if (!transactionColumns.some((column) => column.name === "matched_obligation_id")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN matched_obligation_id INTEGER");
+    }
+    if (!transactionColumns.some((column) => column.name === "confidence")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN confidence REAL NOT NULL DEFAULT 0");
+    }
+    if (!transactionColumns.some((column) => column.name === "reasons_json")) {
+      await run("ALTER TABLE payment_transactions ADD COLUMN reasons_json TEXT NOT NULL DEFAULT '[]'");
+    }
+  }
+
   // Ensure at least one admin account exists.
   const adminUser = await get("SELECT username FROM users WHERE username = ?", [ADMIN_USERNAME]);
   if (!adminUser) {
@@ -968,6 +1198,7 @@ async function initDatabase() {
 
   await importRoster(STUDENT_ROSTER_PATH, "student", "matric_number");
   await importRoster(TEACHER_ROSTER_PATH, "teacher", "teacher_code");
+  await migrateLegacyReceiptsToReconciliation();
 }
 
 if (isProduction) {
@@ -1151,6 +1382,123 @@ function sanitizeBulkReceiptAction(value) {
   return allowed.has(normalized) ? normalized : "";
 }
 
+function sanitizeReconciliationStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  const allowed = new Set([
+    "all",
+    "approved",
+    "needs_review",
+    "unmatched",
+    "duplicate",
+    "rejected",
+    "needs_student_confirmation",
+  ]);
+  return allowed.has(normalized) ? normalized : "all";
+}
+
+function sanitizeReconciliationReason(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  const allowed = new Set([
+    "all",
+    "exact_reference",
+    "amount_match",
+    "payer_hint_match",
+    "item_hint_match",
+    "student_hint_match",
+    "date_proximity_match",
+    "ambiguous_candidate",
+    "no_candidate",
+    "duplicate_transaction",
+    "manual_approved",
+    "manual_rejected",
+    "needs_student_confirmation",
+  ]);
+  return allowed.has(normalized) ? normalized : "all";
+}
+
+function sanitizeReconciliationBulkAction(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  const allowed = new Set(["approve", "reject", "request_student_confirmation", "merge_duplicates"]);
+  return allowed.has(normalized) ? normalized : "";
+}
+
+function normalizeReasonCodes(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      raw
+        .map((entry) => String(entry || "").trim().toLowerCase())
+        .filter(Boolean)
+        .slice(0, 20)
+    )
+  );
+}
+
+function parseJsonObject(value, fallback = {}) {
+  try {
+    const parsed = value ? JSON.parse(value) : fallback;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return fallback;
+    }
+    return parsed;
+  } catch (_err) {
+    return fallback;
+  }
+}
+
+function parseJsonArray(value, fallback = []) {
+  try {
+    const parsed = value ? JSON.parse(value) : fallback;
+    if (!Array.isArray(parsed)) {
+      return fallback;
+    }
+    return parsed;
+  } catch (_err) {
+    return fallback;
+  }
+}
+
+function toSafeConfidence(value, fallback = 0) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  if (parsed < 0) return 0;
+  if (parsed > 1) return 1;
+  return parsed;
+}
+
+function buildDeterministicPaymentReference(paymentItemId, studentUsername, attempt = 0) {
+  const itemToken = Number.parseInt(paymentItemId, 10);
+  const studentToken = normalizeIdentifier(studentUsername).replace(/[^a-z0-9]/g, "") || "student";
+  const base = `${String(PAYMENT_REFERENCE_PREFIX || "PAYTEC")
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 10)}-${String(itemToken || 0).padStart(4, "0")}`;
+  const digest = crypto
+    .createHash("sha1")
+    .update(`${PAYMENT_REFERENCE_TENANT_ID}|${itemToken}:${studentToken}|${Number.parseInt(attempt, 10) || 0}`)
+    .digest("hex")
+    .slice(0, 14)
+    .toUpperCase();
+  const shortStudent = studentToken.slice(0, 8).toUpperCase() || "STUDENT";
+  if (!attempt) {
+    return `${base}-${shortStudent}-${digest}`.slice(0, 120);
+  }
+  const suffix = digest.slice(0, Math.min(4 + attempt, 8));
+  return `${base}-${shortStudent}-${digest}-${suffix}`.slice(0, 120);
+}
+
+function buildDeterministicReferenceCandidates(paymentItemId, studentUsername, maxAttempts = 8) {
+  const candidates = [];
+  const safeAttempts = Math.max(1, Math.min(12, Number.parseInt(maxAttempts, 10) || 1));
+  for (let i = 0; i < safeAttempts; i += 1) {
+    candidates.push(buildDeterministicPaymentReference(paymentItemId, studentUsername, i));
+  }
+  return candidates;
+}
+
 function parseReceiptIdList(rawValues, limit = 50) {
   if (!Array.isArray(rawValues)) {
     return [];
@@ -1198,6 +1546,23 @@ function almostSameAmount(left, right, tolerance = 0.01) {
     return false;
   }
   return Math.abs(l - r) <= tolerance;
+}
+
+function buildTransactionChecksum(input = {}) {
+  const source = String(input.source || "statement_upload")
+    .trim()
+    .toLowerCase()
+    .slice(0, 40);
+  const txnRef = normalizeReference(input.txn_ref || input.reference || "");
+  const amount = Number(input.amount);
+  const amountToken = Number.isFinite(amount) ? amount.toFixed(2) : "";
+  const dateToken = parseDateToken(input.date || input.paid_at || input.paidAt || input.normalized_paid_date || "");
+  const payerToken = normalizeStatementName(input.payer_name || input.payerName || input.name || "");
+  if (!amountToken || !dateToken) {
+    return "";
+  }
+  const key = `${txnRef}|${amountToken}|${dateToken}|${payerToken}|${source}`;
+  return crypto.createHash("sha1").update(key).digest("hex");
 }
 
 function normalizeStatementRowsText(rawText) {
@@ -1310,6 +1675,30 @@ function normalizeStatementRowsText(rawText) {
   return normalized;
 }
 
+function normalizeStatementRowsTextDetailed(rawText) {
+  const parsedRows = normalizeStatementRowsText(rawText);
+  const lines = String(rawText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    return { parsedRows: [], invalidRows: [] };
+  }
+  const parsedLineNumbers = new Set(parsedRows.map((row) => Number(row.row_number || 0)));
+  const invalidRows = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const rowNumber = i + 1;
+    if (!parsedLineNumbers.has(rowNumber)) {
+      invalidRows.push({
+        row_number: rowNumber,
+        raw: lines[i],
+        reasons: ["parse_failed_or_missing_required_fields"],
+      });
+    }
+  }
+  return { parsedRows, invalidRows };
+}
+
 function parseDateToken(value) {
   const token = String(value || "").trim();
   if (!token) {
@@ -1413,7 +1802,7 @@ function escapeCsvCell(value) {
 
 async function parseStatementRowsFromExcelFile(filePath) {
   if (!xlsx) {
-    return { extractedText: "", parsedRows: [] };
+    return { extractedText: "", parsedRows: [], invalidRows: [] };
   }
   try {
     const workbook = xlsx.readFile(filePath, {
@@ -1422,7 +1811,7 @@ async function parseStatementRowsFromExcelFile(filePath) {
       dense: false,
     });
     if (!workbook || !Array.isArray(workbook.SheetNames) || !workbook.SheetNames.length) {
-      return { extractedText: "", parsedRows: [] };
+      return { extractedText: "", parsedRows: [], invalidRows: [] };
     }
 
     let combinedCsv = "";
@@ -1450,19 +1839,22 @@ async function parseStatementRowsFromExcelFile(filePath) {
 
     const extractedText = combinedCsv.slice(0, 300000);
     if (!extractedText) {
-      return { extractedText: "", parsedRows: [] };
+      return { extractedText: "", parsedRows: [], invalidRows: [] };
     }
-
-    let parsedRows = normalizeStatementRowsText(extractedText);
+    let detailed = normalizeStatementRowsTextDetailed(extractedText);
+    let parsedRows = detailed.parsedRows;
+    let invalidRows = detailed.invalidRows;
     if (!parsedRows.length) {
       parsedRows = parseStatementRowsFromLooseText(extractedText);
+      invalidRows = [];
     }
     return {
       extractedText,
       parsedRows,
+      invalidRows,
     };
   } catch (_err) {
-    return { extractedText: "", parsedRows: [] };
+    return { extractedText: "", parsedRows: [], invalidRows: [] };
   }
 }
 
@@ -1598,31 +1990,46 @@ async function parseStatementRowsFromUpload(statementPath, originalFilename) {
   const ext = path.extname(String(originalFilename || statementPath || "")).toLowerCase();
   let extractedText = "";
   let parsedRows = [];
+  let invalidRows = [];
+  const parseStages = [];
 
   if (ext === ".xls" || ext === ".xlsx") {
     const excelResult = await parseStatementRowsFromExcelFile(statementPath);
     extractedText = excelResult.extractedText;
     parsedRows = excelResult.parsedRows;
+    invalidRows = excelResult.invalidRows || [];
+    parseStages.push("structured_excel");
   } else if (isLikelyOcrFileExtension(ext)) {
     const ocrResult = await extractReceiptText(statementPath);
     extractedText = String(ocrResult?.text || "");
+    parseStages.push("ocr_text_extraction");
   } else {
     try {
       extractedText = await fs.promises.readFile(statementPath, "utf8");
+      parseStages.push("structured_text_read");
     } catch (_err) {
       extractedText = "";
     }
   }
   if (!parsedRows.length) {
-    parsedRows = normalizeStatementRowsText(extractedText);
+    const detailed = normalizeStatementRowsTextDetailed(extractedText);
+    parsedRows = detailed.parsedRows;
+    invalidRows = invalidRows.concat(detailed.invalidRows || []);
+    if (parsedRows.length) {
+      parseStages.push("structured_table_parse");
+    }
     if (!parsedRows.length) {
       parsedRows = parseStatementRowsFromLooseText(extractedText);
+      if (parsedRows.length) {
+        parseStages.push("loose_text_parse");
+      }
     }
   }
   if (!parsedRows.length) {
     const aiRows = await parseStatementRowsWithAi(extractedText, { filename: originalFilename, extension: ext });
     if (aiRows.length) {
       parsedRows = aiRows;
+      parseStages.push("ai_fallback_parse");
     }
   }
   if (!parsedRows.length && isLikelyTextStatementExtension(ext)) {
@@ -1634,6 +2041,7 @@ async function parseStatementRowsFromUpload(statementPath, originalFilename) {
         const aiRows = await parseStatementRowsWithAi(bestEffortText, { filename: originalFilename, extension: ext });
         if (aiRows.length) {
           parsedRows = aiRows;
+          parseStages.push("ai_fallback_parse_latin1");
         }
       }
     } catch (_err) {
@@ -1643,6 +2051,8 @@ async function parseStatementRowsFromUpload(statementPath, originalFilename) {
   return {
     extractedText,
     parsedRows,
+    invalidRows,
+    parseStages,
   };
 }
 
@@ -2130,6 +2540,8 @@ async function getTeacherStatement(teacherUsername) {
   }
   let parsedRows = [];
   let extractedText = "";
+  let unparsedRows = [];
+  let parseStages = [];
   try {
     const payload = JSON.parse(row.parsed_rows_json || "[]");
     if (Array.isArray(payload)) {
@@ -2137,6 +2549,8 @@ async function getTeacherStatement(teacherUsername) {
     } else if (payload && Array.isArray(payload.parsed_rows)) {
       parsedRows = payload.parsed_rows;
       extractedText = String(payload.extracted_text || "");
+      unparsedRows = Array.isArray(payload.unparsed_rows) ? payload.unparsed_rows : [];
+      parseStages = Array.isArray(payload.parse_stages) ? payload.parse_stages : [];
     }
   } catch (_err) {
     parsedRows = [];
@@ -2145,6 +2559,8 @@ async function getTeacherStatement(teacherUsername) {
     ...row,
     parsed_rows: Array.isArray(parsedRows) ? parsedRows : [],
     extracted_text: extractedText,
+    unparsed_rows: unparsedRows,
+    parse_stages: parseStages,
   };
 }
 
@@ -2215,6 +2631,1396 @@ async function evaluateReceiptAgainstStatement(receiptRow, statementRows) {
     match_row_number: matchedRow.row_number,
     details: `Matched statement row ${matchedRow.row_number}.`,
   };
+}
+
+function getReconcileThresholds() {
+  return {
+    auto: toSafeConfidence(AUTO_RECONCILE_CONFIDENCE, 0.9),
+    review: toSafeConfidence(REVIEW_RECONCILE_CONFIDENCE, 0.65),
+  };
+}
+
+async function listStudentUsernames() {
+  const rows = await all("SELECT auth_id FROM auth_roster WHERE role = 'student' ORDER BY auth_id ASC");
+  return rows.map((row) => normalizeIdentifier(row.auth_id || "")).filter(Boolean);
+}
+
+async function resolveUniquePaymentReference(paymentItemId, studentUsername, existingObligationId) {
+  const candidates = buildDeterministicReferenceCandidates(paymentItemId, studentUsername, 8);
+  for (const candidate of candidates) {
+    const conflict = await get(
+      `
+        SELECT id
+        FROM payment_obligations
+        WHERE payment_reference = ?
+          AND id != COALESCE(?, -1)
+        LIMIT 1
+      `,
+      [candidate, existingObligationId || null]
+    );
+    if (!conflict) {
+      return candidate;
+    }
+  }
+  throw new Error("Could not resolve unique deterministic payment reference.");
+}
+
+async function upsertPaymentObligation(paymentItemRow, studentUsername) {
+  if (!paymentItemRow || !paymentItemRow.id) {
+    return null;
+  }
+  const normalizedStudent = normalizeIdentifier(studentUsername);
+  if (!normalizedStudent) {
+    return null;
+  }
+  const existing = await get(
+    `
+      SELECT id
+      FROM payment_obligations
+      WHERE payment_item_id = ?
+        AND student_username = ?
+      LIMIT 1
+    `,
+    [paymentItemRow.id, normalizedStudent]
+  );
+  const reference = await resolveUniquePaymentReference(paymentItemRow.id, normalizedStudent, existing?.id || null);
+  await run(
+    `
+      INSERT INTO payment_obligations (
+        payment_item_id,
+        student_username,
+        expected_amount,
+        due_date,
+        payment_reference,
+        status,
+        amount_paid_total,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, 'unpaid', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(payment_item_id, student_username) DO UPDATE SET
+        expected_amount = excluded.expected_amount,
+        due_date = excluded.due_date,
+        payment_reference = excluded.payment_reference,
+        updated_at = CURRENT_TIMESTAMP
+    `,
+    [
+      paymentItemRow.id,
+      normalizedStudent,
+      Number(paymentItemRow.expected_amount || 0),
+      paymentItemRow.due_date || null,
+      reference,
+    ]
+  );
+  return get(
+    `
+      SELECT *
+      FROM payment_obligations
+      WHERE payment_item_id = ?
+        AND student_username = ?
+      LIMIT 1
+    `,
+    [paymentItemRow.id, normalizedStudent]
+  );
+}
+
+async function ensurePaymentObligationsForPaymentItem(paymentItemId) {
+  const paymentItem = await get("SELECT * FROM payment_items WHERE id = ? LIMIT 1", [paymentItemId]);
+  if (!paymentItem) {
+    return 0;
+  }
+  const students = await listStudentUsernames();
+  let count = 0;
+  for (const student of students) {
+    const row = await upsertPaymentObligation(paymentItem, student);
+    if (row) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+async function ensurePaymentObligationsForAllPaymentItems() {
+  const items = await all("SELECT * FROM payment_items ORDER BY id ASC");
+  let total = 0;
+  for (const item of items) {
+    total += await ensurePaymentObligationsForPaymentItem(item.id);
+  }
+  return total;
+}
+
+async function ensurePaymentObligationsForStudent(studentUsername) {
+  const normalized = normalizeIdentifier(studentUsername);
+  if (!normalized) {
+    return 0;
+  }
+  const items = await all("SELECT * FROM payment_items ORDER BY id ASC");
+  let total = 0;
+  for (const item of items) {
+    const row = await upsertPaymentObligation(item, normalized);
+    if (row) {
+      total += 1;
+    }
+  }
+  return total;
+}
+
+function normalizeTransactionInput(input = {}) {
+  const amount = parseMoneyValue(input.amount);
+  const paidAtRaw = String(input.date || input.paid_at || input.paidAt || "").trim();
+  const paidAt = paidAtRaw && isValidIsoLikeDate(paidAtRaw) ? new Date(paidAtRaw).toISOString() : "";
+  const normalizedPaidDate = toDateOnly(paidAt || paidAtRaw);
+  const txnRef = sanitizeTransactionRef(input.txn_ref || input.transactionRef || input.reference || "");
+  const normalizedTxnRef = normalizeReference(txnRef);
+  const payerName = normalizeWhitespace(input.payer_name || input.payerName || input.name || "");
+  const normalizedPayerName = normalizeStatementName(payerName);
+  const source = String(input.source || "statement_upload")
+    .trim()
+    .toLowerCase()
+    .slice(0, 40);
+  const sourceEventId = String(input.source_event_id || input.sourceEventId || "").trim().slice(0, 160);
+  const sourceFileName = String(input.source_file_name || input.sourceFileName || "").trim().slice(0, 255);
+  const studentHintUsername = normalizeIdentifier(input.student_username || input.studentUsername || "");
+  const paymentItemHintId = parseResourceId(input.payment_item_id || input.paymentItemId || "");
+  const rawPayload = input.raw_payload ?? input.rawPayload ?? input;
+  const checksum = String(input.checksum || "").trim() || buildTransactionChecksum({
+    source,
+    txn_ref: txnRef,
+    amount,
+    date: normalizedPaidDate,
+    payer_name: payerName,
+  });
+  if (!Number.isFinite(amount) || amount <= 0 || !normalizedPaidDate) {
+    return null;
+  }
+  return {
+    source,
+    sourceEventId,
+    sourceFileName,
+    txnRef,
+    amount,
+    paidAt: paidAt || normalizedPaidDate,
+    payerName,
+    normalizedTxnRef,
+    normalizedPaidDate,
+    normalizedPayerName,
+    studentHintUsername,
+    paymentItemHintId,
+    rawPayload,
+    checksum: checksum || null,
+  };
+}
+
+function toTransactionCandidateRow(normalized) {
+  return {
+    id: 0,
+    source: normalized.source,
+    amount: normalized.amount,
+    paid_at: normalized.paidAt,
+    normalized_paid_date: normalized.normalizedPaidDate,
+    txn_ref: normalized.txnRef,
+    normalized_txn_ref: normalized.normalizedTxnRef,
+    payer_name: normalized.payerName,
+    normalized_payer_name: normalized.normalizedPayerName,
+    student_hint_username: normalized.studentHintUsername,
+    payment_item_hint_id: normalized.paymentItemHintId,
+  };
+}
+
+async function findDuplicateTransactionCandidate(transactionRow) {
+  if (!transactionRow) {
+    return null;
+  }
+  const currentId = Number(transactionRow.id || 0);
+  if (transactionRow.normalized_txn_ref) {
+    const byRef = await get(
+      `
+        SELECT *
+        FROM payment_transactions
+        WHERE id != ?
+          AND normalized_txn_ref = ?
+          AND status IN ('approved', 'needs_review', 'needs_student_confirmation', 'duplicate')
+        ORDER BY CASE WHEN status = 'approved' THEN 0 ELSE 1 END ASC, id DESC
+        LIMIT 1
+      `,
+      [currentId, transactionRow.normalized_txn_ref]
+    );
+    if (byRef) {
+      return byRef;
+    }
+  }
+  if (!transactionRow.normalized_paid_date || !Number.isFinite(Number(transactionRow.amount || 0))) {
+    return null;
+  }
+  return get(
+    `
+      SELECT *
+      FROM payment_transactions
+      WHERE id != ?
+        AND normalized_paid_date = ?
+        AND ABS(amount - ?) <= 0.01
+        AND normalized_payer_name = ?
+        AND status IN ('approved', 'needs_review', 'needs_student_confirmation', 'duplicate')
+      ORDER BY CASE WHEN status = 'approved' THEN 0 ELSE 1 END ASC, id DESC
+      LIMIT 1
+    `,
+    [
+      currentId,
+      transactionRow.normalized_paid_date,
+      Number(transactionRow.amount || 0),
+      String(transactionRow.normalized_payer_name || ""),
+    ]
+  );
+}
+
+async function scoreObligationCandidate(transactionRow, obligationRow, variantsCache) {
+  const reasons = [];
+  let score = 0;
+  const amount = Number(transactionRow.amount || 0);
+  if (!Number.isFinite(amount) || !obligationRow) {
+    return { score: 0, reasons: [] };
+  }
+  const expectedAmount = Number(obligationRow.expected_amount || 0);
+  const outstanding = Math.max(0, expectedAmount - Number(obligationRow.amount_paid_total || 0));
+  if (
+    transactionRow.student_hint_username &&
+    normalizeIdentifier(transactionRow.student_hint_username) === normalizeIdentifier(obligationRow.student_username)
+  ) {
+    score += 0.25;
+    reasons.push("student_hint_match");
+  }
+  if (transactionRow.payment_item_hint_id && Number(transactionRow.payment_item_hint_id) === Number(obligationRow.payment_item_id)) {
+    score += 0.2;
+    reasons.push("item_hint_match");
+  }
+  if (almostSameAmount(amount, outstanding) || almostSameAmount(amount, expectedAmount)) {
+    score += 0.3;
+    reasons.push("amount_match");
+  } else if (amount > expectedAmount * 0.5 && amount < expectedAmount * 1.5) {
+    score += 0.1;
+    reasons.push("amount_match");
+  }
+  const payer = String(transactionRow.normalized_payer_name || "");
+  if (payer) {
+    const studentKey = normalizeIdentifier(obligationRow.student_username);
+    if (!variantsCache.has(studentKey)) {
+      variantsCache.set(studentKey, await getStudentNameVariants(obligationRow.student_username));
+    }
+    const variants = variantsCache.get(studentKey) || new Set();
+    const usernameToken = normalizeStatementName(String(obligationRow.student_username || "").replace(/[_-]+/g, " "));
+    let nameMatch = usernameToken && payer.includes(usernameToken);
+    if (!nameMatch) {
+      for (const variant of variants) {
+        const normalized = normalizeStatementName(variant);
+        if (normalized && payer.includes(normalized)) {
+          nameMatch = true;
+          break;
+        }
+      }
+    }
+    if (nameMatch) {
+      score += 0.2;
+      reasons.push("payer_hint_match");
+    }
+  }
+  const dueDate = toDateOnly(obligationRow.due_date);
+  if (dueDate && transactionRow.normalized_paid_date) {
+    const due = new Date(`${dueDate}T00:00:00.000Z`);
+    const paid = new Date(`${transactionRow.normalized_paid_date}T00:00:00.000Z`);
+    const diffDays = Math.abs((paid.getTime() - due.getTime()) / (24 * 60 * 60 * 1000));
+    if (Number.isFinite(diffDays) && diffDays <= 45) {
+      score += 0.1;
+      reasons.push("date_proximity_match");
+    }
+  }
+  return {
+    score: Math.min(0.99, score),
+    reasons: normalizeReasonCodes(reasons),
+  };
+}
+
+async function pickBestObligationCandidate(transactionRow) {
+  if (!transactionRow) {
+    return null;
+  }
+  const normalizedRef = normalizeReference(transactionRow.normalized_txn_ref || transactionRow.txn_ref || "");
+  if (normalizedRef) {
+    const exact = await get(
+      `
+        SELECT po.*, pi.title AS payment_item_title
+        FROM payment_obligations po
+        JOIN payment_items pi ON pi.id = po.payment_item_id
+        WHERE LOWER(po.payment_reference) = ?
+        LIMIT 1
+      `,
+      [normalizedRef]
+    );
+    if (exact) {
+      return { obligation: exact, score: 1, reasons: ["exact_reference"] };
+    }
+  }
+  const conditions = [];
+  const params = [];
+  if (transactionRow.student_hint_username) {
+    conditions.push("po.student_username = ?");
+    params.push(normalizeIdentifier(transactionRow.student_hint_username));
+  }
+  if (transactionRow.payment_item_hint_id) {
+    conditions.push("po.payment_item_id = ?");
+    params.push(Number(transactionRow.payment_item_hint_id));
+  }
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  let candidates = await all(
+    `
+      SELECT po.*, pi.title AS payment_item_title
+      FROM payment_obligations po
+      JOIN payment_items pi ON pi.id = po.payment_item_id
+      ${whereClause}
+      ORDER BY po.updated_at DESC, po.id DESC
+      LIMIT 300
+    `,
+    params
+  );
+  if (!candidates.length) {
+    candidates = await all(
+      `
+        SELECT po.*, pi.title AS payment_item_title
+        FROM payment_obligations po
+        JOIN payment_items pi ON pi.id = po.payment_item_id
+        ORDER BY po.updated_at DESC, po.id DESC
+        LIMIT 300
+      `
+    );
+  }
+  if (!candidates.length) {
+    return null;
+  }
+  const variantsCache = new Map();
+  const scored = [];
+  for (const candidate of candidates) {
+    const scoreResult = await scoreObligationCandidate(transactionRow, candidate, variantsCache);
+    if (scoreResult.score > 0) {
+      scored.push({
+        obligation: candidate,
+        score: scoreResult.score,
+        reasons: scoreResult.reasons,
+      });
+    }
+  }
+  if (!scored.length) {
+    return null;
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  const second = scored[1];
+  if (second && Math.abs(best.score - second.score) <= 0.05) {
+    return {
+      obligation: best.obligation,
+      score: Math.max(0, best.score - 0.1),
+      reasons: normalizeReasonCodes(best.reasons.concat("ambiguous_candidate")),
+    };
+  }
+  return best;
+}
+
+async function recomputeObligationSnapshotById(obligationId) {
+  if (!obligationId) {
+    return null;
+  }
+  await run(
+    `
+      UPDATE payment_obligations
+      SET amount_paid_total = COALESCE(
+            (
+              SELECT SUM(pt.amount)
+              FROM payment_transactions pt
+              WHERE pt.matched_obligation_id = payment_obligations.id
+                AND pt.status = 'approved'
+            ),
+            0
+          ),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+    [obligationId]
+  );
+  await run(
+    `
+      UPDATE payment_obligations
+      SET status = CASE
+        WHEN amount_paid_total <= 0.00001 THEN 'unpaid'
+        WHEN amount_paid_total + 0.01 < expected_amount THEN 'partially_paid'
+        WHEN amount_paid_total >= expected_amount - 0.01 AND amount_paid_total <= expected_amount + 0.01 THEN 'paid'
+        ELSE 'overpaid'
+      END,
+      updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+    [obligationId]
+  );
+  return get("SELECT * FROM payment_obligations WHERE id = ? LIMIT 1", [obligationId]);
+}
+
+async function recomputeAllObligationSnapshots() {
+  const rows = await all("SELECT id FROM payment_obligations");
+  for (const row of rows) {
+    await recomputeObligationSnapshotById(row.id);
+  }
+}
+
+async function getReconciliationTransactionById(id) {
+  return get(
+    `
+      SELECT
+        pt.*,
+        po.student_username,
+        po.payment_item_id,
+        po.expected_amount,
+        po.payment_reference,
+        pi.title AS payment_item_title,
+        pi.currency
+      FROM payment_transactions pt
+      LEFT JOIN payment_obligations po ON po.id = pt.matched_obligation_id
+      LEFT JOIN payment_items pi ON pi.id = po.payment_item_id
+      WHERE pt.id = ?
+      LIMIT 1
+    `,
+    [id]
+  );
+}
+
+async function logReconciliationEvent(transactionId, obligationId, req, action, note) {
+  const actorUsername = req?.session?.user?.username || "system";
+  const actorRole = req?.session?.user?.role || "system";
+  await run(
+    `
+      INSERT INTO reconciliation_events (
+        transaction_id,
+        obligation_id,
+        actor_username,
+        actor_role,
+        action,
+        note
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    [transactionId || null, obligationId || null, actorUsername, actorRole, String(action || "").slice(0, 80), String(note || "").slice(0, 500)]
+  );
+  await run(
+    `
+      INSERT INTO audit_events (
+        actor_id,
+        actor_role,
+        event_type,
+        entity_type,
+        entity_id,
+        before_json,
+        after_json
+      )
+      VALUES (?, ?, ?, 'payment_transaction', ?, NULL, ?)
+    `,
+    [actorUsername, actorRole, String(action || "").slice(0, 80), transactionId || null, JSON.stringify({ obligationId: obligationId || null, note: note || "" })]
+  );
+}
+
+async function createReconciliationStatusNotification(studentUsername, paymentItemId, title, body) {
+  const student = normalizeIdentifier(studentUsername);
+  if (!student) {
+    return;
+  }
+  const finalTitle = `${String(title || "Payment Update").slice(0, 90)} (${student})`;
+  const finalBody = String(body || "").slice(0, 1800);
+  await run(
+    `
+      INSERT INTO notifications (
+        title,
+        body,
+        category,
+        type,
+        payload_json,
+        user_id,
+        read_at,
+        is_urgent,
+        is_pinned,
+        expires_at,
+        related_payment_item_id,
+        auto_generated,
+        created_by
+      )
+      VALUES (?, ?, 'Payments', ?, ?, ?, NULL, 0, 0, NULL, ?, 1, ?)
+    `,
+    [
+      finalTitle,
+      finalBody,
+      "payment_status",
+      JSON.stringify({ student, payment_item_id: paymentItemId || null }),
+      student,
+      paymentItemId || null,
+      "system-reconciliation",
+    ]
+  );
+}
+
+function reconciliationDecisionFromStatus(statusValue) {
+  const status = String(statusValue || "").toLowerCase();
+  if (status === "approved") return "approved";
+  if (status === "rejected") return "rejected";
+  if (status === "duplicate") return "duplicate";
+  if (status === "needs_review" || status === "needs_student_confirmation" || status === "unmatched") return "exception";
+  return "pending";
+}
+
+function reconciliationExceptionStatus(statusValue) {
+  const status = String(statusValue || "").toLowerCase();
+  if (status === "needs_student_confirmation") return "pending_student";
+  if (status === "approved" || status === "rejected") return "resolved";
+  return "open";
+}
+
+function primaryExceptionReason(reasons, statusValue) {
+  const normalized = Array.isArray(reasons) ? reasons : [];
+  if (normalized.length) {
+    return String(normalized[0]).slice(0, 80);
+  }
+  const status = String(statusValue || "").toLowerCase();
+  if (status === "duplicate") return "duplicate_transaction";
+  if (status === "needs_student_confirmation") return "needs_student_confirmation";
+  if (status === "unmatched") return "no_candidate";
+  return "manual_review";
+}
+
+async function syncPaymentMatchAndExceptionRecords(transactionId, req, decidedByOverride) {
+  const id = parseResourceId(transactionId);
+  if (!id) {
+    return;
+  }
+  const tx = await get("SELECT * FROM payment_transactions WHERE id = ? LIMIT 1", [id]);
+  if (!tx) {
+    return;
+  }
+  const reasons = normalizeReasonCodes(parseJsonArray(tx.reasons_json || "[]", []));
+  const decision = reconciliationDecisionFromStatus(tx.status);
+  const decidedBy = decidedByOverride || tx.reviewed_by || req?.session?.user?.username || (decision === "pending" ? null : "system");
+  const decidedAt = decision === "pending" ? null : tx.reviewed_at || new Date().toISOString();
+  await run(
+    `
+      INSERT INTO payment_matches (
+        obligation_id,
+        transaction_id,
+        confidence,
+        reasons_json,
+        decision,
+        decided_by,
+        decided_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(transaction_id) DO UPDATE SET
+        obligation_id = excluded.obligation_id,
+        confidence = excluded.confidence,
+        reasons_json = excluded.reasons_json,
+        decision = excluded.decision,
+        decided_by = excluded.decided_by,
+        decided_at = excluded.decided_at
+    `,
+    [
+      tx.matched_obligation_id || null,
+      id,
+      toSafeConfidence(tx.confidence, 0),
+      JSON.stringify(reasons),
+      decision,
+      decidedBy,
+      decidedAt,
+    ]
+  );
+  const matchRow = await get("SELECT id FROM payment_matches WHERE transaction_id = ? LIMIT 1", [id]);
+  if (!matchRow) {
+    return;
+  }
+  const status = String(tx.status || "").toLowerCase();
+  if (["needs_review", "needs_student_confirmation", "unmatched", "duplicate"].includes(status)) {
+    await run(
+      `
+        INSERT INTO reconciliation_exceptions (
+          match_id,
+          reason,
+          status,
+          assigned_to,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(match_id) DO UPDATE SET
+          reason = excluded.reason,
+          status = excluded.status,
+          updated_at = CURRENT_TIMESTAMP
+      `,
+      [matchRow.id, primaryExceptionReason(reasons, status), reconciliationExceptionStatus(status)]
+    );
+    return;
+  }
+  await run(
+    `
+      UPDATE reconciliation_exceptions
+      SET status = 'resolved',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE match_id = ?
+    `,
+    [matchRow.id]
+  );
+}
+
+async function reconcileTransactionById(transactionId, options = {}) {
+  const id = parseResourceId(transactionId);
+  if (!id) {
+    return null;
+  }
+  const allowAutoApprove = options.allowAutoApprove !== false;
+  const row = await get("SELECT * FROM payment_transactions WHERE id = ? LIMIT 1", [id]);
+  if (!row) {
+    return null;
+  }
+  if (!options.force && ["approved", "rejected"].includes(String(row.status || "").toLowerCase())) {
+    return getReconciliationTransactionById(id);
+  }
+  const duplicate = await findDuplicateTransactionCandidate(row);
+  if (duplicate) {
+    const reasonCodes = normalizeReasonCodes(["duplicate_transaction"]);
+    await run(
+      `
+        UPDATE payment_transactions
+        SET status = 'duplicate',
+            matched_obligation_id = ?,
+            confidence = 0.2,
+            reasons_json = ?,
+            reviewed_by = NULL,
+            reviewed_at = NULL
+        WHERE id = ?
+      `,
+      [duplicate.matched_obligation_id || null, JSON.stringify(reasonCodes), id]
+    );
+    await logReconciliationEvent(id, duplicate.matched_obligation_id || null, options.actorReq, "duplicate_detected", `Duplicate of #${duplicate.id}`);
+    await syncPaymentMatchAndExceptionRecords(id, options.actorReq);
+    return getReconciliationTransactionById(id);
+  }
+  const best = await pickBestObligationCandidate(row);
+  const thresholds = getReconcileThresholds();
+  if (!best || !best.obligation) {
+    const reasons = normalizeReasonCodes(["no_candidate"]);
+    await run(
+      `
+        UPDATE payment_transactions
+        SET status = 'unmatched',
+            matched_obligation_id = NULL,
+            confidence = 0,
+            reasons_json = ?,
+            reviewed_by = NULL,
+            reviewed_at = NULL
+        WHERE id = ?
+      `,
+      [JSON.stringify(reasons), id]
+    );
+    await logReconciliationEvent(id, null, options.actorReq, "no_match", "No obligation candidate found.");
+    await syncPaymentMatchAndExceptionRecords(id, options.actorReq);
+    return getReconciliationTransactionById(id);
+  }
+  const reasons = normalizeReasonCodes(best.reasons || []);
+  if (best.score < thresholds.review) {
+    const lowScoreReasons = normalizeReasonCodes(reasons.concat("low_confidence"));
+    await run(
+      `
+        UPDATE payment_transactions
+        SET status = 'unmatched',
+            matched_obligation_id = ?,
+            confidence = ?,
+            reasons_json = ?,
+            reviewed_by = NULL,
+            reviewed_at = NULL
+        WHERE id = ?
+      `,
+      [best.obligation.id, toSafeConfidence(best.score, 0), JSON.stringify(lowScoreReasons), id]
+    );
+    await logReconciliationEvent(
+      id,
+      best.obligation.id,
+      options.actorReq,
+      "low_confidence_unmatched",
+      `Best score ${best.score.toFixed(2)} below threshold ${thresholds.review.toFixed(2)}.`
+    );
+    await syncPaymentMatchAndExceptionRecords(id, options.actorReq);
+    return getReconciliationTransactionById(id);
+  }
+  const shouldAutoApprove = allowAutoApprove && best.score >= thresholds.auto;
+  const nextStatus = shouldAutoApprove ? "approved" : "needs_review";
+  await run(
+    `
+      UPDATE payment_transactions
+      SET status = ?,
+          matched_obligation_id = ?,
+          confidence = ?,
+          reasons_json = ?,
+          reviewed_by = NULL,
+          reviewed_at = NULL
+      WHERE id = ?
+    `,
+    [nextStatus, best.obligation.id, toSafeConfidence(best.score, 0), JSON.stringify(reasons), id]
+  );
+  await logReconciliationEvent(
+    id,
+    best.obligation.id,
+    options.actorReq,
+    shouldAutoApprove ? "auto_approved" : "queued_for_review",
+    shouldAutoApprove ? `Auto-approved with confidence ${best.score.toFixed(2)}` : `Queued for review (${best.score.toFixed(2)})`
+  );
+  await syncPaymentMatchAndExceptionRecords(id, options.actorReq);
+  if (shouldAutoApprove) {
+    const obligation = await recomputeObligationSnapshotById(best.obligation.id);
+    if (obligation) {
+      await createReconciliationStatusNotification(
+        obligation.student_username,
+        obligation.payment_item_id,
+        "Payment auto-confirmed",
+        `A transaction was auto-matched to ${best.obligation.payment_item_title || "your payment item"} and approved.`
+      );
+    }
+  }
+  return getReconciliationTransactionById(id);
+}
+
+async function ingestNormalizedTransaction(input, options = {}) {
+  const normalized = normalizeTransactionInput(input);
+  if (!normalized) {
+    return { ok: false, error: "Invalid transaction payload." };
+  }
+  try {
+    if (normalized.sourceEventId) {
+      const byEvent = await get("SELECT * FROM payment_transactions WHERE source_event_id = ? LIMIT 1", [normalized.sourceEventId]);
+      if (byEvent) {
+        return { ok: true, inserted: false, idempotent: true, duplicateKey: "source_event_id", transaction: byEvent };
+      }
+    }
+    if (normalized.source === "statement_upload" && normalized.checksum) {
+      const byChecksum = await get(
+        "SELECT * FROM payment_transactions WHERE source = ? AND checksum = ? LIMIT 1",
+        [normalized.source, normalized.checksum]
+      );
+      if (byChecksum) {
+        return { ok: true, inserted: false, idempotent: true, duplicateKey: "checksum", transaction: byChecksum };
+      }
+    }
+    const insert = await run(
+      `
+        INSERT INTO payment_transactions (
+          txn_ref,
+          amount,
+          paid_at,
+          payer_name,
+          source,
+          source_event_id,
+          source_file_name,
+          normalized_txn_ref,
+          normalized_paid_date,
+          normalized_payer_name,
+          student_hint_username,
+          payment_item_hint_id,
+          checksum,
+          raw_payload_json,
+          status,
+          reasons_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unmatched', '[]')
+      `,
+      [
+        normalized.txnRef || "",
+        normalized.amount,
+        normalized.paidAt,
+        normalized.payerName || "",
+        normalized.source,
+        normalized.sourceEventId || null,
+        normalized.sourceFileName || "",
+        normalized.normalizedTxnRef || "",
+        normalized.normalizedPaidDate || "",
+        normalized.normalizedPayerName || "",
+        normalized.studentHintUsername || null,
+        normalized.paymentItemHintId || null,
+        normalized.checksum || null,
+        JSON.stringify(normalized.rawPayload || {}),
+      ]
+    );
+    const reconciled = await reconcileTransactionById(insert.lastID, {
+      actorReq: options.actorReq || null,
+      allowAutoApprove: options.allowAutoApprove !== false,
+      force: true,
+    });
+    return {
+      ok: true,
+      inserted: true,
+      idempotent: false,
+      transaction: reconciled || (await get("SELECT * FROM payment_transactions WHERE id = ? LIMIT 1", [insert.lastID])),
+    };
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (message.includes("source_event_id")) {
+      const row = await get("SELECT * FROM payment_transactions WHERE source_event_id = ? LIMIT 1", [normalized.sourceEventId]);
+      return { ok: true, inserted: false, idempotent: true, duplicateKey: "source_event_id", transaction: row };
+    }
+    if (message.includes("source, checksum")) {
+      const row = await get("SELECT * FROM payment_transactions WHERE source = ? AND checksum = ? LIMIT 1", [
+        normalized.source,
+        normalized.checksum,
+      ]);
+      return { ok: true, inserted: false, idempotent: true, duplicateKey: "checksum", transaction: row };
+    }
+    return { ok: false, error: "Could not ingest transaction." };
+  }
+}
+
+function normalizeStatementRowForIngestion(row, rowIndex, actorUsername, sourceFileName) {
+  const rowNumber = Number.parseInt(row?.row_number, 10) || rowIndex + 1;
+  const reference = String(row?.raw_reference || row?.normalized_reference || "").trim();
+  const amount = Number(row?.normalized_amount || parseAmountToken(row?.raw_amount || row?.raw_credit || ""));
+  const date = parseDateToken(row?.normalized_date || row?.raw_date || "");
+  const payerName = String(row?.raw_name || row?.raw_description || row?.normalized_name || "").trim();
+  const reasons = [];
+  if (!reference) reasons.push("missing_reference");
+  if (!Number.isFinite(amount) || amount <= 0) reasons.push("invalid_amount");
+  if (!date) reasons.push("invalid_date");
+  if (!payerName) reasons.push("missing_payer_name");
+  if (reasons.length) {
+    return {
+      ok: false,
+      rowNumber,
+      invalid: {
+        row_number: rowNumber,
+        raw: row,
+        reasons,
+      },
+    };
+  }
+  const checksum = buildTransactionChecksum({
+    source: "statement_upload",
+    txn_ref: reference,
+    amount,
+    date,
+    payer_name: payerName,
+  });
+  const eventHash = crypto
+    .createHash("sha1")
+    .update(`${actorUsername}|${sourceFileName}|${checksum || rowNumber}`)
+    .digest("hex")
+    .slice(0, 40);
+  return {
+    ok: true,
+    rowNumber,
+    payload: {
+      source: "statement_upload",
+      source_event_id: `statement-${eventHash}`,
+      txn_ref: reference,
+      amount,
+      date,
+      payer_name: payerName,
+      student_username: normalizeIdentifier(String(row?.normalized_name || "").trim()),
+      source_file_name: sourceFileName,
+      raw_payload: row,
+      checksum,
+    },
+  };
+}
+
+async function previewStatementTransactionDecision(input) {
+  const normalized = normalizeTransactionInput(input);
+  if (!normalized) {
+    return { status: "invalid", confidence: 0, reasons: ["invalid_payload"], matched_obligation_id: null };
+  }
+  if (normalized.checksum) {
+    const existing = await get("SELECT id, status FROM payment_transactions WHERE source = ? AND checksum = ? LIMIT 1", [
+      normalized.source,
+      normalized.checksum,
+    ]);
+    if (existing) {
+      return {
+        status: String(existing.status || "idempotent"),
+        confidence: 1,
+        reasons: ["checksum_idempotent"],
+        matched_obligation_id: null,
+        existing_transaction_id: existing.id,
+      };
+    }
+  }
+  const candidate = toTransactionCandidateRow(normalized);
+  const duplicate = await findDuplicateTransactionCandidate(candidate);
+  if (duplicate) {
+    return {
+      status: "duplicate",
+      confidence: 0.2,
+      reasons: ["duplicate_transaction"],
+      matched_obligation_id: duplicate.matched_obligation_id || null,
+      existing_transaction_id: duplicate.id,
+    };
+  }
+  const best = await pickBestObligationCandidate(candidate);
+  const thresholds = getReconcileThresholds();
+  if (!best || !best.obligation) {
+    return {
+      status: "unmatched",
+      confidence: 0,
+      reasons: ["no_candidate"],
+      matched_obligation_id: null,
+    };
+  }
+  if (best.score < thresholds.review) {
+    return {
+      status: "unmatched",
+      confidence: toSafeConfidence(best.score, 0),
+      reasons: normalizeReasonCodes((best.reasons || []).concat("low_confidence")),
+      matched_obligation_id: best.obligation.id,
+    };
+  }
+  if (best.score >= thresholds.auto) {
+    return {
+      status: "approved",
+      confidence: toSafeConfidence(best.score, 0),
+      reasons: normalizeReasonCodes(best.reasons || []),
+      matched_obligation_id: best.obligation.id,
+    };
+  }
+  return {
+    status: "needs_review",
+    confidence: toSafeConfidence(best.score, 0),
+    reasons: normalizeReasonCodes(best.reasons || []),
+    matched_obligation_id: best.obligation.id,
+  };
+}
+
+async function ingestStatementRowsAsTransactions(req, parsedRows, originalFilename, options = {}) {
+  const dryRun = options.dryRun === true;
+  const actor = normalizeIdentifier(req?.session?.user?.username || "teacher");
+  const sourceFileName = String(originalFilename || "").slice(0, 255);
+  const summary = {
+    dryRun,
+    totalRows: Array.isArray(parsedRows) ? parsedRows.length : 0,
+    inserted: 0,
+    idempotent: 0,
+    invalid: 0,
+    autoApproved: 0,
+    exceptions: 0,
+    rowResults: [],
+    unparsedRows: [],
+  };
+  for (let i = 0; i < (parsedRows || []).length; i += 1) {
+    const normalizedRow = normalizeStatementRowForIngestion(parsedRows[i], i, actor, sourceFileName);
+    if (!normalizedRow.ok) {
+      summary.invalid += 1;
+      summary.unparsedRows.push(normalizedRow.invalid);
+      summary.rowResults.push({
+        row_number: normalizedRow.rowNumber,
+        ok: false,
+        code: "invalid_row",
+        reasons: normalizedRow.invalid.reasons,
+      });
+      continue;
+    }
+    if (dryRun) {
+      const preview = await previewStatementTransactionDecision(normalizedRow.payload);
+      const status = String(preview.status || "").toLowerCase();
+      if (status === "approved") {
+        summary.autoApproved += 1;
+      } else if (["needs_review", "unmatched", "duplicate", "needs_student_confirmation"].includes(status)) {
+        summary.exceptions += 1;
+      }
+      summary.rowResults.push({ row_number: normalizedRow.rowNumber, ok: true, code: "dry_run_preview", preview });
+      continue;
+    }
+    const ingest = await ingestNormalizedTransaction(normalizedRow.payload, { actorReq: req, allowAutoApprove: true });
+    if (!ingest.ok) {
+      summary.rowResults.push({
+        row_number: normalizedRow.rowNumber,
+        ok: false,
+        code: "ingest_failed",
+        error: ingest.error || "Could not ingest row.",
+      });
+      continue;
+    }
+    if (ingest.inserted) {
+      summary.inserted += 1;
+    } else if (ingest.idempotent) {
+      summary.idempotent += 1;
+    }
+    const status = String(ingest.transaction?.status || "").toLowerCase();
+    if (status === "approved") {
+      summary.autoApproved += 1;
+    } else if (["needs_review", "unmatched", "duplicate", "needs_student_confirmation"].includes(status)) {
+      summary.exceptions += 1;
+    }
+    summary.rowResults.push({
+      row_number: normalizedRow.rowNumber,
+      ok: true,
+      code: ingest.idempotent ? "idempotent" : "ingested",
+      transaction_id: ingest.transaction?.id || null,
+      status: ingest.transaction?.status || null,
+      reasons: parseJsonArray(ingest.transaction?.reasons_json || "[]", []),
+    });
+  }
+  return summary;
+}
+
+function parseReconciliationFilters(query) {
+  return {
+    status: sanitizeReconciliationStatus(query.status || "all"),
+    reason: sanitizeReconciliationReason(query.reason || "all"),
+    student: normalizeIdentifier(query.student || ""),
+    paymentItemId: parseResourceId(query.paymentItemId),
+    dateFrom: String(query.dateFrom || "").trim(),
+    dateTo: String(query.dateTo || "").trim(),
+    page: Math.max(1, Number.parseInt(query.page, 10) || 1),
+    pageSize: Math.max(1, Math.min(200, Number.parseInt(query.pageSize, 10) || 50)),
+    legacy: String(query.legacy || "").trim() === "1",
+  };
+}
+
+function buildReconciliationExceptionQuery(filters) {
+  const params = [];
+  const conditions = [];
+  if (filters.status && filters.status !== "all") {
+    conditions.push("pt.status = ?");
+    params.push(filters.status);
+  } else {
+    conditions.push("pt.status IN ('needs_review', 'unmatched', 'duplicate', 'needs_student_confirmation')");
+  }
+  if (filters.reason && filters.reason !== "all") {
+    conditions.push("(re.reason = ? OR pt.reasons_json LIKE ?)");
+    params.push(filters.reason, `%\"${filters.reason}\"%`);
+  }
+  if (filters.student) {
+    conditions.push("(po.student_username = ? OR pt.student_hint_username = ?)");
+    params.push(filters.student, filters.student);
+  }
+  if (filters.paymentItemId) {
+    conditions.push("(po.payment_item_id = ? OR pt.payment_item_hint_id = ?)");
+    params.push(filters.paymentItemId, filters.paymentItemId);
+  }
+  if (filters.dateFrom && isValidIsoLikeDate(filters.dateFrom)) {
+    conditions.push("DATE(pt.paid_at) >= DATE(?)");
+    params.push(filters.dateFrom);
+  }
+  if (filters.dateTo && isValidIsoLikeDate(filters.dateTo)) {
+    conditions.push("DATE(pt.paid_at) <= DATE(?)");
+    params.push(filters.dateTo);
+  }
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const offset = (filters.page - 1) * filters.pageSize;
+  const baseFrom = `
+      FROM payment_transactions pt
+      LEFT JOIN payment_obligations po ON po.id = pt.matched_obligation_id
+      LEFT JOIN payment_items pi ON pi.id = po.payment_item_id
+      LEFT JOIN payment_matches pm ON pm.transaction_id = pt.id
+      LEFT JOIN reconciliation_exceptions re ON re.match_id = pm.id
+  `;
+  return {
+    sql: `
+      SELECT
+        pt.id,
+        pt.txn_ref,
+        pt.amount,
+        pt.paid_at,
+        pt.payer_name,
+        pt.source,
+        pt.status,
+        pt.confidence,
+        pt.reasons_json,
+        pt.created_at,
+        pt.reviewed_by,
+        pt.reviewed_at,
+        pt.payment_item_hint_id,
+        pt.student_hint_username,
+        po.id AS obligation_id,
+        po.student_username,
+        po.payment_item_id,
+        po.payment_reference,
+        po.expected_amount,
+        pi.title AS payment_item_title,
+        pi.currency,
+        pm.id AS payment_match_id,
+        pm.decision AS match_decision,
+        re.id AS exception_id,
+        re.reason AS exception_reason,
+        re.status AS exception_status
+      ${baseFrom}
+      ${whereClause}
+      ORDER BY pt.created_at DESC, pt.id DESC
+      LIMIT ${filters.pageSize}
+      OFFSET ${offset}
+    `,
+    countSql: `
+      SELECT COUNT(*) AS total
+      ${baseFrom}
+      ${whereClause}
+    `,
+    params,
+  };
+}
+
+async function getReconciliationSummary() {
+  const [statusRows, unresolvedRow] = await Promise.all([
+    all(
+      `
+        SELECT status, COUNT(*) AS total
+        FROM payment_transactions
+        GROUP BY status
+      `
+    ),
+    get(
+      `
+        SELECT COUNT(*) AS total
+        FROM payment_obligations
+        WHERE expected_amount - amount_paid_total > 0.01
+      `
+    ),
+  ]);
+  const map = Object.create(null);
+  statusRows.forEach((row) => {
+    map[String(row.status || "unknown")] = Number(row.total || 0);
+  });
+  const exceptionStatuses = ["needs_review", "unmatched", "duplicate", "needs_student_confirmation"];
+  const exceptions = exceptionStatuses.reduce((acc, status) => acc + Number(map[status] || 0), 0);
+  return {
+    auto_approved: Number(map.approved || 0),
+    exceptions,
+    unresolved_obligations: Number(unresolvedRow?.total || 0),
+    duplicates: Number(map.duplicate || 0),
+    needs_student_confirmation: Number(map.needs_student_confirmation || 0),
+  };
+}
+
+async function applyReconciliationReviewAction(req, transactionId, action, options = {}) {
+  const id = parseResourceId(transactionId);
+  if (!id) {
+    throw { status: 400, error: "Invalid transaction ID." };
+  }
+  const tx = await get("SELECT * FROM payment_transactions WHERE id = ? LIMIT 1", [id]);
+  if (!tx) {
+    throw { status: 404, error: "Transaction not found." };
+  }
+  const actor = req?.session?.user?.username || "system";
+  let matchedObligationId = tx.matched_obligation_id ? Number(tx.matched_obligation_id) : null;
+  const currentReasons = parseJsonArray(tx.reasons_json || "[]", []);
+  if (action === "approve") {
+    const requestedObligationId = parseResourceId(options.obligationId);
+    if (requestedObligationId) {
+      matchedObligationId = requestedObligationId;
+    }
+    if (!matchedObligationId) {
+      const best = await pickBestObligationCandidate(tx);
+      matchedObligationId = best?.obligation?.id || null;
+    }
+    if (!matchedObligationId) {
+      throw { status: 400, error: "No obligation match was found for approval." };
+    }
+    const reasons = normalizeReasonCodes(currentReasons.concat("manual_approved"));
+    await run(
+      `
+        UPDATE payment_transactions
+        SET status = 'approved',
+            matched_obligation_id = ?,
+            confidence = ?,
+            reasons_json = ?,
+            reviewed_by = ?,
+            reviewed_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [matchedObligationId, Math.max(0.75, toSafeConfidence(tx.confidence, 0.75)), JSON.stringify(reasons), actor, id]
+    );
+    const obligation = await recomputeObligationSnapshotById(matchedObligationId);
+    await syncPaymentMatchAndExceptionRecords(id, req, actor);
+    await logReconciliationEvent(id, matchedObligationId, req, "manual_approve", options.note || "Manually approved.");
+    if (obligation) {
+      await createReconciliationStatusNotification(
+        obligation.student_username,
+        obligation.payment_item_id,
+        "Payment approved",
+        "Your payment was approved by your reviewer."
+      );
+    }
+    return getReconciliationTransactionById(id);
+  }
+  if (action === "reject") {
+    const reasons = normalizeReasonCodes(currentReasons.concat("manual_rejected"));
+    await run(
+      `
+        UPDATE payment_transactions
+        SET status = 'rejected',
+            reasons_json = ?,
+            reviewed_by = ?,
+            reviewed_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [JSON.stringify(reasons), actor, id]
+    );
+    await syncPaymentMatchAndExceptionRecords(id, req, actor);
+    await logReconciliationEvent(id, matchedObligationId, req, "manual_reject", options.note || "Manually rejected.");
+    return getReconciliationTransactionById(id);
+  }
+  if (action === "request_student_confirmation") {
+    const reasons = normalizeReasonCodes(currentReasons.concat("needs_student_confirmation"));
+    await run(
+      `
+        UPDATE payment_transactions
+        SET status = 'needs_student_confirmation',
+            reasons_json = ?,
+            reviewed_by = ?,
+            reviewed_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [JSON.stringify(reasons), actor, id]
+    );
+    const obligation = matchedObligationId
+      ? await get("SELECT * FROM payment_obligations WHERE id = ? LIMIT 1", [matchedObligationId])
+      : null;
+    if (obligation) {
+      await createReconciliationStatusNotification(
+        obligation.student_username,
+        obligation.payment_item_id,
+        "Payment confirmation requested",
+        "Your payment needs additional confirmation. Please share your proof of payment with your teacher."
+      );
+    }
+    await syncPaymentMatchAndExceptionRecords(id, req, actor);
+    await logReconciliationEvent(id, matchedObligationId, req, "request_student_confirmation", options.note || "Requested student confirmation.");
+    return getReconciliationTransactionById(id);
+  }
+  if (action === "merge_duplicates") {
+    const primaryTransactionId = parseResourceId(options.primaryTransactionId);
+    if (!primaryTransactionId) {
+      throw { status: 400, error: "primaryTransactionId is required for merge duplicates." };
+    }
+    if (primaryTransactionId === id) {
+      throw { status: 400, error: "Duplicate transaction cannot be merged into itself." };
+    }
+    const primary = await get("SELECT * FROM payment_transactions WHERE id = ? LIMIT 1", [primaryTransactionId]);
+    if (!primary) {
+      throw { status: 404, error: "Primary transaction not found." };
+    }
+    const reasons = normalizeReasonCodes(currentReasons.concat("duplicate_transaction"));
+    await run(
+      `
+        UPDATE payment_transactions
+        SET status = 'duplicate',
+            matched_obligation_id = ?,
+            confidence = 0.2,
+            reasons_json = ?,
+            reviewed_by = ?,
+            reviewed_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [primary.matched_obligation_id || null, JSON.stringify(reasons), actor, id]
+    );
+    if (tx.matched_obligation_id) {
+      await recomputeObligationSnapshotById(tx.matched_obligation_id);
+    }
+    if (primary.matched_obligation_id) {
+      await recomputeObligationSnapshotById(primary.matched_obligation_id);
+    }
+    await syncPaymentMatchAndExceptionRecords(id, req, actor);
+    await logReconciliationEvent(id, primary.matched_obligation_id || null, req, "merge_duplicates", `Merged into #${primaryTransactionId}`);
+    return getReconciliationTransactionById(id);
+  }
+  throw { status: 400, error: "Unsupported reconciliation action." };
+}
+
+async function migrateLegacyReceiptsToTransactions() {
+  const rows = await all(
+    `
+      SELECT pr.*, pi.expected_amount, pi.due_date
+      FROM payment_receipts pr
+      LEFT JOIN payment_items pi ON pi.id = pr.payment_item_id
+      ORDER BY pr.id ASC
+    `
+  );
+  for (const receipt of rows) {
+    const obligation = await upsertPaymentObligation(
+      {
+        id: receipt.payment_item_id,
+        expected_amount: receipt.expected_amount || receipt.amount_paid,
+        due_date: receipt.due_date || null,
+      },
+      receipt.student_username
+    );
+    const statusMap = {
+      approved: "approved",
+      rejected: "rejected",
+      under_review: "needs_review",
+      submitted: "needs_review",
+    };
+    const status = statusMap[String(receipt.status || "").toLowerCase()] || "needs_review";
+    const reasons = normalizeReasonCodes(["legacy_migration", status === "approved" ? "manual_approved" : "amount_match"]);
+    const normalizedPaidDate = toDateOnly(receipt.paid_at || receipt.submitted_at || "");
+    const checksum = buildTransactionChecksum({
+      source: "student_receipt",
+      txn_ref: receipt.transaction_ref || "",
+      amount: Number(receipt.amount_paid || 0),
+      date: normalizedPaidDate,
+      payer_name: receipt.student_username || "",
+    });
+    await run(
+      `
+        INSERT INTO payment_transactions (
+          txn_ref,
+          amount,
+          paid_at,
+          payer_name,
+          source,
+          source_event_id,
+          source_file_name,
+          normalized_txn_ref,
+          normalized_paid_date,
+          normalized_payer_name,
+          student_hint_username,
+          payment_item_hint_id,
+          checksum,
+          raw_payload_json,
+          status,
+          matched_obligation_id,
+          confidence,
+          reasons_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_event_id) DO NOTHING
+      `,
+      [
+        String(receipt.transaction_ref || ""),
+        Number(receipt.amount_paid || 0),
+        String(receipt.paid_at || receipt.submitted_at || ""),
+        String(receipt.student_username || ""),
+        "student_receipt",
+        `legacy-receipt-${receipt.id}`,
+        path.basename(String(receipt.receipt_file_path || "")),
+        normalizeReference(receipt.transaction_ref || ""),
+        normalizedPaidDate,
+        normalizeStatementName(receipt.student_username || ""),
+        normalizeIdentifier(receipt.student_username || ""),
+        receipt.payment_item_id || null,
+        checksum || null,
+        JSON.stringify({
+          legacy_receipt_id: receipt.id,
+          legacy_status: receipt.status,
+          verification_notes: parseJsonObject(receipt.verification_notes || "{}", {}),
+        }),
+        status,
+        obligation?.id || null,
+        status === "approved" ? 1 : 0.6,
+        JSON.stringify(reasons),
+      ]
+    );
+  }
+  const txRows = await all("SELECT id FROM payment_transactions WHERE source_event_id LIKE 'legacy-receipt-%'");
+  for (const row of txRows) {
+    await syncPaymentMatchAndExceptionRecords(row.id, null, "system-migration");
+  }
+  await recomputeAllObligationSnapshots();
+}
+
+async function migrateLegacyReceiptsToReconciliation() {
+  await ensurePaymentObligationsForAllPaymentItems();
+  await migrateLegacyReceiptsToTransactions();
 }
 
 async function isValidReviewerAssignee(identifier) {
@@ -2540,27 +4346,54 @@ app.get("/api/admin/audit-logs", requireAdmin, async (_req, res) => {
 app.get("/api/payment-items", requireAuth, async (_req, res) => {
   try {
     const isStudent = _req.session?.user?.role === "student";
-    const whereClause = isStudent
-      ? "WHERE (pi.available_until IS NULL OR datetime(pi.available_until) > CURRENT_TIMESTAMP)"
-      : "";
-    const rows = await all(
-      `
-        SELECT
-          pi.id,
-          pi.title,
-          pi.description,
-          pi.expected_amount,
-          pi.currency,
-          pi.due_date,
-          pi.available_until,
-          pi.availability_days,
-          pi.created_by,
-          pi.created_at
-        FROM payment_items pi
-        ${whereClause}
-        ORDER BY pi.created_at DESC, pi.id DESC
-      `
-    );
+    let rows = [];
+    if (isStudent) {
+      const student = normalizeIdentifier(_req.session.user.username);
+      await ensurePaymentObligationsForStudent(student);
+      rows = await all(
+        `
+          SELECT
+            pi.id,
+            pi.title,
+            pi.description,
+            pi.expected_amount,
+            pi.currency,
+            pi.due_date,
+            pi.available_until,
+            pi.availability_days,
+            pi.created_by,
+            pi.created_at,
+            po.payment_reference AS my_reference,
+            po.status AS obligation_status,
+            COALESCE(po.amount_paid_total, 0) AS amount_paid_total
+          FROM payment_items pi
+          LEFT JOIN payment_obligations po
+            ON po.payment_item_id = pi.id
+           AND po.student_username = ?
+          WHERE (pi.available_until IS NULL OR datetime(pi.available_until) > CURRENT_TIMESTAMP)
+          ORDER BY pi.created_at DESC, pi.id DESC
+        `,
+        [student]
+      );
+    } else {
+      rows = await all(
+        `
+          SELECT
+            pi.id,
+            pi.title,
+            pi.description,
+            pi.expected_amount,
+            pi.currency,
+            pi.due_date,
+            pi.available_until,
+            pi.availability_days,
+            pi.created_by,
+            pi.created_at
+          FROM payment_items pi
+          ORDER BY pi.created_at DESC, pi.id DESC
+        `
+      );
+    }
     return res.json(rows);
   } catch (_err) {
     return res.status(500).json({ error: "Could not load payment items." });
@@ -2613,6 +4446,7 @@ app.post("/api/payment-items", requireTeacher, async (req, res) => {
     );
     const inserted = await get("SELECT * FROM payment_items WHERE id = ? LIMIT 1", [result.lastID]);
     await syncPaymentItemNotification(req, inserted);
+    await ensurePaymentObligationsForPaymentItem(result.lastID);
     await logAuditEvent(
       req,
       "create",
@@ -2683,6 +4517,7 @@ app.put("/api/payment-items/:id", requireTeacher, async (req, res) => {
     );
     const updated = await get("SELECT * FROM payment_items WHERE id = ? LIMIT 1", [id]);
     await syncPaymentItemNotification(req, updated);
+    await ensurePaymentObligationsForPaymentItem(id);
     await logAuditEvent(
       req,
       "edit",
@@ -2716,7 +4551,20 @@ app.delete("/api/payment-items/:id", requireTeacher, async (req, res) => {
     if (Number(receiptCount?.total || 0) > 0) {
       return res.status(409).json({ error: "Cannot delete a payment item that already has receipts." });
     }
+    const reconciledCount = await get(
+      `
+        SELECT COUNT(*) AS total
+        FROM payment_transactions pt
+        JOIN payment_obligations po ON po.id = pt.matched_obligation_id
+        WHERE po.payment_item_id = ?
+      `,
+      [id]
+    );
+    if (Number(reconciledCount?.total || 0) > 0) {
+      return res.status(409).json({ error: "Cannot delete a payment item that already has reconciled transactions." });
+    }
 
+    await run("DELETE FROM payment_obligations WHERE payment_item_id = ?", [id]);
     await run("DELETE FROM payment_items WHERE id = ?", [id]);
     await run("DELETE FROM notifications WHERE related_payment_item_id = ? AND auto_generated = 1", [id]);
     await logAuditEvent(
@@ -2744,6 +4592,8 @@ app.get("/api/teacher/payment-statement", requireTeacher, async (req, res) => {
       original_filename: row.original_filename,
       uploaded_at: row.uploaded_at,
       parsed_row_count: row.parsed_rows.length,
+      unparsed_row_count: Array.isArray(row.unparsed_rows) ? row.unparsed_rows.length : 0,
+      parse_stages: Array.isArray(row.parse_stages) ? row.parse_stages : [],
     });
   } catch (_err) {
     return res.status(500).json({ error: "Could not load teacher statement." });
@@ -2761,24 +4611,48 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
           : err && err.code === "LIMIT_FILE_SIZE"
           ? "Statement file cannot be larger than 5 MB."
           : "Could not process statement upload.";
-      return res.status(400).json({ error: message });
+      return res.status(400).json({ error: message, code: "statement_upload_invalid" });
     }
     if (!req.file || !req.file.path) {
-      return res.status(400).json({ error: "Statement file is required." });
+      return res.status(400).json({ error: "Statement file is required.", code: "statement_file_required" });
     }
     try {
+      const dryRun = String(req.query?.dryRun || req.body?.dryRun || "")
+        .trim()
+        .toLowerCase() === "true";
       const statementPath = path.resolve(req.file.path);
       const parsedResult = await parseStatementRowsFromUpload(statementPath, req.file.originalname || req.file.path);
-      const parsedRows = parsedResult.parsedRows;
-      const extractedText = parsedResult.extractedText;
-      if (!parsedRows.length) {
+      const parsedRows = Array.isArray(parsedResult.parsedRows) ? parsedResult.parsedRows : [];
+      const extractedText = String(parsedResult.extractedText || "");
+      const parserInvalidRows = Array.isArray(parsedResult.invalidRows) ? parsedResult.invalidRows : [];
+      const parseStages = Array.isArray(parsedResult.parseStages) ? parsedResult.parseStages : [];
+      if (!parsedRows.length && !parserInvalidRows.length) {
         fs.unlink(req.file.path, () => {});
         return res.status(400).json({
+          code: "statement_parse_failed",
           error:
             "Could not parse statement rows. Use a clear statement file with name/description, amount, date, and transaction reference.",
         });
       }
       const teacherUsername = normalizeIdentifier(req.session.user.username);
+      const ingestionSummary = await ingestStatementRowsAsTransactions(
+        req,
+        parsedRows,
+        String(req.file.originalname || path.basename(req.file.path)),
+        { dryRun }
+      );
+      ingestionSummary.unparsedRows = parserInvalidRows.concat(ingestionSummary.unparsedRows || []);
+      ingestionSummary.invalid = Number(ingestionSummary.invalid || 0) + parserInvalidRows.length;
+      ingestionSummary.parseStages = parseStages;
+      if (dryRun) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(200).json({
+          ok: true,
+          dryRun: true,
+          parsed_row_count: parsedRows.length,
+          ingestion: ingestionSummary,
+        });
+      }
       const existing = await get(
         "SELECT statement_file_path FROM teacher_payment_statements WHERE teacher_username = ? LIMIT 1",
         [teacherUsername]
@@ -2806,6 +4680,8 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
           JSON.stringify({
             parsed_rows: parsedRows,
             extracted_text: extractedText.slice(0, 300000),
+            unparsed_rows: ingestionSummary.unparsedRows || [],
+            parse_stages: ingestionSummary.parseStages || [],
           }),
         ]
       );
@@ -2818,11 +4694,14 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
         "payment_statement",
         null,
         teacherUsername,
-        `Uploaded statement with ${parsedRows.length} parsed row(s).`
+        `Uploaded statement with ${parsedRows.length} parsed row(s). Ingested ${ingestionSummary.inserted} transaction(s). Invalid rows: ${Number(
+          ingestionSummary.invalid || 0
+        )}.`
       );
       return res.status(201).json({
         ok: true,
         parsed_row_count: parsedRows.length,
+        ingestion: ingestionSummary,
       });
     } catch (_err) {
       return res.status(500).json({ error: "Could not save statement of account." });
@@ -2849,6 +4728,225 @@ app.delete("/api/teacher/payment-statement", requireTeacher, async (req, res) =>
   } catch (_err) {
     return res.status(500).json({ error: "Could not delete teacher statement." });
   }
+});
+
+app.post("/api/payments/webhook", async (req, res) => {
+  try {
+    if (GATEWAY_WEBHOOK_SECRET) {
+      const providedSecret = String(req.get("x-paytec-webhook-secret") || req.get("x-webhook-secret") || "").trim();
+      if (!providedSecret || providedSecret !== GATEWAY_WEBHOOK_SECRET) {
+        return res.status(401).json({ error: "Unauthorized webhook secret.", code: "webhook_unauthorized" });
+      }
+    }
+    const payload = req.body || {};
+    const transaction = payload.transaction || payload.data || payload;
+    const eventIdRaw = payload.eventId || payload.event_id || payload.id || transaction.id || transaction.event_id || "";
+    const sourceEventId =
+      String(eventIdRaw || "").trim() ||
+      `webhook-${crypto.createHash("sha1").update(JSON.stringify(payload)).digest("hex").slice(0, 40)}`;
+    const ingest = await ingestNormalizedTransaction(
+      {
+        source: "gateway_webhook",
+        source_event_id: sourceEventId,
+        txn_ref:
+          transaction.txn_ref ||
+          transaction.reference ||
+          transaction.transaction_ref ||
+          transaction.transactionId ||
+          transaction.tx_ref ||
+          "",
+        amount: transaction.amount || transaction.amount_paid || transaction.paid_amount,
+        date: transaction.date || transaction.paid_at || transaction.paidAt || transaction.created_at,
+        payer_name: transaction.payer_name || transaction.payerName || transaction.customer_name || transaction.name || "",
+        payment_item_id: transaction.payment_item_id || transaction.paymentItemId,
+        student_username: transaction.student_username || transaction.studentUsername || transaction.student,
+        raw_payload: payload,
+      },
+      { allowAutoApprove: true }
+    );
+    if (!ingest.ok) {
+      return res.status(400).json({ error: ingest.error || "Could not process webhook transaction.", code: "webhook_invalid" });
+    }
+    await run(
+      `
+        INSERT INTO audit_logs (
+          actor_username,
+          actor_role,
+          action,
+          content_type,
+          content_id,
+          target_owner,
+          summary
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        "system-webhook",
+        "system",
+        "ingest",
+        "payment_transaction",
+        ingest.transaction?.id || null,
+        ingest.transaction?.student_hint_username || null,
+        `Webhook transaction ${ingest.idempotent ? "idempotent-hit" : "ingested"} (${sourceEventId})`,
+      ]
+    );
+    return res.status(200).json({
+      ok: true,
+      idempotent: !!ingest.idempotent,
+      inserted: !!ingest.inserted,
+      transaction_id: ingest.transaction?.id || null,
+      status: ingest.transaction?.status || null,
+    });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not process payment webhook.", code: "webhook_failed" });
+  }
+});
+
+async function loadReconciliationExceptionsPayload(queryInput) {
+  const filters = parseReconciliationFilters(queryInput || {});
+  const query = buildReconciliationExceptionQuery(filters);
+  const [rows, totalRow] = await Promise.all([all(query.sql, query.params), get(query.countSql, query.params)]);
+  const total = Number(totalRow?.total || 0);
+  const items = rows.map((row) => ({
+    ...row,
+    reasons: parseJsonArray(row.reasons_json || "[]", []),
+  }));
+  return {
+    filters,
+    items,
+    pagination: {
+      page: filters.page,
+      pageSize: filters.pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / filters.pageSize)),
+    },
+  };
+}
+
+app.get("/api/teacher/reconciliation/summary", requireTeacher, async (_req, res) => {
+  try {
+    const summary = await getReconciliationSummary();
+    return res.json(summary);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load reconciliation summary.", code: "reconciliation_summary_failed" });
+  }
+});
+
+app.get("/api/admin/reconciliation/summary", requireAdmin, async (_req, res) => {
+  try {
+    const summary = await getReconciliationSummary();
+    return res.json(summary);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load reconciliation summary.", code: "reconciliation_summary_failed" });
+  }
+});
+
+app.get("/api/reconciliation/summary", requireTeacher, async (_req, res) => {
+  try {
+    const summary = await getReconciliationSummary();
+    return res.json(summary);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load reconciliation summary.", code: "reconciliation_summary_failed" });
+  }
+});
+
+async function handleReconciliationExceptionsList(req, res) {
+  try {
+    const payload = await loadReconciliationExceptionsPayload(req.query || {});
+    if (payload.filters.legacy) {
+      return res.json(payload.items);
+    }
+    return res.json(payload);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load reconciliation exceptions.", code: "reconciliation_exceptions_failed" });
+  }
+}
+
+app.get("/api/teacher/reconciliation/exceptions", requireTeacher, async (req, res) => {
+  return handleReconciliationExceptionsList(req, res);
+});
+
+app.get("/api/admin/reconciliation/exceptions", requireAdmin, async (req, res) => {
+  return handleReconciliationExceptionsList(req, res);
+});
+
+app.get("/api/reconciliation/exceptions", requireTeacher, async (req, res) => {
+  return handleReconciliationExceptionsList(req, res);
+});
+
+async function handleReconciliationAction(req, res, action) {
+  const id = parseResourceId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid transaction ID.", code: "reconciliation_invalid_id" });
+  }
+  try {
+    const row = await applyReconciliationReviewAction(req, id, action, {
+      note: req.body?.note,
+      obligationId: req.body?.obligationId,
+      primaryTransactionId: req.body?.primaryTransactionId,
+    });
+    return res.json({ ok: true, transaction: row });
+  } catch (err) {
+    if (err && err.status && err.error) {
+      return res.status(err.status).json({ error: err.error, code: "reconciliation_action_failed" });
+    }
+    return res.status(500).json({ error: "Could not apply reconciliation action.", code: "reconciliation_action_failed" });
+  }
+}
+
+app.post("/api/reconciliation/:id/approve", requireTeacher, async (req, res) => {
+  return handleReconciliationAction(req, res, "approve");
+});
+
+app.post("/api/reconciliation/:id/reject", requireTeacher, async (req, res) => {
+  return handleReconciliationAction(req, res, "reject");
+});
+
+app.post("/api/reconciliation/:id/request-student-confirmation", requireTeacher, async (req, res) => {
+  return handleReconciliationAction(req, res, "request_student_confirmation");
+});
+
+app.post("/api/reconciliation/:id/merge-duplicates", requireTeacher, async (req, res) => {
+  return handleReconciliationAction(req, res, "merge_duplicates");
+});
+
+app.post("/api/reconciliation/bulk", requireTeacher, async (req, res) => {
+  const action = sanitizeReconciliationBulkAction(req.body?.action);
+  const ids = parseReceiptIdList(req.body?.transactionIds, 200);
+  if (!action) {
+    return res.status(400).json({ error: "A valid reconciliation bulk action is required.", code: "reconciliation_bulk_action_required" });
+  }
+  if (!ids.length) {
+    return res.status(400).json({ error: "At least one transaction ID is required.", code: "reconciliation_bulk_empty" });
+  }
+  const primaryTransactionId = parseResourceId(req.body?.primaryTransactionId);
+  const results = [];
+  try {
+    await withSqlTransaction(async () => {
+      for (const transactionId of ids) {
+        const row = await applyReconciliationReviewAction(req, transactionId, action, {
+          note: req.body?.note,
+          obligationId: req.body?.obligationId,
+          primaryTransactionId,
+        });
+        results.push({ id: transactionId, ok: true, transaction: row });
+      }
+    });
+  } catch (err) {
+    return res.status(err?.status || 500).json({
+      error: err?.error || "Could not apply reconciliation bulk action.",
+      code: "reconciliation_bulk_failed",
+    });
+  }
+  const successCount = results.filter((entry) => entry.ok).length;
+  return res.json({
+    ok: true,
+    action,
+    total: results.length,
+    successCount,
+    failureCount: results.length - successCount,
+    results,
+  });
 });
 
 app.post("/api/payment-receipts", requireStudent, (req, res) => {
@@ -2881,9 +4979,6 @@ app.post("/api/payment-receipts", requireStudent, (req, res) => {
     if (!transactionRef || transactionRef.length < 4) {
       return res.status(400).json({ error: "Transaction reference must be at least 4 characters." });
     }
-    if (!req.file) {
-      return res.status(400).json({ error: "Receipt file is required." });
-    }
 
     try {
       const paymentItem = await get("SELECT * FROM payment_items WHERE id = ? LIMIT 1", [paymentItemId]);
@@ -2891,7 +4986,9 @@ app.post("/api/payment-receipts", requireStudent, (req, res) => {
         return res.status(400).json({ error: "Selected payment item does not exist." });
       }
 
-      const ocrResult = await extractReceiptText(req.file.path);
+      await upsertPaymentObligation(paymentItem, req.session.user.username);
+      const receiptStoredPath = req.file?.path ? path.resolve(req.file.path) : "";
+      const ocrResult = req.file?.path ? await extractReceiptText(req.file.path) : { text: "" };
       const result = await run(
         `
           INSERT INTO payment_receipts (
@@ -2913,7 +5010,7 @@ app.post("/api/payment-receipts", requireStudent, (req, res) => {
           amountPaid,
           paidAt,
           transactionRef,
-          path.resolve(req.file.path),
+          receiptStoredPath,
           JSON.stringify({ student_note: note }),
           ocrResult && ocrResult.text ? String(ocrResult.text) : "",
         ]
@@ -2931,6 +5028,25 @@ app.post("/api/payment-receipts", requireStudent, (req, res) => {
       ]);
 
       await logReceiptEvent(result.lastID, req, "submit", null, "submitted", note || null);
+      const transactionIngest = await ingestNormalizedTransaction(
+        {
+          source: "student_receipt",
+          source_event_id: `receipt-${result.lastID}`,
+          txn_ref: transactionRef,
+          amount: amountPaid,
+          date: paidAt,
+          payer_name: req.session.user.username,
+          payment_item_id: paymentItemId,
+          student_username: req.session.user.username,
+          source_file_name: req.file?.originalname || "",
+          raw_payload: {
+            receipt_id: result.lastID,
+            note,
+            has_file: !!req.file,
+          },
+        },
+        { actorReq: req, allowAutoApprove: true }
+      );
       await logAuditEvent(
         req,
         "create",
@@ -2940,7 +5056,12 @@ app.post("/api/payment-receipts", requireStudent, (req, res) => {
         `Submitted receipt for "${paymentItem.title}" with ref ${transactionRef}`
       );
 
-      return res.status(201).json({ ok: true, id: result.lastID, verificationFlags: flags });
+      return res.status(201).json({
+        ok: true,
+        id: result.lastID,
+        verificationFlags: flags,
+        reconciliation: transactionIngest.ok ? transactionIngest.transaction : null,
+      });
     } catch (submitErr) {
       if (req.file && req.file.path) {
         try {
@@ -2995,6 +5116,7 @@ app.get("/api/my/payment-receipts", requireAuth, async (req, res) => {
 
 app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
   try {
+    await ensurePaymentObligationsForStudent(req.session.user.username);
     const rows = await all(
       `
         SELECT
@@ -3007,29 +5129,42 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
           pi.available_until,
           pi.availability_days,
           pi.created_by,
-          COALESCE(SUM(CASE WHEN pr.status = 'approved' THEN pr.amount_paid ELSE 0 END), 0) AS approved_paid,
-          COALESCE(SUM(CASE WHEN pr.status IN ('submitted', 'under_review') THEN pr.amount_paid ELSE 0 END), 0) AS pending_paid
+          COALESCE(po.amount_paid_total, 0) AS approved_paid,
+          (
+            COALESCE(
+              (
+                SELECT SUM(pt.amount)
+                FROM payment_transactions pt
+                WHERE pt.matched_obligation_id = po.id
+                  AND pt.status IN ('needs_review', 'needs_student_confirmation', 'unmatched')
+              ),
+              0
+            )
+            +
+            COALESCE(
+              (
+                SELECT SUM(pr.amount_paid)
+                FROM payment_receipts pr
+                WHERE pr.payment_item_id = pi.id
+                  AND pr.student_username = ?
+                  AND pr.status IN ('submitted', 'under_review')
+              ),
+              0
+            )
+          ) AS pending_paid,
+          po.payment_reference AS my_reference,
+          po.status AS obligation_status
         FROM payment_items pi
-        LEFT JOIN payment_receipts pr
-          ON pr.payment_item_id = pi.id
-         AND pr.student_username = ?
+        LEFT JOIN payment_obligations po
+          ON po.payment_item_id = pi.id
+         AND po.student_username = ?
         WHERE (pi.available_until IS NULL OR datetime(pi.available_until) > CURRENT_TIMESTAMP)
-        GROUP BY
-          pi.id,
-          pi.title,
-          pi.description,
-          pi.expected_amount,
-          pi.currency,
-          pi.due_date,
-          pi.available_until,
-          pi.availability_days,
-          pi.created_by
         ORDER BY
           CASE WHEN pi.due_date IS NULL OR pi.due_date = '' THEN 1 ELSE 0 END ASC,
           pi.due_date ASC,
           pi.id ASC
       `,
-      [req.session.user.username]
+      [req.session.user.username, req.session.user.username]
     );
 
     const items = rows.map((row) => {
@@ -3079,10 +5214,29 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
       items.find((item) => Number(item.outstanding || 0) > 0 && Number.isFinite(item.days_until_due) && item.days_until_due >= 0) ||
       null;
 
+    const timeline = await all(
+      `
+        SELECT
+          re.id,
+          re.action,
+          re.note,
+          re.created_at,
+          pi.title AS payment_item_title
+        FROM reconciliation_events re
+        JOIN payment_obligations po ON po.id = re.obligation_id
+        LEFT JOIN payment_items pi ON pi.id = po.payment_item_id
+        WHERE po.student_username = ?
+        ORDER BY re.created_at DESC, re.id DESC
+        LIMIT 25
+      `,
+      [req.session.user.username]
+    );
+
     return res.json({
       summary,
       nextDueItem,
       items,
+      timeline,
       generatedAt: new Date().toISOString(),
     });
   } catch (_err) {
@@ -3583,6 +5737,9 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
       req.session.user.username === row.student_username;
     if (!canAccess) {
       return res.status(403).json({ error: "You do not have permission to view this receipt file." });
+    }
+    if (!row.receipt_file_path) {
+      return res.status(404).json({ error: "No receipt file attached to this submission." });
     }
     const absolutePath = path.resolve(row.receipt_file_path);
     const relativeFromReceipts = path.relative(receiptsDir, absolutePath);

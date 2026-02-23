@@ -44,7 +44,19 @@ function statusBadge(status) {
   if (normalized === "under_review") {
     return '<span class="status-badge status-badge--warning">under review</span>';
   }
-  return '<span class="status-badge">submitted</span>';
+  if (normalized === "needs_review") {
+    return '<span class="status-badge status-badge--warning">needs review</span>';
+  }
+  if (normalized === "needs_student_confirmation") {
+    return '<span class="status-badge status-badge--warning">needs student confirmation</span>';
+  }
+  if (normalized === "duplicate") {
+    return '<span class="status-badge status-badge--error">duplicate</span>';
+  }
+  if (normalized === "unmatched") {
+    return '<span class="status-badge status-badge--error">unmatched</span>';
+  }
+  return `<span class="status-badge">${escapeHtml(normalized || "unknown")}</span>`;
 }
 
 function reminderBadge(level, text) {
@@ -121,8 +133,15 @@ const paymentState = {
   myReceipts: [],
   ledger: null,
   queueRows: [],
+  queuePagination: {
+    page: 1,
+    pageSize: 50,
+    total: 0,
+    totalPages: 1,
+  },
   selectedQueueIds: new Set(),
   statementInfo: null,
+  reconciliationSummary: null,
 };
 
 function parseVerificationNotes(row) {
@@ -157,7 +176,9 @@ function renderPaymentItemSelects(items) {
       .concat(
         items.map(
           (item) =>
-            `<option value="${item.id}">${escapeHtml(item.title)} - ${escapeHtml(item.currency)} ${escapeHtml(item.expected_amount)}</option>`
+            `<option value="${item.id}">${escapeHtml(item.title)} - ${escapeHtml(item.currency)} ${escapeHtml(item.expected_amount)}${
+              item.my_reference ? ` (Ref: ${escapeHtml(item.my_reference)})` : ""
+            }</option>`
         )
       )
       .join("");
@@ -217,6 +238,29 @@ function renderReminderCalendar(ledger) {
       <td>${escapeHtml(item.due_date || "No due date")}</td>
       <td>${reminderBadge(item.reminder_level, item.reminder_text)}</td>
       <td>${escapeHtml(formatMoney(item.outstanding, item.currency))}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderPaymentTimeline(ledger) {
+  const tbody = document.getElementById("paymentTimelineRows");
+  if (!tbody) {
+    return;
+  }
+  const rows = ledger && Array.isArray(ledger.timeline) ? ledger.timeline : [];
+  tbody.innerHTML = "";
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:#636b8a;">No reconciliation updates yet.</td></tr>';
+    return;
+  }
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(formatDate(row.created_at || ""))}</td>
+      <td>${escapeHtml(row.payment_item_title || "-")}</td>
+      <td>${escapeHtml(String(row.action || "").replaceAll("_", " ") || "-")}</td>
+      <td>${escapeHtml(row.note || "-")}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -282,70 +326,44 @@ function renderQueue(rows) {
   }
   tbody.innerHTML = "";
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="11" style="color:#636b8a;">No receipts match the current filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="color:#636b8a;">No reconciliation exceptions match the current filters.</td></tr>';
     if (selectAllNode) {
       selectAllNode.checked = false;
     }
     return;
   }
   rows.forEach((row) => {
-    const flags = parseFlags(row);
-    const notes = parseVerificationNotes(row);
-    const statementResult = notes?.statement_verification?.result || null;
-    const sla = getSlaMeta(row);
-    const flagsHtml = [
-      flags.amount_matches_expected === false
-        ? '<span class="status-badge status-badge--error">Amount mismatch</span>'
-        : '<span class="status-badge status-badge--success">Amount ok</span>',
-      flags.paid_before_due === false
-        ? '<span class="status-badge status-badge--warning">Paid after due</span>'
-        : flags.paid_before_due === true
-        ? '<span class="status-badge status-badge--success">Paid before due</span>'
-        : '<span class="status-badge">No due date</span>',
-      flags.duplicate_reference
-        ? '<span class="status-badge status-badge--error">Duplicate ref</span>'
-        : '<span class="status-badge status-badge--success">Unique ref</span>',
-      statementResult
-        ? statementResult.matched
-          ? '<span class="status-badge status-badge--success">Statement match</span>'
-          : '<span class="status-badge status-badge--warning">Statement mismatch</span>'
-        : '<span class="status-badge">Statement unchecked</span>',
-    ].join(" ");
-
+    const reasons = Array.isArray(row.reasons) ? row.reasons : [];
+    const reasonHtml = reasons.length
+      ? reasons.map((reason) => `<span class="status-badge">${escapeHtml(reason.replaceAll("_", " "))}</span>`).join(" ")
+      : '<span class="status-badge">none</span>';
     const actions = [];
-    actions.push(`<a class="btn btn-secondary" href="/api/payment-receipts/${row.id}/file" target="_blank" rel="noopener noreferrer">Open File</a>`);
-    actions.push(`<button class="btn btn-secondary" type="button" data-action="history" data-id="${row.id}">Notes</button>`);
-    actions.push(`<button class="btn btn-secondary" type="button" data-action="assign-self" data-id="${row.id}">Assign Me</button>`);
-    actions.push(`<button class="btn btn-secondary" type="button" data-action="add-note" data-id="${row.id}">Add Note</button>`);
-    if (row.status === "submitted" || row.status === "under_review") {
-      actions.push(`<button class="btn btn-secondary" type="button" data-action="verify" data-id="${row.id}">Verify</button>`);
-    }
-    if (row.status === "submitted") {
-      actions.push(`<button class="btn" type="button" data-action="under-review" data-id="${row.id}">Move to Review</button>`);
-    }
-    if (row.status === "under_review") {
+    if (row.status !== "approved" && row.status !== "rejected") {
       actions.push(`<button class="btn" type="button" data-action="approve" data-id="${row.id}">Approve</button>`);
       actions.push(
         `<button class="btn" type="button" data-action="reject" data-id="${row.id}" style="background:#b42318;">Reject</button>`
       );
+      actions.push(
+        `<button class="btn btn-secondary" type="button" data-action="request-student-confirmation" data-id="${row.id}">Request Student</button>`
+      );
+      actions.push(
+        `<button class="btn btn-secondary" type="button" data-action="merge-duplicates" data-id="${row.id}">Merge Duplicate</button>`
+      );
     }
 
-    const assignedText = row.assigned_reviewer ? `Assigned: ${row.assigned_reviewer}` : "Unassigned";
-    const slaHtml = sla ? `<span class="${sla.className}">${escapeHtml(sla.text)}</span>` : '<span class="status-badge">N/A</span>';
     const checkedAttr = paymentState.selectedQueueIds.has(row.id) ? "checked" : "";
 
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><input type="checkbox" class="queue-select-row" data-id="${row.id}" ${checkedAttr} /></td>
+      <td>${escapeHtml(String(row.id || "-"))}</td>
       <td>${escapeHtml(row.student_username || "-")}</td>
       <td>${escapeHtml(row.payment_item_title || "-")}</td>
-      <td>${escapeHtml(formatMoney(row.amount_paid, row.currency))}</td>
-      <td>${escapeHtml(row.transaction_ref || "-")}</td>
-      <td>${escapeHtml(formatDate(row.paid_at))}</td>
+      <td>${escapeHtml(formatMoney(row.amount, row.currency))}</td>
+      <td>${escapeHtml(row.txn_ref || "-")}</td>
+      <td>${escapeHtml(row.source || "-")}</td>
       <td>${statusBadge(row.status)}</td>
-      <td>${escapeHtml(assignedText)}</td>
-      <td>${slaHtml}</td>
-      <td>${flagsHtml}</td>
+      <td>${reasonHtml}</td>
       <td>${actions.join(" ")}</td>
     `;
     tbody.appendChild(tr);
@@ -355,6 +373,22 @@ function renderQueue(rows) {
     const selectableRows = rows.length;
     const selectedCount = rows.filter((row) => paymentState.selectedQueueIds.has(row.id)).length;
     selectAllNode.checked = selectableRows > 0 && selectedCount === selectableRows;
+  }
+}
+
+function renderQueuePagination() {
+  const infoNode = document.getElementById("queuePageInfo");
+  const prevButton = document.getElementById("queuePrevPage");
+  const nextButton = document.getElementById("queueNextPage");
+  const pagination = paymentState.queuePagination || { page: 1, totalPages: 1, total: 0 };
+  if (infoNode) {
+    infoNode.textContent = `Page ${pagination.page} of ${pagination.totalPages} (${pagination.total} total)`;
+  }
+  if (prevButton) {
+    prevButton.disabled = pagination.page <= 1;
+  }
+  if (nextButton) {
+    nextButton.disabled = pagination.page >= pagination.totalPages;
   }
 }
 
@@ -373,28 +407,77 @@ async function loadStudentLedger() {
   paymentState.ledger = await requestJson("/api/my/payment-ledger");
   renderLedger(paymentState.ledger);
   renderReminderCalendar(paymentState.ledger);
+  renderPaymentTimeline(paymentState.ledger);
 }
 
 async function loadQueue() {
-  const endpoint = paymentState.me.role === "admin" ? "/api/admin/payment-receipts" : "/api/teacher/payment-receipts";
+  const endpoint =
+    paymentState.me.role === "admin"
+      ? "/api/admin/reconciliation/exceptions"
+      : "/api/teacher/reconciliation/exceptions";
   const params = new URLSearchParams();
-  const status = document.getElementById("queueStatus")?.value || "";
+  const status = document.getElementById("queueStatus")?.value || "all";
+  const reason = document.getElementById("queueReason")?.value || "all";
   const student = document.getElementById("queueStudent")?.value || "";
   const dateFrom = document.getElementById("queueDateFrom")?.value || "";
   const dateTo = document.getElementById("queueDateTo")?.value || "";
   const paymentItemId = document.getElementById("queuePaymentItem")?.value || "";
-  const assignment = document.getElementById("queueAssignment")?.value || "all";
   if (status) params.set("status", status);
+  if (reason) params.set("reason", reason);
   if (student) params.set("student", student);
   if (dateFrom) params.set("dateFrom", dateFrom);
   if (dateTo) params.set("dateTo", dateTo);
   if (paymentItemId) params.set("paymentItemId", paymentItemId);
-  if (assignment) params.set("assignment", assignment);
+  params.set("page", String(paymentState.queuePagination.page || 1));
+  params.set("pageSize", String(paymentState.queuePagination.pageSize || 50));
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  paymentState.queueRows = await requestJson(`${endpoint}${suffix}`);
+  const payload = await requestJson(`${endpoint}${suffix}`);
+  if (Array.isArray(payload)) {
+    paymentState.queueRows = payload;
+    paymentState.queuePagination = {
+      page: 1,
+      pageSize: payload.length || 50,
+      total: payload.length,
+      totalPages: 1,
+    };
+  } else {
+    paymentState.queueRows = Array.isArray(payload.items) ? payload.items : [];
+    paymentState.queuePagination = {
+      page: Number(payload?.pagination?.page || 1),
+      pageSize: Number(payload?.pagination?.pageSize || 50),
+      total: Number(payload?.pagination?.total || paymentState.queueRows.length || 0),
+      totalPages: Number(payload?.pagination?.totalPages || 1),
+    };
+  }
   const validIds = new Set(paymentState.queueRows.map((row) => row.id));
   paymentState.selectedQueueIds = new Set([...paymentState.selectedQueueIds].filter((id) => validIds.has(id)));
   renderQueue(paymentState.queueRows);
+  renderQueuePagination();
+}
+
+function renderReconciliationSummary() {
+  const summary = paymentState.reconciliationSummary || {};
+  const mapping = [
+    ["reconAutoApproved", String(Number(summary.auto_approved || 0))],
+    ["reconExceptions", String(Number(summary.exceptions || 0))],
+    ["reconUnresolved", String(Number(summary.unresolved_obligations || 0))],
+    ["reconDuplicates", String(Number(summary.duplicates || 0))],
+  ];
+  mapping.forEach(([id, value]) => {
+    const node = document.getElementById(id);
+    if (node) {
+      node.textContent = value;
+    }
+  });
+}
+
+async function loadReconciliationSummary() {
+  const endpoint =
+    paymentState.me.role === "admin"
+      ? "/api/admin/reconciliation/summary"
+      : "/api/teacher/reconciliation/summary";
+  paymentState.reconciliationSummary = await requestJson(endpoint);
+  renderReconciliationSummary();
 }
 
 function renderStatementStatus() {
@@ -411,9 +494,10 @@ function renderStatementStatus() {
     }
     return;
   }
-  statusNode.textContent = `Current statement: ${paymentState.statementInfo.original_filename} (${paymentState.statementInfo.parsed_row_count} row(s)) uploaded ${formatDate(
-    paymentState.statementInfo.uploaded_at
-  )}.`;
+  const unparsedCount = Number(paymentState.statementInfo.unparsed_row_count || 0);
+  statusNode.textContent = `Current statement: ${paymentState.statementInfo.original_filename} (${paymentState.statementInfo.parsed_row_count} parsed row(s)${
+    unparsedCount > 0 ? `, ${unparsedCount} unparsed` : ""
+  }) uploaded ${formatDate(paymentState.statementInfo.uploaded_at)}.`;
   statusNode.style.color = "#1f2333";
   if (deleteButton) {
     deleteButton.disabled = false;
@@ -425,36 +509,6 @@ async function loadStatementInfo() {
   renderStatementStatus();
 }
 
-async function loadReviewerNotes(receiptId) {
-  const rowsNode = document.getElementById("reviewerHistoryRows");
-  const statusNode = document.getElementById("reviewerHistoryStatus");
-  if (!rowsNode || !statusNode) {
-    return;
-  }
-  try {
-    statusNode.textContent = `Loading notes for receipt #${receiptId}...`;
-    const rows = await requestJson(`/api/payment-receipts/${receiptId}/notes`);
-    if (!rows.length) {
-      rowsNode.innerHTML = '<tr><td colspan="3" style="color:#636b8a;">No reviewer notes yet for this receipt.</td></tr>';
-    } else {
-      rowsNode.innerHTML = rows
-        .map(
-          (row) => `
-            <tr>
-              <td>${escapeHtml(formatDate(row.created_at))}</td>
-              <td>${escapeHtml(row.reviewer_username || "-")}</td>
-              <td>${escapeHtml(row.note || "-")}</td>
-            </tr>
-          `
-        )
-        .join("");
-    }
-    statusNode.textContent = `Showing ${rows.length} note(s) for receipt #${receiptId}.`;
-  } catch (err) {
-    rowsNode.innerHTML = '<tr><td colspan="3" style="color:#a52828;">Could not load notes history.</td></tr>';
-    statusNode.textContent = err.message || "Could not load notes history.";
-  }
-}
 function bindStudentSubmit() {
   const form = document.getElementById("submitReceiptForm");
   if (!form) {
@@ -529,13 +583,14 @@ function bindStatementManagement() {
       }
       const submitButton = form.querySelector('button[type="submit"]');
       setButtonBusy(submitButton, true, "Uploading...");
+      const dryRun = !!document.getElementById("statementDryRun")?.checked;
       const loadingToast = window.showToast
-        ? window.showToast("Uploading statement...", { type: "loading", sticky: true })
+        ? window.showToast(dryRun ? "Previewing statement (dry run)..." : "Uploading statement...", { type: "loading", sticky: true })
         : null;
       try {
         const formData = new FormData();
         formData.append("statementFile", selectedFile);
-        const response = await fetch("/api/teacher/payment-statement", {
+        const response = await fetch(`/api/teacher/payment-statement${dryRun ? "?dryRun=true" : ""}`, {
           method: "POST",
           credentials: "same-origin",
           body: formData,
@@ -549,11 +604,19 @@ function bindStatementManagement() {
         if (!response.ok) {
           throw new Error((payload && payload.error) || "Could not upload statement.");
         }
+        const ingestion = payload?.ingestion || {};
         if (window.showToast) {
-          window.showToast(`Statement uploaded (${payload.parsed_row_count} rows).`, { type: "success" });
+          window.showToast(
+            `${dryRun ? "Dry run preview" : "Statement uploaded"} (${payload.parsed_row_count} rows). Auto-approved: ${Number(
+              ingestion.autoApproved || 0
+            )}, Exceptions: ${Number(ingestion.exceptions || 0)}, Invalid: ${Number(ingestion.invalid || 0)}.`,
+            { type: dryRun ? "warning" : "success" }
+          );
         }
-        form.reset();
-        await loadStatementInfo();
+        if (!dryRun) {
+          form.reset();
+        }
+        await Promise.all([dryRun ? Promise.resolve() : loadStatementInfo(), loadQueue(), loadReconciliationSummary()]);
       } catch (err) {
         setPaymentStatus("statementStatus", err.message || "Could not upload statement.", true);
         if (window.showToast) {
@@ -582,7 +645,7 @@ function bindStatementManagement() {
         if (window.showToast) {
           window.showToast("Statement deleted.", { type: "success" });
         }
-        await loadStatementInfo();
+        await Promise.all([loadStatementInfo(), loadQueue(), loadReconciliationSummary()]);
       } catch (err) {
         setPaymentStatus("statementStatus", err.message || "Could not delete statement.", true);
         if (window.showToast) {
@@ -744,7 +807,7 @@ function bindBulkActions() {
     event.preventDefault();
     const selectedIds = getSelectedQueueIds();
     if (!selectedIds.length) {
-      setPaymentStatus("bulkActionStatus", "Select at least one receipt first.", true);
+      setPaymentStatus("bulkActionStatus", "Select at least one transaction first.", true);
       return;
     }
     const action = document.getElementById("bulkActionType")?.value || "";
@@ -754,19 +817,19 @@ function bindBulkActions() {
     }
     const payload = {
       action,
-      receiptIds: selectedIds,
-      assignee: document.getElementById("bulkAssignee")?.value.trim() || "",
+      transactionIds: selectedIds,
+      primaryTransactionId: document.getElementById("bulkPrimaryTransactionId")?.value || "",
       rejectionReason: document.getElementById("bulkRejectionReason")?.value.trim() || "",
       note: document.getElementById("bulkReviewerNote")?.value.trim() || "",
     };
     const submitButton = form.querySelector('button[type="submit"]');
     setButtonBusy(submitButton, true, "Applying...");
-    setPaymentStatus("bulkActionStatus", `Applying ${action} to ${selectedIds.length} receipt(s)...`, false);
+    setPaymentStatus("bulkActionStatus", `Applying ${action} to ${selectedIds.length} transaction(s)...`, false);
     const loadingToast = window.showToast
       ? window.showToast("Applying bulk action...", { type: "loading", sticky: true })
       : null;
     try {
-      const result = await requestJson("/api/payment-receipts/bulk", { method: "POST", payload });
+      const result = await requestJson("/api/reconciliation/bulk", { method: "POST", payload });
       setPaymentStatus(
         "bulkActionStatus",
         `Bulk action complete. Success: ${result.successCount}, Failed: ${result.failureCount}.`,
@@ -780,7 +843,7 @@ function bindBulkActions() {
       }
       paymentState.selectedQueueIds.clear();
       form.reset();
-      await loadQueue();
+      await Promise.all([loadQueue(), loadReconciliationSummary()]);
     } catch (err) {
       setPaymentStatus("bulkActionStatus", err.message || "Could not apply bulk action.", true);
       if (window.showToast) {
@@ -798,15 +861,18 @@ function bindQueueActions() {
   const queueRows = document.getElementById("receiptQueueRows");
   const filterForm = document.getElementById("queueFilterForm");
   const selectAllNode = document.getElementById("queueSelectAll");
+  const prevPageButton = document.getElementById("queuePrevPage");
+  const nextPageButton = document.getElementById("queueNextPage");
 
   if (filterForm) {
     filterForm.addEventListener("submit", async (event) => {
       event.preventDefault();
+      paymentState.queuePagination.page = 1;
       const toast = window.showToast
         ? window.showToast("Applying queue filters...", { type: "loading", sticky: true })
         : null;
       try {
-        await loadQueue();
+        await Promise.all([loadQueue(), loadReconciliationSummary()]);
       } catch (err) {
         if (window.showToast) {
           window.showToast(err.message || "Could not load queue.", { type: "error" });
@@ -814,6 +880,26 @@ function bindQueueActions() {
       } finally {
         if (toast) toast.close();
       }
+    });
+  }
+
+  if (prevPageButton) {
+    prevPageButton.addEventListener("click", async () => {
+      if (paymentState.queuePagination.page <= 1) {
+        return;
+      }
+      paymentState.queuePagination.page -= 1;
+      await loadQueue();
+    });
+  }
+
+  if (nextPageButton) {
+    nextPageButton.addEventListener("click", async () => {
+      if (paymentState.queuePagination.page >= paymentState.queuePagination.totalPages) {
+        return;
+      }
+      paymentState.queuePagination.page += 1;
+      await loadQueue();
     });
   }
 
@@ -863,93 +949,11 @@ function bindQueueActions() {
       if (!Number.isFinite(id) || id <= 0) {
         return;
       }
-
-      if (action === "history") {
-        await loadReviewerNotes(id);
-        return;
-      }
-
-      if (action === "assign-self") {
-        const loadingToast = window.showToast
-          ? window.showToast("Assigning receipt...", { type: "loading", sticky: true })
-          : null;
-        setButtonBusy(button, true, "Assigning...");
-        try {
-          await requestJson(`/api/payment-receipts/${id}/assign`, { method: "POST", payload: {} });
-          if (window.showToast) {
-            window.showToast("Receipt assigned.", { type: "success" });
-          }
-          await loadQueue();
-        } catch (err) {
-          if (window.showToast) {
-            window.showToast(err.message || "Could not assign receipt.", { type: "error" });
-          }
-        } finally {
-          setButtonBusy(button, false, "");
-          if (loadingToast) {
-            loadingToast.close();
-          }
-        }
-        return;
-      }
-
-      if (action === "add-note") {
-        const note = window.prompt("Enter reviewer note:");
-        if (note === null) {
-          return;
-        }
-        const loadingToast = window.showToast
-          ? window.showToast("Saving reviewer note...", { type: "loading", sticky: true })
-          : null;
-        setButtonBusy(button, true, "Saving...");
-        try {
-          await requestJson(`/api/payment-receipts/${id}/notes`, { method: "POST", payload: { note: note.trim() } });
-          if (window.showToast) {
-            window.showToast("Reviewer note saved.", { type: "success" });
-          }
-          await loadReviewerNotes(id);
-        } catch (err) {
-          if (window.showToast) {
-            window.showToast(err.message || "Could not save reviewer note.", { type: "error" });
-          }
-        } finally {
-          setButtonBusy(button, false, "");
-          if (loadingToast) {
-            loadingToast.close();
-          }
-        }
-        return;
-      }
-
-      if (action === "verify") {
-        const loadingToast = window.showToast
-          ? window.showToast("Verifying receipt...", { type: "loading", sticky: true })
-          : null;
-        setButtonBusy(button, true, "Verifying...");
-        try {
-          await requestJson(`/api/payment-receipts/${id}/verify`, { method: "POST", payload: {} });
-          if (window.showToast) {
-            window.showToast("Verification complete.", { type: "success" });
-          }
-          await loadQueue();
-          await loadReviewerNotes(id);
-        } catch (err) {
-          if (window.showToast) {
-            window.showToast(err.message || "Could not verify receipt.", { type: "error" });
-          }
-        } finally {
-          setButtonBusy(button, false, "");
-          if (loadingToast) {
-            loadingToast.close();
-          }
-        }
-        return;
-      }
-
       const endpointByAction = {
-        "under-review": `/api/payment-receipts/${id}/under-review`,
-        approve: `/api/payment-receipts/${id}/approve`,
-        reject: `/api/payment-receipts/${id}/reject`,
+        approve: `/api/reconciliation/${id}/approve`,
+        reject: `/api/reconciliation/${id}/reject`,
+        "request-student-confirmation": `/api/reconciliation/${id}/request-student-confirmation`,
+        "merge-duplicates": `/api/reconciliation/${id}/merge-duplicates`,
       };
       const endpoint = endpointByAction[action];
       if (!endpoint) {
@@ -957,30 +961,31 @@ function bindQueueActions() {
       }
       const payload = {};
       if (action === "reject") {
-        const reason = window.prompt("Why are you rejecting this receipt?");
-        if (reason === null) {
+        const reason = window.prompt("Reason for rejection (optional):", "");
+        if (reason !== null && reason.trim()) {
+          payload.note = reason.trim();
+        }
+      }
+      if (action === "merge-duplicates") {
+        const primaryId = window.prompt("Enter primary transaction ID to keep:");
+        if (primaryId === null) {
           return;
         }
-        payload.rejectionReason = reason.trim();
-      }
-      const note = window.prompt("Optional reviewer note (leave blank to skip):", "");
-      if (note !== null && note.trim()) {
-        payload.note = note.trim();
+        payload.primaryTransactionId = primaryId.trim();
       }
       const loadingToast = window.showToast
-        ? window.showToast("Updating receipt status...", { type: "loading", sticky: true })
+        ? window.showToast("Applying reconciliation action...", { type: "loading", sticky: true })
         : null;
       setButtonBusy(button, true, "Updating...");
       try {
         await requestJson(endpoint, { method: "POST", payload });
         if (window.showToast) {
-          window.showToast("Receipt status updated.", { type: "success" });
+          window.showToast("Reconciliation action applied.", { type: "success" });
         }
-        await loadQueue();
-        await loadReviewerNotes(id);
+        await Promise.all([loadQueue(), loadReconciliationSummary()]);
       } catch (err) {
         if (window.showToast) {
-          window.showToast(err.message || "Could not update receipt status.", { type: "error" });
+          window.showToast(err.message || "Could not apply reconciliation action.", { type: "error" });
         }
       } finally {
         setButtonBusy(button, false, "");
@@ -1030,7 +1035,7 @@ async function initPaymentsPage() {
     bindPaymentItemsManagement();
     bindQueueActions();
     bindBulkActions();
-    await Promise.all([loadQueue(), loadStatementInfo()]);
+    await Promise.all([loadQueue(), loadStatementInfo(), loadReconciliationSummary()]);
   } catch (err) {
     const errorNode = document.getElementById("paymentsError");
     if (errorNode) {
