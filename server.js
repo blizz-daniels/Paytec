@@ -1187,11 +1187,40 @@ function normalizeStatementRowsText(rawText) {
   };
 
   const nameIndex = findIndex("name", "student", "student_name", "student_username", "matric_number", "username");
-  const descriptionIndex = findIndex("description", "narration", "details", "remark", "remarks", "note");
-  const amountIndex = findIndex("amount", "amount_paid", "paid_amount", "credit", "credit_amount");
-  const dateIndex = findIndex("date", "paid_at", "payment_date", "paid_date", "transaction_date", "value_date", "posted_date");
-  const refIndex = findIndex("reference", "transaction_ref", "ref", "transaction_reference", "transaction_id");
-  if ((nameIndex === -1 && descriptionIndex === -1) || amountIndex === -1 || dateIndex === -1) {
+  const descriptionIndex = findIndex(
+    "description",
+    "transaction_description",
+    "transaction_details",
+    "narration",
+    "details",
+    "remark",
+    "remarks",
+    "note"
+  );
+  const amountIndex = findIndex("amount", "amount_paid", "paid_amount");
+  const creditIndex = findIndex("credit", "credit_amount", "amount_credit");
+  const debitIndex = findIndex("debit", "debit_amount", "amount_debit");
+  const dateIndex = findIndex(
+    "date",
+    "paid_at",
+    "payment_date",
+    "paid_date",
+    "transaction_date",
+    "value_date",
+    "posted_date"
+  );
+  const refIndex = findIndex(
+    "reference",
+    "reference_no",
+    "reference_number",
+    "transaction_ref",
+    "transaction_reference",
+    "transaction_id",
+    "session_id",
+    "order_no",
+    "order_number"
+  );
+  if ((nameIndex === -1 && descriptionIndex === -1) || (amountIndex === -1 && creditIndex === -1 && debitIndex === -1) || dateIndex === -1) {
     return [];
   }
 
@@ -1200,12 +1229,24 @@ function normalizeStatementRowsText(rawText) {
     const cells = parseCsvLine(rows[i]);
     const rawName = nameIndex === -1 ? "" : cells[nameIndex];
     const rawDescription = descriptionIndex === -1 ? "" : cells[descriptionIndex];
-    const rawAmount = cells[amountIndex];
+    const rawAmount = amountIndex === -1 ? "" : cells[amountIndex];
+    const rawCredit = creditIndex === -1 ? "" : cells[creditIndex];
+    const rawDebit = debitIndex === -1 ? "" : cells[debitIndex];
     const rawDate = cells[dateIndex];
     const rawRef = refIndex === -1 ? "" : cells[refIndex];
     const name = normalizeStatementName(rawName);
     const description = normalizeStatementName(rawDescription);
-    const amount = parseMoneyValue(rawAmount);
+    const creditAmount = parseMoneyValue(rawCredit);
+    const debitAmount = parseMoneyValue(rawDebit);
+    const genericAmount = parseMoneyValue(rawAmount);
+    let amount = null;
+    if (Number.isFinite(creditAmount) && creditAmount > 0) {
+      amount = creditAmount;
+    } else if (Number.isFinite(genericAmount)) {
+      amount = Math.abs(genericAmount);
+    } else if (Number.isFinite(debitAmount)) {
+      amount = Math.abs(debitAmount);
+    }
     const date = toDateOnly(rawDate);
     const normalizedName = name || description;
     if (!normalizedName || !Number.isFinite(amount) || !date) {
@@ -1215,7 +1256,8 @@ function normalizeStatementRowsText(rawText) {
       row_number: i + 1,
       raw_name: normalizeWhitespace(rawName),
       raw_description: normalizeWhitespace(rawDescription),
-      raw_credit: String(rawAmount || "").trim(),
+      raw_credit: String(rawCredit || rawAmount || "").trim(),
+      raw_debit: String(rawDebit || "").trim(),
       raw_amount: String(rawAmount || "").trim(),
       raw_date: String(rawDate || "").trim(),
       raw_reference: String(rawRef || "").trim(),
@@ -1279,7 +1321,7 @@ function parseStatementRowsFromLooseText(rawText) {
   const parsedRows = [];
   const dateRegex = /\b(\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2}|\d{1,2}[\/.-]\d{1,2}[\/.-]\d{4})\b/;
   const amountRegex = /\b(?:credit|cr|amount|ngn|n|usd|eur|gbp)?\s*[:\-]?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})|[0-9]+(?:\.[0-9]{2}))\b/i;
-  const refRegex = /\b(?:transaction(?:\s+reference)?|transaction_ref|tx|ref|rrr)[-:\s]*([A-Z0-9-]{4,})\b/i;
+  const refRegex = /\b(?:transaction(?:\s+reference)?|transaction_ref|tx|ref|rrr|session[_\s-]?id|order[_\s-]?(?:no|number))[-:\s]*([A-Z0-9-]{4,})\b/i;
 
   lines.forEach((line, idx) => {
     const dateMatch = line.match(dateRegex);
