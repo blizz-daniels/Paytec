@@ -1187,33 +1187,40 @@ function normalizeStatementRowsText(rawText) {
   };
 
   const nameIndex = findIndex("name", "student", "student_name", "student_username", "matric_number", "username");
-  const amountIndex = findIndex("amount", "amount_paid", "paid_amount");
-  const dateIndex = findIndex("date", "paid_at", "payment_date", "paid_date");
-  const refIndex = findIndex("reference", "transaction_ref", "ref", "transaction_reference");
-  if (nameIndex === -1 || amountIndex === -1 || dateIndex === -1) {
+  const descriptionIndex = findIndex("description", "narration", "details", "remark", "remarks", "note");
+  const amountIndex = findIndex("amount", "amount_paid", "paid_amount", "credit", "credit_amount");
+  const dateIndex = findIndex("date", "paid_at", "payment_date", "paid_date", "transaction_date", "value_date", "posted_date");
+  const refIndex = findIndex("reference", "transaction_ref", "ref", "transaction_reference", "transaction_id");
+  if ((nameIndex === -1 && descriptionIndex === -1) || amountIndex === -1 || dateIndex === -1) {
     return [];
   }
 
   const normalized = [];
   for (let i = 1; i < rows.length; i += 1) {
     const cells = parseCsvLine(rows[i]);
-    const rawName = cells[nameIndex];
+    const rawName = nameIndex === -1 ? "" : cells[nameIndex];
+    const rawDescription = descriptionIndex === -1 ? "" : cells[descriptionIndex];
     const rawAmount = cells[amountIndex];
     const rawDate = cells[dateIndex];
     const rawRef = refIndex === -1 ? "" : cells[refIndex];
     const name = normalizeStatementName(rawName);
+    const description = normalizeStatementName(rawDescription);
     const amount = parseMoneyValue(rawAmount);
     const date = toDateOnly(rawDate);
-    if (!name || !Number.isFinite(amount) || !date) {
+    const normalizedName = name || description;
+    if (!normalizedName || !Number.isFinite(amount) || !date) {
       continue;
     }
     normalized.push({
       row_number: i + 1,
       raw_name: normalizeWhitespace(rawName),
+      raw_description: normalizeWhitespace(rawDescription),
+      raw_credit: String(rawAmount || "").trim(),
       raw_amount: String(rawAmount || "").trim(),
       raw_date: String(rawDate || "").trim(),
       raw_reference: String(rawRef || "").trim(),
-      normalized_name: name,
+      normalized_name: normalizedName,
+      normalized_description: description,
       normalized_amount: amount,
       normalized_date: date,
       normalized_reference: normalizeReference(rawRef),
@@ -1271,8 +1278,8 @@ function parseStatementRowsFromLooseText(rawText) {
     .filter((line) => line.length >= 6);
   const parsedRows = [];
   const dateRegex = /\b(\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2}|\d{1,2}[\/.-]\d{1,2}[\/.-]\d{4})\b/;
-  const amountRegex = /\b(?:NGN|N|USD|EUR|GBP)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})|[0-9]+(?:\.[0-9]{2}))\b/i;
-  const refRegex = /\b(?:TX|REF|RRR)[-:\s]*([A-Z0-9-]{4,})\b/i;
+  const amountRegex = /\b(?:credit|cr|amount|ngn|n|usd|eur|gbp)?\s*[:\-]?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})|[0-9]+(?:\.[0-9]{2}))\b/i;
+  const refRegex = /\b(?:transaction(?:\s+reference)?|transaction_ref|tx|ref|rrr)[-:\s]*([A-Z0-9-]{4,})\b/i;
 
   lines.forEach((line, idx) => {
     const dateMatch = line.match(dateRegex);
@@ -1299,10 +1306,13 @@ function parseStatementRowsFromLooseText(rawText) {
     parsedRows.push({
       row_number: idx + 1,
       raw_name: cleanedName,
+      raw_description: cleanedName,
+      raw_credit: amountMatch[1],
       raw_amount: amountMatch[1],
       raw_date: dateMatch[1],
       raw_reference: refMatch ? refMatch[1] : "",
       normalized_name: normalizeStatementName(cleanedName),
+      normalized_description: normalizeStatementName(cleanedName),
       normalized_amount: normalizedAmount,
       normalized_date: normalizedDate,
       normalized_reference: normalizeReference(refMatch ? refMatch[1] : ""),
@@ -1841,7 +1851,9 @@ async function evaluateReceiptAgainstStatement(receiptRow, statementRows) {
   if (!matchedRow) {
     matchedRow =
       statementRows.find((entry) => {
-        const nameMatch = candidateNames.has(entry.normalized_name);
+        const nameMatch =
+          candidateNames.has(entry.normalized_name) ||
+          (entry.normalized_description && candidateNames.has(entry.normalized_description));
         const amountMatch = candidateAmounts.some((amount) => almostSameAmount(entry.normalized_amount, amount));
         const dateMatch = candidateDates.includes(entry.normalized_date);
         return nameMatch && amountMatch && dateMatch;
@@ -1860,7 +1872,9 @@ async function evaluateReceiptAgainstStatement(receiptRow, statementRows) {
     };
   }
 
-  const nameMatch = candidateNames.has(matchedRow.normalized_name);
+  const nameMatch =
+    candidateNames.has(matchedRow.normalized_name) ||
+    (matchedRow.normalized_description && candidateNames.has(matchedRow.normalized_description));
   const amountMatch = candidateAmounts.some((amount) => almostSameAmount(matchedRow.normalized_amount, amount));
   const dateMatch = candidateDates.includes(matchedRow.normalized_date);
   const refMatch = candidateRefs.length && matchedRow.normalized_reference
@@ -2450,7 +2464,7 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
         fs.unlink(req.file.path, () => {});
         return res.status(400).json({
           error:
-            "Could not parse statement rows. Use a clear CSV/TXT/PDF/image with name, amount, and date values.",
+            "Could not parse statement rows. Use a clear CSV/TXT/PDF/image containing description or name, credit/amount, date, and transaction reference.",
         });
       }
       const teacherUsername = normalizeIdentifier(req.session.user.username);
