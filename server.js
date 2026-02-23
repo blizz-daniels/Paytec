@@ -227,6 +227,24 @@ function removeStoredContentFile(relativeUrl) {
   fs.unlink(absolutePath, () => {});
 }
 
+function parseReactionDetails(detailsString) {
+  if (!detailsString) {
+    return [];
+  }
+  return String(detailsString)
+    .split(",")
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [username, reaction] = entry.split("|");
+      return {
+        username: String(username || "").trim(),
+        reaction: String(reaction || "").trim(),
+      };
+    })
+    .filter((item) => item.username && item.reaction);
+}
+
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.run(sql, params, function onRun(err) {
@@ -704,6 +722,26 @@ async function initDatabase() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS handout_reactions (
+      handout_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      reaction TEXT NOT NULL,
+      reacted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (handout_id, username)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS shared_file_reactions (
+      shared_file_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      reaction TEXT NOT NULL,
+      reacted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (shared_file_id, username)
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS handouts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -791,6 +829,8 @@ async function initDatabase() {
   await run("CREATE INDEX IF NOT EXISTS idx_payment_receipt_events_receipt ON payment_receipt_events(receipt_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_payment_item ON notifications(related_payment_item_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_notification_reactions_notification ON notification_reactions(notification_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_handout_reactions_handout ON handout_reactions(handout_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_shared_file_reactions_shared_file ON shared_file_reactions(shared_file_id)");
 
   await run(`
     CREATE TABLE IF NOT EXISTS user_profiles (
@@ -3316,9 +3356,29 @@ app.get("/api/notifications", requireAuth, async (req, res) => {
       `
     );
     const unreadById = new Map(unreadRows.map((row) => [row.id, Number(row.unread_count || 0)]));
+    let reactionDetailRows = [];
+    if (notificationIds.length) {
+      const placeholders = notificationIds.map(() => "?").join(", ");
+      reactionDetailRows = await all(
+        `
+          SELECT
+            notification_id,
+            GROUP_CONCAT(username || '|' || reaction, ',') AS reaction_details
+          FROM notification_reactions
+          WHERE notification_id IN (${placeholders})
+          GROUP BY notification_id
+        `,
+        notificationIds
+      );
+    }
+    const reactionDetailsById = new Map(
+      reactionDetailRows.map((row) => [Number(row.notification_id || 0), parseReactionDetails(row.reaction_details)])
+    );
+
     const rowsWithCounts = rowsWithReactions.map((row) => ({
       ...row,
       unread_count: unreadById.has(row.id) ? unreadById.get(row.id) : 0,
+      reaction_details: reactionDetailsById.get(Number(row.id || 0)) || [],
     }));
     return res.json(rowsWithCounts);
   } catch (_err) {
@@ -3353,6 +3413,80 @@ app.post("/api/notifications/:id/reaction", requireStudent, async (req, res) => 
         INSERT INTO notification_reactions (notification_id, username, reaction, reacted_at)
         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(notification_id, username) DO UPDATE SET
+          reaction = excluded.reaction,
+          reacted_at = CURRENT_TIMESTAMP
+      `,
+      [id, req.session.user.username, rawReaction]
+    );
+    return res.json({ ok: true, reaction: rawReaction });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not save reaction." });
+  }
+});
+
+app.post("/api/handouts/:id/reaction", requireStudent, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  const rawReaction = String(req.body.reaction || "").trim().toLowerCase();
+  if (!id) {
+    return res.status(400).json({ error: "Invalid handout ID." });
+  }
+  if (rawReaction && !allowedNotificationReactions.has(rawReaction)) {
+    return res.status(400).json({ error: "Invalid reaction." });
+  }
+  try {
+    const row = await get("SELECT id FROM handouts WHERE id = ? LIMIT 1", [id]);
+    if (!row) {
+      return res.status(404).json({ error: "Handout not found." });
+    }
+    if (!rawReaction) {
+      await run("DELETE FROM handout_reactions WHERE handout_id = ? AND username = ?", [
+        id,
+        req.session.user.username,
+      ]);
+      return res.json({ ok: true, reaction: null });
+    }
+    await run(
+      `
+        INSERT INTO handout_reactions (handout_id, username, reaction, reacted_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(handout_id, username) DO UPDATE SET
+          reaction = excluded.reaction,
+          reacted_at = CURRENT_TIMESTAMP
+      `,
+      [id, req.session.user.username, rawReaction]
+    );
+    return res.json({ ok: true, reaction: rawReaction });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not save reaction." });
+  }
+});
+
+app.post("/api/shared-files/:id/reaction", requireStudent, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  const rawReaction = String(req.body.reaction || "").trim().toLowerCase();
+  if (!id) {
+    return res.status(400).json({ error: "Invalid shared file ID." });
+  }
+  if (rawReaction && !allowedNotificationReactions.has(rawReaction)) {
+    return res.status(400).json({ error: "Invalid reaction." });
+  }
+  try {
+    const row = await get("SELECT id FROM shared_files WHERE id = ? LIMIT 1", [id]);
+    if (!row) {
+      return res.status(404).json({ error: "Shared file not found." });
+    }
+    if (!rawReaction) {
+      await run("DELETE FROM shared_file_reactions WHERE shared_file_id = ? AND username = ?", [
+        id,
+        req.session.user.username,
+      ]);
+      return res.json({ ok: true, reaction: null });
+    }
+    await run(
+      `
+        INSERT INTO shared_file_reactions (shared_file_id, username, reaction, reacted_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(shared_file_id, username) DO UPDATE SET
           reaction = excluded.reaction,
           reacted_at = CURRENT_TIMESTAMP
       `,
@@ -3511,7 +3645,7 @@ app.delete("/api/notifications/:id", requireTeacher, async (req, res) => {
   }
 });
 
-app.get("/api/handouts", requireAuth, async (_req, res) => {
+app.get("/api/handouts", requireAuth, async (req, res) => {
   try {
     const rows = await all(
       `
@@ -3520,7 +3654,66 @@ app.get("/api/handouts", requireAuth, async (_req, res) => {
         ORDER BY created_at DESC, id DESC
       `
     );
-    return res.json(rows);
+    const ids = rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0);
+    if (!ids.length) {
+      return res.json(rows);
+    }
+
+    const placeholders = ids.map(() => "?").join(", ");
+    const countRows = await all(
+      `
+        SELECT handout_id, reaction, COUNT(*) AS total
+        FROM handout_reactions
+        WHERE handout_id IN (${placeholders})
+        GROUP BY handout_id, reaction
+      `,
+      ids
+    );
+    const userRows = await all(
+      `
+        SELECT handout_id, reaction
+        FROM handout_reactions
+        WHERE username = ? AND handout_id IN (${placeholders})
+      `,
+      [req.session.user.username, ...ids]
+    );
+
+    const countsById = new Map();
+    countRows.forEach((row) => {
+      const key = Number(row.handout_id || 0);
+      if (!countsById.has(key)) {
+        countsById.set(key, {});
+      }
+      countsById.get(key)[String(row.reaction || "")] = Number(row.total || 0);
+    });
+    const userById = new Map(userRows.map((row) => [Number(row.handout_id || 0), String(row.reaction || "")]));
+
+    let detailsById = new Map();
+    if (req.session.user.role === "teacher" || req.session.user.role === "admin") {
+      const detailRows = await all(
+        `
+          SELECT
+            handout_id,
+            GROUP_CONCAT(username || '|' || reaction, ',') AS reaction_details
+          FROM handout_reactions
+          WHERE handout_id IN (${placeholders})
+          GROUP BY handout_id
+        `,
+        ids
+      );
+      detailsById = new Map(
+        detailRows.map((row) => [Number(row.handout_id || 0), parseReactionDetails(row.reaction_details)])
+      );
+    }
+
+    return res.json(
+      rows.map((row) => ({
+        ...row,
+        user_reaction: userById.get(Number(row.id || 0)) || null,
+        reaction_counts: countsById.get(Number(row.id || 0)) || {},
+        reaction_details: detailsById.get(Number(row.id || 0)) || [],
+      }))
+    );
   } catch (_err) {
     return res.status(500).json({ error: "Could not load handouts" });
   }
@@ -3648,6 +3841,7 @@ app.delete("/api/handouts/:id", requireTeacher, async (req, res) => {
       return res.status(403).json({ error: "You can only delete your own handout." });
     }
 
+    await run("DELETE FROM handout_reactions WHERE handout_id = ?", [id]);
     await run("DELETE FROM handouts WHERE id = ?", [id]);
     removeStoredContentFile(access.row.file_url);
     await logAuditEvent(
@@ -3762,7 +3956,7 @@ app.post("/api/admin/import/teachers/preview", requireAdmin, async (req, res) =>
   }
 });
 
-app.get("/api/shared-files", requireAuth, async (_req, res) => {
+app.get("/api/shared-files", requireAuth, async (req, res) => {
   try {
     const rows = await all(
       `
@@ -3771,7 +3965,66 @@ app.get("/api/shared-files", requireAuth, async (_req, res) => {
         ORDER BY created_at DESC, id DESC
       `
     );
-    return res.json(rows);
+    const ids = rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0);
+    if (!ids.length) {
+      return res.json(rows);
+    }
+
+    const placeholders = ids.map(() => "?").join(", ");
+    const countRows = await all(
+      `
+        SELECT shared_file_id, reaction, COUNT(*) AS total
+        FROM shared_file_reactions
+        WHERE shared_file_id IN (${placeholders})
+        GROUP BY shared_file_id, reaction
+      `,
+      ids
+    );
+    const userRows = await all(
+      `
+        SELECT shared_file_id, reaction
+        FROM shared_file_reactions
+        WHERE username = ? AND shared_file_id IN (${placeholders})
+      `,
+      [req.session.user.username, ...ids]
+    );
+
+    const countsById = new Map();
+    countRows.forEach((row) => {
+      const key = Number(row.shared_file_id || 0);
+      if (!countsById.has(key)) {
+        countsById.set(key, {});
+      }
+      countsById.get(key)[String(row.reaction || "")] = Number(row.total || 0);
+    });
+    const userById = new Map(userRows.map((row) => [Number(row.shared_file_id || 0), String(row.reaction || "")]));
+
+    let detailsById = new Map();
+    if (req.session.user.role === "teacher" || req.session.user.role === "admin") {
+      const detailRows = await all(
+        `
+          SELECT
+            shared_file_id,
+            GROUP_CONCAT(username || '|' || reaction, ',') AS reaction_details
+          FROM shared_file_reactions
+          WHERE shared_file_id IN (${placeholders})
+          GROUP BY shared_file_id
+        `,
+        ids
+      );
+      detailsById = new Map(
+        detailRows.map((row) => [Number(row.shared_file_id || 0), parseReactionDetails(row.reaction_details)])
+      );
+    }
+
+    return res.json(
+      rows.map((row) => ({
+        ...row,
+        user_reaction: userById.get(Number(row.id || 0)) || null,
+        reaction_counts: countsById.get(Number(row.id || 0)) || {},
+        reaction_details: detailsById.get(Number(row.id || 0)) || [],
+      }))
+    );
   } catch (_err) {
     return res.status(500).json({ error: "Could not load shared files" });
   }
@@ -3899,6 +4152,7 @@ app.delete("/api/shared-files/:id", requireTeacher, async (req, res) => {
       return res.status(403).json({ error: "You can only delete your own shared file." });
     }
 
+    await run("DELETE FROM shared_file_reactions WHERE shared_file_id = ?", [id]);
     await run("DELETE FROM shared_files WHERE id = ?", [id]);
     removeStoredContentFile(access.row.file_url);
     await logAuditEvent(

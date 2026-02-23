@@ -790,6 +790,17 @@ body.has-profile-panel {
   font-size: 0.82rem;
 }
 
+.post-media {
+  display: block;
+  width: min(100%, 620px);
+  max-height: 440px;
+  object-fit: cover;
+  border-radius: 0.8rem;
+  border: 1px solid var(--border);
+  margin: 0.55rem 0 0.55rem;
+  background: color-mix(in srgb, var(--surface-soft) 88%, #000);
+}
+
 .update.urgent {
   border-left: 5px solid var(--danger);
 }

@@ -41,18 +41,18 @@ const contentState = {
 };
 
 const notificationReactionOptions = [
-  { key: "like", emoji: "👍", label: "Like" },
-  { key: "love", emoji: "❤️", label: "Love" },
-  { key: "haha", emoji: "😆", label: "Haha" },
-  { key: "wow", emoji: "😮", label: "Wow" },
-  { key: "sad", emoji: "😢", label: "Sad" },
+  { key: "like", emoji: "&#128077;", label: "Like" },
+  { key: "love", emoji: "&#10084;&#65039;", label: "Love" },
+  { key: "haha", emoji: "&#128518;", label: "Haha" },
+  { key: "wow", emoji: "&#128558;", label: "Wow" },
+  { key: "sad", emoji: "&#128546;", label: "Sad" },
 ];
 
 function canMarkRead(item) {
   return !!(contentState.user && contentState.user.role === "student" && !item.is_read);
 }
 
-function canReactToNotification() {
+function canReactToContent() {
   return !!(contentState.user && contentState.user.role === "student");
 }
 
@@ -65,8 +65,8 @@ function normalizeReactionCounts(value) {
   return counts;
 }
 
-function buildReactionBar(item) {
-  if (!canReactToNotification()) {
+function buildReactionBar(item, contentType) {
+  if (!canReactToContent()) {
     return "";
   }
   const counts = normalizeReactionCounts(item.reaction_counts);
@@ -79,6 +79,7 @@ function buildReactionBar(item) {
         <button
           type="button"
           class="reaction-btn${isSelected ? " reaction-btn--active" : ""}"
+          data-content-type="${contentType}"
           data-reaction="${option.key}"
           data-id="${item.id}"
           aria-label="${escapeHtml(option.label)} reaction"
@@ -173,7 +174,7 @@ function renderNotifications(items) {
     const actionButton = canMarkRead(item)
       ? `<button class="btn btn-secondary mark-read-btn" data-id="${item.id}" type="button">Mark as read</button>`
       : "";
-    const reactionBar = buildReactionBar(item);
+    const reactionBar = buildReactionBar(item, "notification");
     article.className = item.is_urgent ? "card update urgent" : "card update";
     article.innerHTML = `
       <p>${pinnedTag} <span class="tag">${escapeHtml(item.category || "General")}</span> ${readBadge}</p>
@@ -205,9 +206,11 @@ function renderHandouts(items) {
     article.className = "card handout";
     const linkText = item.file_url ? "Open File" : "File not attached";
     const href = item.file_url || "#";
+    const reactionBar = buildReactionBar(item, "handout");
     article.innerHTML = `
       <h2>${escapeHtml(item.title)}</h2>
       <p>${escapeHtml(item.description)}</p>
+      ${reactionBar}
       <a href="${escapeHtml(href)}" class="text-link" ${item.file_url ? 'target="_blank" rel="noopener noreferrer"' : ""}>${escapeHtml(linkText)}</a>
       <p><small>Uploaded by: ${escapeHtml(item.created_by)} &bull; ${escapeHtml(formatDate(item.created_at))}</small></p>
     `;
@@ -230,9 +233,20 @@ function renderSharedFiles(items) {
   items.forEach((item) => {
     const article = document.createElement("article");
     article.className = "update";
+    const reactionBar = buildReactionBar(item, "shared");
+    const fileUrl = String(item.file_url || "");
+    const lowered = fileUrl.toLowerCase();
+    let mediaHtml = "";
+    if (lowered.endsWith(".png")) {
+      mediaHtml = `<img class="post-media" src="${escapeHtml(fileUrl)}" alt="${escapeHtml(item.title || "Shared image")}" loading="lazy" />`;
+    } else if (lowered.endsWith(".mp4") || lowered.endsWith(".webm") || lowered.endsWith(".mov")) {
+      mediaHtml = `<video class="post-media" controls preload="metadata" src="${escapeHtml(fileUrl)}"></video>`;
+    }
     article.innerHTML = `
       <h3>${escapeHtml(item.title)}</h3>
       <p>${escapeHtml(item.description)}</p>
+      ${mediaHtml}
+      ${reactionBar}
       <a href="${escapeHtml(item.file_url)}" class="text-link" target="_blank" rel="noopener noreferrer">Open File</a>
       <p><small>Uploaded by: ${escapeHtml(item.created_by)} &bull; ${escapeHtml(formatDate(item.created_at))}</small></p>
     `;
@@ -255,11 +269,13 @@ function renderHomeNotifications(items) {
   items.forEach((item) => {
     const article = document.createElement("article");
     const pinnedTag = item.is_pinned ? '<span class="tag tag-pinned">Pinned</span> ' : "";
+    const reactionBar = buildReactionBar(item, "notification");
     article.className = item.is_urgent ? "update urgent" : "update";
     article.innerHTML = `
       <p>${pinnedTag}<span class="tag">${escapeHtml(item.category || "General")}</span></p>
       <h3>${escapeHtml(item.title)}</h3>
       <p>${escapeHtml(item.body)}</p>
+      ${reactionBar}
       <p><small>Posted by: ${escapeHtml(item.created_by)} &bull; ${escapeHtml(formatDate(item.created_at))}</small></p>
     `;
     root.appendChild(article);
@@ -280,10 +296,12 @@ function renderHomeHandouts(items) {
 
   items.forEach((item) => {
     const article = document.createElement("article");
+    const reactionBar = buildReactionBar(item, "handout");
     article.className = "update";
     article.innerHTML = `
       <h3>${escapeHtml(item.title)}</h3>
       <p>${escapeHtml(item.description)}</p>
+      ${reactionBar}
       <a href="${escapeHtml(item.file_url || "#")}" class="text-link" ${item.file_url ? 'target="_blank" rel="noopener noreferrer"' : ""}>${escapeHtml(item.file_url ? "Open Handout" : "File not attached")}</a>
       <p><small>Uploaded by: ${escapeHtml(item.created_by)} &bull; ${escapeHtml(formatDate(item.created_at))}</small></p>
     `;
@@ -309,8 +327,38 @@ async function markNotificationRead(notificationId) {
   }
 }
 
-async function reactToNotification(notificationId, reaction) {
-  const response = await fetch(`/api/notifications/${notificationId}/reaction`, {
+function getReactionEndpoint(contentType, itemId) {
+  if (contentType === "notification") {
+    return `/api/notifications/${itemId}/reaction`;
+  }
+  if (contentType === "handout") {
+    return `/api/handouts/${itemId}/reaction`;
+  }
+  if (contentType === "shared") {
+    return `/api/shared-files/${itemId}/reaction`;
+  }
+  return "";
+}
+
+function getItemByContentType(contentType, itemId) {
+  if (contentType === "notification") {
+    return contentState.data.notifications.find((item) => Number(item.id) === itemId) || null;
+  }
+  if (contentType === "handout") {
+    return contentState.data.handouts.find((item) => Number(item.id) === itemId) || null;
+  }
+  if (contentType === "shared") {
+    return contentState.data.sharedFiles.find((item) => Number(item.id) === itemId) || null;
+  }
+  return null;
+}
+
+async function reactToContent(contentType, itemId, reaction) {
+  const endpoint = getReactionEndpoint(contentType, itemId);
+  if (!endpoint) {
+    throw new Error("Invalid reaction target.");
+  }
+  const response = await fetch(endpoint, {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
@@ -330,12 +378,12 @@ async function reactToNotification(notificationId, reaction) {
 }
 
 function bindNotificationReadActions() {
-  const root = document.getElementById("notificationsList");
-  if (!root) {
+  if (window.__contentActionsBound) {
     return;
   }
+  window.__contentActionsBound = true;
 
-  root.addEventListener("click", async (event) => {
+  document.addEventListener("click", async (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
       return;
@@ -377,11 +425,12 @@ function bindNotificationReadActions() {
       return;
     }
     const id = Number.parseInt(reactionButton.getAttribute("data-id") || "", 10);
+    const contentType = String(reactionButton.getAttribute("data-content-type") || "").trim();
     const reaction = String(reactionButton.getAttribute("data-reaction") || "").trim();
-    if (!Number.isFinite(id) || id <= 0 || !reaction) {
+    if (!Number.isFinite(id) || id <= 0 || !reaction || !contentType) {
       return;
     }
-    const existing = contentState.data.notifications.find((item) => Number(item.id) === id);
+    const existing = getItemByContentType(contentType, id);
     const currentReaction = String(existing?.user_reaction || "").toLowerCase();
     const nextReaction = currentReaction === reaction ? "" : reaction;
     reactionButton.setAttribute("disabled", "disabled");
@@ -389,7 +438,7 @@ function bindNotificationReadActions() {
       ? window.showToast("Saving reaction...", { type: "loading", sticky: true })
       : null;
     try {
-      await reactToNotification(id, nextReaction);
+      await reactToContent(contentType, id, nextReaction);
       await loadContent();
     } catch (err) {
       showContentError(err.message || "Could not save reaction.");

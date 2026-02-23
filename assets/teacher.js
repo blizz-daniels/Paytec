@@ -27,6 +27,19 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function formatReactionDetails(item) {
+  const details = Array.isArray(item?.reaction_details) ? item.reaction_details : [];
+  if (!details.length) {
+    return "";
+  }
+  const preview = details
+    .slice(0, 10)
+    .map((entry) => `${escapeHtml(entry.username)} (${escapeHtml(entry.reaction)})`)
+    .join(", ");
+  const extra = details.length > 10 ? ` +${details.length - 10} more` : "";
+  return `<small>Reactions by: ${preview}${extra}</small>`;
+}
+
 async function requestJson(url, { method = "GET", payload } = {}) {
   const response = await fetch(url, {
     method,
@@ -56,9 +69,11 @@ const manageConfigs = [
     statusId: "manageNotificationStatus",
     emptyText: "No notifications to manage yet.",
     renderDetails(item) {
+      const reactedBy = formatReactionDetails(item);
       return `
         <p>${escapeHtml(item.body || "")}</p>
         <small>${escapeHtml(item.category || "General")} | Urgent: ${item.is_urgent ? "Yes" : "No"} | Pinned: ${item.is_pinned ? "Yes" : "No"} | Unread (students): ${Number(item.unread_count || 0)} | By ${escapeHtml(item.created_by || "-")}</small>
+        ${reactedBy}
       `;
     },
     buildEditPayload(item) {
@@ -98,9 +113,11 @@ const manageConfigs = [
     statusId: "manageSharedFileStatus",
     emptyText: "No shared files to manage yet.",
     renderDetails(item) {
+      const reactedBy = formatReactionDetails(item);
       return `
         <p>${escapeHtml(item.description || "")}</p>
         <small>File: ${escapeHtml(item.file_url || "-")} | By ${escapeHtml(item.created_by || "-")}</small>
+        ${reactedBy}
       `;
     },
     buildEditPayload(item) {
@@ -130,9 +147,11 @@ const manageConfigs = [
     statusId: "manageHandoutStatus",
     emptyText: "No handouts to manage yet.",
     renderDetails(item) {
+      const reactedBy = formatReactionDetails(item);
       return `
         <p>${escapeHtml(item.description || "")}</p>
         <small>File: ${escapeHtml(item.file_url || "(none)")} | By ${escapeHtml(item.created_by || "-")}</small>
+        ${reactedBy}
       `;
     },
     buildEditPayload(item) {
