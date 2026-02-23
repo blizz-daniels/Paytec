@@ -1,4 +1,4 @@
-# CampusPay Hub
+﻿# CampusPay Hub
 
 CampusPay Hub is a role-based school portal for student communication, class resources, and payment tracking.
 
