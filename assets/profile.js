@@ -11,7 +11,8 @@ window.addEventListener("DOMContentLoaded", () => {
     profileButton.type = "button";
     profileButton.id = profileButtonId;
     profileButton.className = "profile-trigger";
-    profileButton.textContent = "Profile";
+    profileButton.innerHTML =
+      '<img class="nav-link__icon" src="/assets/icons8-profile-24.png" alt="" aria-hidden="true" />Profile';
     const logoutButton = nav.querySelector(".logout-btn");
     if (logoutButton) {
       nav.insertBefore(profileButton, logoutButton);

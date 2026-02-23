@@ -100,7 +100,7 @@ const manageConfigs = [
     renderDetails(item) {
       return `
         <p>${escapeHtml(item.description || "")}</p>
-        <small>URL: ${escapeHtml(item.file_url || "-")} | By ${escapeHtml(item.created_by || "-")}</small>
+        <small>File: ${escapeHtml(item.file_url || "-")} | By ${escapeHtml(item.created_by || "-")}</small>
       `;
     },
     buildEditPayload(item) {
@@ -132,7 +132,7 @@ const manageConfigs = [
     renderDetails(item) {
       return `
         <p>${escapeHtml(item.description || "")}</p>
-        <small>URL: ${escapeHtml(item.file_url || "(none)")} | By ${escapeHtml(item.created_by || "-")}</small>
+        <small>File: ${escapeHtml(item.file_url || "(none)")} | By ${escapeHtml(item.created_by || "-")}</small>
       `;
     },
     buildEditPayload(item) {
@@ -320,6 +320,26 @@ async function submitJson(url, payload) {
   await requestJson(url, { method: "POST", payload });
 }
 
+async function submitFormData(url, formData) {
+  const response = await fetch(url, {
+    method: "POST",
+    credentials: "same-origin",
+    body: formData,
+  });
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_err) {
+    // keep fallback
+  }
+
+  if (!response.ok) {
+    throw new Error((data && data.error) || "Request failed.");
+  }
+  return data;
+}
+
 const notificationForm = document.getElementById("notificationForm");
 if (notificationForm) {
   notificationForm.addEventListener("submit", async (event) => {
@@ -374,14 +394,27 @@ if (handoutForm) {
     setButtonBusy(submitButton, true, "Saving...");
     setStatus("handoutStatus", "Saving...", false);
 
-    const payload = {
-      title: document.getElementById("handoutTitle").value.trim(),
-      description: document.getElementById("handoutDescription").value.trim(),
-      fileUrl: document.getElementById("handoutUrl").value.trim(),
-    };
+    const fileInput = document.getElementById("handoutFileInput");
+    const selectedFile = fileInput && fileInput.files ? fileInput.files[0] : null;
+    if (!selectedFile) {
+      setStatus("handoutStatus", "Please select a handout file.", true);
+      if (window.showToast) {
+        window.showToast("Please select a handout file.", { type: "error" });
+      }
+      setButtonBusy(submitButton, false, "");
+      if (loadingToast) {
+        loadingToast.close();
+      }
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("title", document.getElementById("handoutTitle").value.trim());
+    formData.append("description", document.getElementById("handoutDescription").value.trim());
+    formData.append("file", selectedFile);
 
     try {
-      await submitJson("/api/handouts", payload);
+      await submitFormData("/api/handouts", formData);
       handoutForm.reset();
       setStatus("handoutStatus", "Handout saved.", false);
       if (window.showToast) {
@@ -413,14 +446,27 @@ if (sharedFileForm) {
     setButtonBusy(submitButton, true, "Publishing...");
     setStatus("sharedFileStatus", "Publishing...", false);
 
-    const payload = {
-      title: document.getElementById("sharedFileTitle").value.trim(),
-      description: document.getElementById("sharedFileDescription").value.trim(),
-      fileUrl: document.getElementById("sharedFileUrl").value.trim(),
-    };
+    const fileInput = document.getElementById("sharedFileInput");
+    const selectedFile = fileInput && fileInput.files ? fileInput.files[0] : null;
+    if (!selectedFile) {
+      setStatus("sharedFileStatus", "Please select a shared file.", true);
+      if (window.showToast) {
+        window.showToast("Please select a shared file.", { type: "error" });
+      }
+      setButtonBusy(submitButton, false, "");
+      if (loadingToast) {
+        loadingToast.close();
+      }
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("title", document.getElementById("sharedFileTitle").value.trim());
+    formData.append("description", document.getElementById("sharedFileDescription").value.trim());
+    formData.append("file", selectedFile);
 
     try {
-      await submitJson("/api/shared-files", payload);
+      await submitFormData("/api/shared-files", formData);
       sharedFileForm.reset();
       setStatus("sharedFileStatus", "Shared file published.", false);
       if (window.showToast) {

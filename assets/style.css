@@ -193,18 +193,21 @@ body {
 .nav-links {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 0.8rem;
   position: fixed;
   left: 0;
-  top: var(--header-height);
-  bottom: 0;
+  top: 76px;
+  height: calc(100vh - 76px);
   width: var(--sidebar-width);
   padding: 1.15rem 1rem;
   flex-direction: column;
   align-items: stretch;
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   border-right: 1px solid var(--border);
-  overflow-y: auto;
+  border-top-right-radius: 0.8rem;
+  border-bottom-right-radius: 0.8rem;
+  overflow-y: hidden;
   z-index: 9;
 }
 
@@ -221,6 +224,40 @@ body {
   background: linear-gradient(135deg, var(--primary), var(--primary-dark));
   box-shadow: 0 10px 20px color-mix(in srgb, var(--primary) 34%, transparent);
   transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
+}
+
+.nav-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  width: 100%;
+}
+
+.nav-section--middle {
+  margin-top: auto;
+  margin-bottom: auto;
+}
+
+.nav-section--top,
+.nav-section--middle {
+  position: relative;
+  padding-bottom: 1rem;
+}
+
+.nav-section--top::after,
+.nav-section--middle::after {
+  content: "";
+  position: absolute;
+  width: calc(100% - 1rem);
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow:
+    0 0 8px color-mix(in srgb, var(--primary) 52%, transparent),
+    0 0 14px color-mix(in srgb, var(--primary-dark) 38%, transparent);
+  opacity: 0.9;
 }
 
 .nav-link__icon {
@@ -441,6 +478,9 @@ body {
 }
 
 .nav-links .profile-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   border: none;
   border-radius: 0.6rem;
   padding: 0.62rem 0.95rem;
@@ -708,6 +748,46 @@ body.has-profile-panel {
 
 .mark-read-btn {
   margin: 0.5rem 0;
+}
+
+.reaction-bar {
+  margin: 0.6rem 0 0.35rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.reaction-btn {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-soft) 90%, #fff);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.reaction-btn:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--primary) 60%, var(--border));
+}
+
+.reaction-btn--active {
+  border-color: color-mix(in srgb, var(--primary) 75%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 20%, transparent);
+}
+
+.reaction-btn__emoji {
+  font-size: 0.98rem;
+  line-height: 1;
+}
+
+.reaction-btn__count {
+  font-weight: 700;
+  font-size: 0.82rem;
 }
 
 .update.urgent {

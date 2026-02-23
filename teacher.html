@@ -17,7 +17,7 @@
         <a href="/handouts.html"><img class="nav-link__icon" src="/assets/icons8-books-50.png" alt="" aria-hidden="true" />Handouts</a>
         <a href="/payments.html"><img class="nav-link__icon" src="/assets/icons8-cash-and-credit-card-50.png" alt="" aria-hidden="true" />Payments</a>
         <a class="active" href="/teacher"><img class="nav-link__icon" src="/assets/icons8-teacher-50.png" alt="" aria-hidden="true" />Teacher</a>
-        <button id="profileToggleButton" class="profile-trigger" type="button">Profile</button>
+        <button id="profileToggleButton" class="profile-trigger" type="button"><img class="nav-link__icon" src="/assets/icons8-profile-24.png" alt="" aria-hidden="true" />Profile</button>
         <form method="post" action="/logout" class="logout-form">
           <input type="hidden" name="_csrf" value="" />
           <button type="submit" class="logout-btn">Log out</button>
@@ -72,8 +72,8 @@
             <label for="sharedFileDescription">Description</label>
             <textarea id="sharedFileDescription" name="description" rows="4" maxlength="2000" required></textarea>
 
-            <label for="sharedFileUrl">File URL</label>
-            <input id="sharedFileUrl" name="fileUrl" type="url" maxlength="500" required />
+            <label for="sharedFileInput">File (PNG or Video)</label>
+            <input id="sharedFileInput" name="file" type="file" accept=".png,image/png,.mp4,video/mp4,.webm,video/webm,.mov,video/quicktime" required />
 
             <button type="submit" class="btn">Publish File</button>
           </form>
@@ -89,8 +89,8 @@
             <label for="handoutDescription">Description</label>
             <textarea id="handoutDescription" name="description" rows="5" maxlength="2000" required></textarea>
 
-            <label for="handoutUrl">File URL (optional)</label>
-            <input id="handoutUrl" name="fileUrl" type="url" maxlength="500" />
+            <label for="handoutFileInput">File (PDF, Word, Excel)</label>
+            <input id="handoutFileInput" name="file" type="file" accept=".pdf,application/pdf,.doc,application/msword,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.xls,application/vnd.ms-excel,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
 
             <button type="submit" class="btn">Save Handout</button>
           </form>

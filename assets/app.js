@@ -7,6 +7,95 @@ if (menuButton && nav) {
   });
 }
 
+function normalizePath(pathname) {
+  if (!pathname) {
+    return "/";
+  }
+  const clean = pathname.toLowerCase();
+  return clean.endsWith("/") && clean.length > 1 ? clean.slice(0, -1) : clean;
+}
+
+function getNavItemPath(node) {
+  if (!node || node.tagName !== "A") {
+    return "";
+  }
+  const href = node.getAttribute("href") || "";
+  if (!href || href.startsWith("#")) {
+    return "";
+  }
+  try {
+    const url = new URL(href, window.location.origin);
+    return normalizePath(url.pathname);
+  } catch (_err) {
+    return "";
+  }
+}
+
+function arrangeSidebarNav() {
+  if (!nav) {
+    return;
+  }
+
+  if (nav.querySelector(".nav-section")) {
+    return;
+  }
+
+  const topSection = document.createElement("div");
+  topSection.className = "nav-section nav-section--top";
+  const middleSection = document.createElement("div");
+  middleSection.className = "nav-section nav-section--middle";
+  const bottomSection = document.createElement("div");
+  bottomSection.className = "nav-section nav-section--bottom";
+
+  const homePaths = new Set(["/", "/index.html"]);
+  const notificationPaths = new Set(["/notifications.html"]);
+  const handoutPaths = new Set(["/handouts.html"]);
+  const paymentPaths = new Set(["/payments.html"]);
+
+  const allChildren = Array.from(nav.children);
+  let profileButton = null;
+  let themeToggle = null;
+  let logoutForm = null;
+
+  allChildren.forEach((node) => {
+    if (node.id === "profileToggleButton") {
+      profileButton = node;
+      return;
+    }
+    if (node.id === "themeToggleWrap") {
+      themeToggle = node;
+      return;
+    }
+    if (node.classList && node.classList.contains("logout-form")) {
+      logoutForm = node;
+      return;
+    }
+
+    const path = getNavItemPath(node);
+    if (homePaths.has(path) || notificationPaths.has(path)) {
+      topSection.appendChild(node);
+      return;
+    }
+    if (handoutPaths.has(path) || paymentPaths.has(path)) {
+      middleSection.appendChild(node);
+      return;
+    }
+    bottomSection.appendChild(node);
+  });
+
+  nav.replaceChildren(topSection, middleSection, bottomSection);
+
+  if (profileButton) {
+    bottomSection.appendChild(profileButton);
+  }
+  if (themeToggle) {
+    bottomSection.appendChild(themeToggle);
+  }
+  if (logoutForm) {
+    bottomSection.appendChild(logoutForm);
+  }
+}
+
 async function toggleTeacherLinks() {
   const teacherLinks = document.querySelectorAll('[data-role-link="teacher"]');
   if (!teacherLinks.length) {
@@ -82,6 +171,7 @@ toggleTeacherLinks();
   }
 
   applyTheme(document.documentElement.getAttribute("data-theme") || initialTheme);
+  arrangeSidebarNav();
 
   const themeInput = document.getElementById("themeToggleButton");
   if (!themeInput) {

@@ -40,8 +40,56 @@ const contentState = {
   },
 };
 
+const notificationReactionOptions = [
+  { key: "like", emoji: "👍", label: "Like" },
+  { key: "love", emoji: "❤️", label: "Love" },
+  { key: "haha", emoji: "😆", label: "Haha" },
+  { key: "wow", emoji: "😮", label: "Wow" },
+  { key: "sad", emoji: "😢", label: "Sad" },
+];
+
 function canMarkRead(item) {
   return !!(contentState.user && contentState.user.role === "student" && !item.is_read);
+}
+
+function canReactToNotification() {
+  return !!(contentState.user && contentState.user.role === "student");
+}
+
+function normalizeReactionCounts(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const counts = {};
+  notificationReactionOptions.forEach((option) => {
+    counts[option.key] = Number(source[option.key] || 0);
+  });
+  return counts;
+}
+
+function buildReactionBar(item) {
+  if (!canReactToNotification()) {
+    return "";
+  }
+  const counts = normalizeReactionCounts(item.reaction_counts);
+  const selected = String(item.user_reaction || "").toLowerCase();
+  const buttons = notificationReactionOptions
+    .map((option) => {
+      const count = counts[option.key];
+      const isSelected = selected === option.key;
+      return `
+        <button
+          type="button"
+          class="reaction-btn${isSelected ? " reaction-btn--active" : ""}"
+          data-reaction="${option.key}"
+          data-id="${item.id}"
+          aria-label="${escapeHtml(option.label)} reaction"
+        >
+          <span class="reaction-btn__emoji" aria-hidden="true">${option.emoji}</span>
+          <span class="reaction-btn__count">${count}</span>
+        </button>
+      `;
+    })
+    .join("");
+  return `<div class="reaction-bar">${buttons}</div>`;
 }
 
 function normalizeForFilter(item, type) {
@@ -125,11 +173,13 @@ function renderNotifications(items) {
     const actionButton = canMarkRead(item)
       ? `<button class="btn btn-secondary mark-read-btn" data-id="${item.id}" type="button">Mark as read</button>`
       : "";
+    const reactionBar = buildReactionBar(item);
     article.className = item.is_urgent ? "card update urgent" : "card update";
     article.innerHTML = `
       <p>${pinnedTag} <span class="tag">${escapeHtml(item.category || "General")}</span> ${readBadge}</p>
       <h2>${escapeHtml(item.title)}</h2>
       <p>${escapeHtml(item.body)}</p>
+      ${reactionBar}
       ${unreadInfo}
       ${actionButton}
       <small>Posted by: ${escapeHtml(item.created_by)} &bull; ${escapeHtml(formatDate(item.created_at))}</small>
@@ -259,6 +309,26 @@ async function markNotificationRead(notificationId) {
   }
 }
 
+async function reactToNotification(notificationId, reaction) {
+  const response = await fetch(`/api/notifications/${notificationId}/reaction`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reaction }),
+  });
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_err) {
+    // Keep fallback message.
+  }
+
+  if (!response.ok) {
+    throw new Error((data && data.error) || "Could not save reaction.");
+  }
+}
+
 function bindNotificationReadActions() {
   const root = document.getElementById("notificationsList");
   if (!root) {
@@ -270,33 +340,62 @@ function bindNotificationReadActions() {
     if (!(target instanceof HTMLElement)) {
       return;
     }
-    const button = target.closest(".mark-read-btn");
-    if (!button) {
+    const readButton = target.closest(".mark-read-btn");
+    if (readButton) {
+      const id = Number.parseInt(readButton.getAttribute("data-id") || "", 10);
+      if (!Number.isFinite(id) || id <= 0) {
+        return;
+      }
+      readButton.setAttribute("disabled", "disabled");
+      readButton.textContent = "Marking...";
+      const loadingToast = window.showToast
+        ? window.showToast("Marking notification as read...", { type: "loading", sticky: true })
+        : null;
+      try {
+        await markNotificationRead(id);
+        if (window.showToast) {
+          window.showToast("Notification marked as read.", { type: "success" });
+        }
+        await loadContent();
+      } catch (err) {
+        showContentError(err.message || "Could not update read status.");
+        if (window.showToast) {
+          window.showToast(err.message || "Could not update read status.", { type: "error" });
+        }
+        readButton.removeAttribute("disabled");
+        readButton.textContent = "Mark as read";
+      } finally {
+        if (loadingToast) {
+          loadingToast.close();
+        }
+      }
       return;
     }
 
-    const id = Number.parseInt(button.getAttribute("data-id") || "", 10);
-    if (!Number.isFinite(id) || id <= 0) {
+    const reactionButton = target.closest(".reaction-btn");
+    if (!reactionButton) {
       return;
     }
-    button.setAttribute("disabled", "disabled");
-    button.textContent = "Marking...";
+    const id = Number.parseInt(reactionButton.getAttribute("data-id") || "", 10);
+    const reaction = String(reactionButton.getAttribute("data-reaction") || "").trim();
+    if (!Number.isFinite(id) || id <= 0 || !reaction) {
+      return;
+    }
+    const existing = contentState.data.notifications.find((item) => Number(item.id) === id);
+    const currentReaction = String(existing?.user_reaction || "").toLowerCase();
+    const nextReaction = currentReaction === reaction ? "" : reaction;
+    reactionButton.setAttribute("disabled", "disabled");
     const loadingToast = window.showToast
-      ? window.showToast("Marking notification as read...", { type: "loading", sticky: true })
+      ? window.showToast("Saving reaction...", { type: "loading", sticky: true })
       : null;
     try {
-      await markNotificationRead(id);
-      if (window.showToast) {
-        window.showToast("Notification marked as read.", { type: "success" });
-      }
+      await reactToNotification(id, nextReaction);
       await loadContent();
     } catch (err) {
-      showContentError(err.message || "Could not update read status.");
+      showContentError(err.message || "Could not save reaction.");
       if (window.showToast) {
-        window.showToast(err.message || "Could not update read status.", { type: "error" });
+        window.showToast(err.message || "Could not save reaction.", { type: "error" });
       }
-      button.removeAttribute("disabled");
-      button.textContent = "Mark as read";
     } finally {
       if (loadingToast) {
         loadingToast.close();

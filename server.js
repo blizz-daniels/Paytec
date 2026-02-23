@@ -36,6 +36,12 @@ const receiptsDir = path.join(dataDir, "receipts");
 fs.mkdirSync(receiptsDir, { recursive: true });
 const statementsDir = path.join(dataDir, "statements");
 fs.mkdirSync(statementsDir, { recursive: true });
+const contentFilesDir = path.join(dataDir, "content-files");
+fs.mkdirSync(contentFilesDir, { recursive: true });
+const handoutsFilesDir = path.join(contentFilesDir, "handouts");
+fs.mkdirSync(handoutsFilesDir, { recursive: true });
+const sharedFilesUploadDir = path.join(contentFilesDir, "shared");
+fs.mkdirSync(sharedFilesUploadDir, { recursive: true });
 
 const allowedAvatarMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const allowedAvatarExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
@@ -52,6 +58,22 @@ const allowedStatementMimeTypes = new Set([
   "image/webp",
 ]);
 const allowedStatementExtensions = new Set([".csv", ".txt", ".pdf", ".jpg", ".jpeg", ".png", ".webp"]);
+const allowedHandoutMimeTypes = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+]);
+const allowedHandoutExtensions = new Set([".pdf", ".doc", ".docx", ".xls", ".xlsx"]);
+const allowedSharedMimeTypes = new Set([
+  "image/png",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+]);
+const allowedSharedExtensions = new Set([".png", ".mp4", ".webm", ".mov"]);
+const allowedNotificationReactions = new Set(["like", "love", "haha", "wow", "sad"]);
 const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 8;
@@ -130,7 +152,80 @@ const statementUpload = multer({
     fileSize: 5 * 1024 * 1024,
   },
 });
+
+const handoutUpload = multer({
+  storage: multer.diskStorage({
+    destination: handoutsFilesDir,
+    filename(req, file, cb) {
+      const teacher = String(req.session?.user?.username || "teacher").replace(/[^\w-]/g, "").slice(0, 40) || "teacher";
+      const ext = path.extname(file.originalname || "").toLowerCase() || ".bin";
+      const safeExt = allowedHandoutExtensions.has(ext) ? ext : ".bin";
+      const suffix = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+      cb(null, `${teacher}-${suffix}${safeExt}`);
+    },
+  }),
+  fileFilter(_req, file, cb) {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (allowedHandoutMimeTypes.has(file.mimetype) || allowedHandoutExtensions.has(ext)) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error("Only PDF, Word, and Excel files are allowed for handouts."));
+  },
+  limits: {
+    fileSize: 20 * 1024 * 1024,
+  },
+});
+
+const sharedFileUpload = multer({
+  storage: multer.diskStorage({
+    destination: sharedFilesUploadDir,
+    filename(req, file, cb) {
+      const teacher = String(req.session?.user?.username || "teacher").replace(/[^\w-]/g, "").slice(0, 40) || "teacher";
+      const ext = path.extname(file.originalname || "").toLowerCase() || ".bin";
+      const safeExt = allowedSharedExtensions.has(ext) ? ext : ".bin";
+      const suffix = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+      cb(null, `${teacher}-${suffix}${safeExt}`);
+    },
+  }),
+  fileFilter(_req, file, cb) {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (allowedSharedMimeTypes.has(file.mimetype) || allowedSharedExtensions.has(ext)) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error("Only PNG images and MP4/WEBM/MOV videos are allowed for shared files."));
+  },
+  limits: {
+    fileSize: 50 * 1024 * 1024,
+  },
+});
 const db = new sqlite3.Database(dbPath);
+
+function resolveStoredContentPath(relativeUrl) {
+  if (!relativeUrl || typeof relativeUrl !== "string") {
+    return null;
+  }
+  const normalized = relativeUrl.replace(/\\/g, "/");
+  if (!normalized.startsWith("/content-files/")) {
+    return null;
+  }
+  const relativePath = normalized.slice("/content-files/".length);
+  const absolute = path.resolve(contentFilesDir, relativePath);
+  const relativeCheck = path.relative(contentFilesDir, absolute);
+  if (!relativeCheck || relativeCheck.startsWith("..") || path.isAbsolute(relativeCheck)) {
+    return null;
+  }
+  return absolute;
+}
+
+function removeStoredContentFile(relativeUrl) {
+  const absolutePath = resolveStoredContentPath(relativeUrl);
+  if (!absolutePath) {
+    return;
+  }
+  fs.unlink(absolutePath, () => {});
+}
 
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -599,6 +694,16 @@ async function initDatabase() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS notification_reactions (
+      notification_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      reaction TEXT NOT NULL,
+      reacted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (notification_id, username)
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS handouts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -685,6 +790,7 @@ async function initDatabase() {
   await run("CREATE INDEX IF NOT EXISTS idx_payment_receipts_item ON payment_receipts(payment_item_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_payment_receipt_events_receipt ON payment_receipt_events(receipt_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_payment_item ON notifications(related_payment_item_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_notification_reactions_notification ON notification_reactions(notification_id)");
 
   await run(`
     CREATE TABLE IF NOT EXISTS user_profiles (
@@ -824,12 +930,33 @@ app.use(requireCsrf);
 app.use("/assets", express.static(path.join(__dirname, "assets")));
 app.use("/users", express.static(usersDir));
 
+app.get("/content-files/:folder/:filename", requireAuth, (req, res) => {
+  const folder = String(req.params.folder || "").toLowerCase();
+  const filename = path.basename(String(req.params.filename || ""));
+  if (!folder || !filename || !["handouts", "shared"].includes(folder)) {
+    return res.status(400).json({ error: "Invalid file path." });
+  }
+  const absolutePath = path.resolve(contentFilesDir, folder, filename);
+  const relativeCheck = path.relative(contentFilesDir, absolutePath);
+  if (!relativeCheck || relativeCheck.startsWith("..") || path.isAbsolute(relativeCheck)) {
+    return res.status(400).json({ error: "Invalid file path." });
+  }
+  if (!fs.existsSync(absolutePath)) {
+    return res.status(404).json({ error: "File not found." });
+  }
+  return res.sendFile(absolutePath);
+});
+
 function isAuthenticated(req) {
   return !!(req.session && req.session.user);
 }
 
 function isValidHttpUrl(value) {
   return /^https?:\/\/\S+$/i.test(value);
+}
+
+function isValidLocalContentUrl(value) {
+  return /^\/content-files\/(handouts|shared)\/[a-z0-9._-]+$/i.test(String(value || ""));
 }
 
 function requireAuth(req, res, next) {
@@ -3126,20 +3253,51 @@ app.get("/api/notifications", requireAuth, async (req, res) => {
           n.auto_generated,
           n.created_by,
           n.created_at,
-          CASE WHEN nr.notification_id IS NULL THEN 0 ELSE 1 END AS is_read
+          CASE WHEN nr.notification_id IS NULL THEN 0 ELSE 1 END AS is_read,
+          user_reaction.reaction AS user_reaction
         FROM notifications n
         LEFT JOIN notification_reads nr
           ON nr.notification_id = n.id
          AND nr.username = ?
+        LEFT JOIN notification_reactions user_reaction
+          ON user_reaction.notification_id = n.id
+         AND user_reaction.username = ?
         ${whereClause}
         ORDER BY n.is_pinned DESC, n.is_urgent DESC, n.created_at DESC, n.id DESC
       `
       ,
-      [req.session.user.username]
+      [req.session.user.username, req.session.user.username]
     );
 
+    const notificationIds = rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0);
+    let reactionCountRows = [];
+    if (notificationIds.length) {
+      const placeholders = notificationIds.map(() => "?").join(", ");
+      reactionCountRows = await all(
+        `
+          SELECT notification_id, reaction, COUNT(*) AS total
+          FROM notification_reactions
+          WHERE notification_id IN (${placeholders})
+          GROUP BY notification_id, reaction
+        `,
+        notificationIds
+      );
+    }
+    const reactionsByNotification = new Map();
+    reactionCountRows.forEach((row) => {
+      const notificationId = Number(row.notification_id || 0);
+      if (!reactionsByNotification.has(notificationId)) {
+        reactionsByNotification.set(notificationId, {});
+      }
+      reactionsByNotification.get(notificationId)[String(row.reaction || "")] = Number(row.total || 0);
+    });
+    const rowsWithReactions = rows.map((row) => ({
+      ...row,
+      reaction_counts: reactionsByNotification.get(Number(row.id || 0)) || {},
+    }));
+
     if (req.session.user.role !== "teacher" && req.session.user.role !== "admin") {
-      return res.json(rows);
+      return res.json(rowsWithReactions);
     }
 
     const unreadRows = await all(
@@ -3158,13 +3316,51 @@ app.get("/api/notifications", requireAuth, async (req, res) => {
       `
     );
     const unreadById = new Map(unreadRows.map((row) => [row.id, Number(row.unread_count || 0)]));
-    const rowsWithCounts = rows.map((row) => ({
+    const rowsWithCounts = rowsWithReactions.map((row) => ({
       ...row,
       unread_count: unreadById.has(row.id) ? unreadById.get(row.id) : 0,
     }));
     return res.json(rowsWithCounts);
   } catch (_err) {
     return res.status(500).json({ error: "Could not load notifications" });
+  }
+});
+
+app.post("/api/notifications/:id/reaction", requireStudent, async (req, res) => {
+  const id = parseResourceId(req.params.id);
+  const rawReaction = String(req.body.reaction || "").trim().toLowerCase();
+  if (!id) {
+    return res.status(400).json({ error: "Invalid notification ID." });
+  }
+  if (rawReaction && !allowedNotificationReactions.has(rawReaction)) {
+    return res.status(400).json({ error: "Invalid reaction." });
+  }
+
+  try {
+    const row = await get("SELECT id FROM notifications WHERE id = ? LIMIT 1", [id]);
+    if (!row) {
+      return res.status(404).json({ error: "Notification not found." });
+    }
+    if (!rawReaction) {
+      await run("DELETE FROM notification_reactions WHERE notification_id = ? AND username = ?", [
+        id,
+        req.session.user.username,
+      ]);
+      return res.json({ ok: true, reaction: null });
+    }
+    await run(
+      `
+        INSERT INTO notification_reactions (notification_id, username, reaction, reacted_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(notification_id, username) DO UPDATE SET
+          reaction = excluded.reaction,
+          reacted_at = CURRENT_TIMESTAMP
+      `,
+      [id, req.session.user.username, rawReaction]
+    );
+    return res.json({ ok: true, reaction: rawReaction });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not save reaction." });
   }
 });
 
@@ -3299,6 +3495,7 @@ app.delete("/api/notifications/:id", requireTeacher, async (req, res) => {
       return res.status(403).json({ error: "You can only delete your own notification." });
     }
 
+    await run("DELETE FROM notification_reactions WHERE notification_id = ?", [id]);
     await run("DELETE FROM notifications WHERE id = ?", [id]);
     await logAuditEvent(
       req,
@@ -3329,41 +3526,61 @@ app.get("/api/handouts", requireAuth, async (_req, res) => {
   }
 });
 
-app.post("/api/handouts", requireTeacher, async (req, res) => {
-  const title = String(req.body.title || "").trim();
-  const description = String(req.body.description || "").trim();
-  const fileUrl = String(req.body.fileUrl || "").trim();
+app.post("/api/handouts", requireTeacher, (req, res) => {
+  handoutUpload.single("file")(req, res, async (err) => {
+    if (err) {
+      const message =
+        err && err.message === "Only PDF, Word, and Excel files are allowed for handouts."
+          ? err.message
+          : err && err.code === "LIMIT_FILE_SIZE"
+          ? "Handout file cannot be larger than 20 MB."
+          : "Could not process handout upload.";
+      return res.status(400).json({ error: message });
+    }
 
-  if (!title || !description) {
-    return res.status(400).json({ error: "Title and description are required." });
-  }
-  if (title.length > 120 || description.length > 2000 || fileUrl.length > 500) {
-    return res.status(400).json({ error: "Handout field length is invalid." });
-  }
-  if (fileUrl && !isValidHttpUrl(fileUrl)) {
-    return res.status(400).json({ error: "File URL must start with http:// or https://." });
-  }
+    const title = String(req.body.title || "").trim();
+    const description = String(req.body.description || "").trim();
+    if (!title || !description) {
+      if (req.file?.path) {
+        fs.unlink(req.file.path, () => {});
+      }
+      return res.status(400).json({ error: "Title and description are required." });
+    }
+    if (title.length > 120 || description.length > 2000) {
+      if (req.file?.path) {
+        fs.unlink(req.file.path, () => {});
+      }
+      return res.status(400).json({ error: "Handout field length is invalid." });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "Please select a handout file to upload." });
+    }
 
-  try {
-    const result = await run(
-      `
-        INSERT INTO handouts (title, description, file_url, created_by)
-        VALUES (?, ?, ?, ?)
-      `,
-      [title, description, fileUrl || null, req.session.user.username]
-    );
-    await logAuditEvent(
-      req,
-      "create",
-      "handout",
-      result.lastID,
-      req.session.user.username,
-      `Created handout "${title.slice(0, 80)}"`
-    );
-    return res.status(201).json({ ok: true });
-  } catch (_err) {
-    return res.status(500).json({ error: "Could not save handout." });
-  }
+    const relativeUrl = `/content-files/handouts/${req.file.filename}`;
+    try {
+      const result = await run(
+        `
+          INSERT INTO handouts (title, description, file_url, created_by)
+          VALUES (?, ?, ?, ?)
+        `,
+        [title, description, relativeUrl, req.session.user.username]
+      );
+      await logAuditEvent(
+        req,
+        "create",
+        "handout",
+        result.lastID,
+        req.session.user.username,
+        `Created handout "${title.slice(0, 80)}"`
+      );
+      return res.status(201).json({ ok: true });
+    } catch (_err) {
+      if (req.file?.path) {
+        fs.unlink(req.file.path, () => {});
+      }
+      return res.status(500).json({ error: "Could not save handout." });
+    }
+  });
 });
 
 app.put("/api/handouts/:id", requireTeacher, async (req, res) => {
@@ -3381,8 +3598,8 @@ app.put("/api/handouts/:id", requireTeacher, async (req, res) => {
   if (title.length > 120 || description.length > 2000 || fileUrl.length > 500) {
     return res.status(400).json({ error: "Handout field length is invalid." });
   }
-  if (fileUrl && !isValidHttpUrl(fileUrl)) {
-    return res.status(400).json({ error: "File URL must start with http:// or https://." });
+  if (fileUrl && !isValidHttpUrl(fileUrl) && !isValidLocalContentUrl(fileUrl)) {
+    return res.status(400).json({ error: "File URL must start with http://, https://, or /content-files/." });
   }
 
   try {
@@ -3432,6 +3649,7 @@ app.delete("/api/handouts/:id", requireTeacher, async (req, res) => {
     }
 
     await run("DELETE FROM handouts WHERE id = ?", [id]);
+    removeStoredContentFile(access.row.file_url);
     await logAuditEvent(
       req,
       "delete",
@@ -3559,41 +3777,61 @@ app.get("/api/shared-files", requireAuth, async (_req, res) => {
   }
 });
 
-app.post("/api/shared-files", requireTeacher, async (req, res) => {
-  const title = String(req.body.title || "").trim();
-  const description = String(req.body.description || "").trim();
-  const fileUrl = String(req.body.fileUrl || "").trim();
+app.post("/api/shared-files", requireTeacher, (req, res) => {
+  sharedFileUpload.single("file")(req, res, async (err) => {
+    if (err) {
+      const message =
+        err && err.message === "Only PNG images and MP4/WEBM/MOV videos are allowed for shared files."
+          ? err.message
+          : err && err.code === "LIMIT_FILE_SIZE"
+          ? "Shared file cannot be larger than 50 MB."
+          : "Could not process shared file upload.";
+      return res.status(400).json({ error: message });
+    }
 
-  if (!title || !description || !fileUrl) {
-    return res.status(400).json({ error: "Title, description, and file URL are required." });
-  }
-  if (title.length > 120 || description.length > 2000 || fileUrl.length > 500) {
-    return res.status(400).json({ error: "Shared file field length is invalid." });
-  }
-  if (!isValidHttpUrl(fileUrl)) {
-    return res.status(400).json({ error: "File URL must start with http:// or https://." });
-  }
+    const title = String(req.body.title || "").trim();
+    const description = String(req.body.description || "").trim();
+    if (!title || !description) {
+      if (req.file?.path) {
+        fs.unlink(req.file.path, () => {});
+      }
+      return res.status(400).json({ error: "Title and description are required." });
+    }
+    if (title.length > 120 || description.length > 2000) {
+      if (req.file?.path) {
+        fs.unlink(req.file.path, () => {});
+      }
+      return res.status(400).json({ error: "Shared file field length is invalid." });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "Please select a shared file to upload." });
+    }
 
-  try {
-    const result = await run(
-      `
-        INSERT INTO shared_files (title, description, file_url, created_by)
-        VALUES (?, ?, ?, ?)
-      `,
-      [title, description, fileUrl, req.session.user.username]
-    );
-    await logAuditEvent(
-      req,
-      "create",
-      "shared_file",
-      result.lastID,
-      req.session.user.username,
-      `Created shared file "${title.slice(0, 80)}"`
-    );
-    return res.status(201).json({ ok: true });
-  } catch (_err) {
-    return res.status(500).json({ error: "Could not save shared file." });
-  }
+    const relativeUrl = `/content-files/shared/${req.file.filename}`;
+    try {
+      const result = await run(
+        `
+          INSERT INTO shared_files (title, description, file_url, created_by)
+          VALUES (?, ?, ?, ?)
+        `,
+        [title, description, relativeUrl, req.session.user.username]
+      );
+      await logAuditEvent(
+        req,
+        "create",
+        "shared_file",
+        result.lastID,
+        req.session.user.username,
+        `Created shared file "${title.slice(0, 80)}"`
+      );
+      return res.status(201).json({ ok: true });
+    } catch (_err) {
+      if (req.file?.path) {
+        fs.unlink(req.file.path, () => {});
+      }
+      return res.status(500).json({ error: "Could not save shared file." });
+    }
+  });
 });
 
 app.put("/api/shared-files/:id", requireTeacher, async (req, res) => {
@@ -3611,8 +3849,8 @@ app.put("/api/shared-files/:id", requireTeacher, async (req, res) => {
   if (title.length > 120 || description.length > 2000 || fileUrl.length > 500) {
     return res.status(400).json({ error: "Shared file field length is invalid." });
   }
-  if (!isValidHttpUrl(fileUrl)) {
-    return res.status(400).json({ error: "File URL must start with http:// or https://." });
+  if (!isValidHttpUrl(fileUrl) && !isValidLocalContentUrl(fileUrl)) {
+    return res.status(400).json({ error: "File URL must start with http://, https://, or /content-files/." });
   }
 
   try {
@@ -3662,6 +3900,7 @@ app.delete("/api/shared-files/:id", requireTeacher, async (req, res) => {
     }
 
     await run("DELETE FROM shared_files WHERE id = ?", [id]);
+    removeStoredContentFile(access.row.file_url);
     await logAuditEvent(
       req,
       "delete",
