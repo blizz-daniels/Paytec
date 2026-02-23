@@ -59,6 +59,44 @@ function statusBadge(status) {
   return `<span class="status-badge">${escapeHtml(normalized || "unknown")}</span>`;
 }
 
+function sourceBadge(source) {
+  const normalized = String(source || "").toLowerCase();
+  if (normalized === "paystack") {
+    return '<span class="status-badge status-badge--success">paystack</span>';
+  }
+  if (normalized === "student_receipt") {
+    return '<span class="status-badge status-badge--warning">student receipt</span>';
+  }
+  if (normalized === "statement_upload") {
+    return '<span class="status-badge">statement upload</span>';
+  }
+  if (normalized === "gateway_webhook") {
+    return '<span class="status-badge">gateway webhook</span>';
+  }
+  return `<span class="status-badge">${escapeHtml(normalized || "unknown")}</span>`;
+}
+
+function paystackStateBadge(item) {
+  const explicitState = String(item?.paystack_state || "").toLowerCase();
+  const obligationStatus = String(item?.obligation_status || "").toLowerCase();
+  if (obligationStatus === "paid" || obligationStatus === "overpaid") {
+    return '<span class="status-badge status-badge--success">approved</span>';
+  }
+  if (explicitState === "approved") {
+    return '<span class="status-badge status-badge--success">approved</span>';
+  }
+  if (explicitState === "failed") {
+    return '<span class="status-badge status-badge--error">failed</span>';
+  }
+  if (explicitState === "pending_webhook") {
+    return '<span class="status-badge status-badge--warning">pending webhook</span>';
+  }
+  if (explicitState === "initiated") {
+    return '<span class="status-badge">initiated</span>';
+  }
+  return '<span class="status-badge">not started</span>';
+}
+
 function reminderBadge(level, text) {
   const normalized = String(level || "").toLowerCase();
   if (normalized === "overdue") {
@@ -227,17 +265,26 @@ function renderReminderCalendar(ledger) {
   const items = ledger && Array.isArray(ledger.items) ? ledger.items : [];
   tbody.innerHTML = "";
   if (!items.length) {
-    tbody.innerHTML = '<tr><td colspan="4" style="color:#636b8a;">No payment items available.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="color:#636b8a;">No payment items available.</td></tr>';
     return;
   }
 
   items.forEach((item) => {
+    const outstanding = Number(item.outstanding || 0);
+    const canPayWithPaystack = Number(item.obligation_id || 0) > 0 && outstanding > 0.009;
+    const actionHtml = canPayWithPaystack
+      ? `<button class="btn btn-secondary" type="button" data-action="paystack-checkout" data-obligation-id="${item.obligation_id}" data-outstanding="${outstanding.toFixed(
+          2
+        )}">Pay with Paystack</button>`
+      : '<span class="status-badge status-badge--success">settled</span>';
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(item.title || "-")}</td>
       <td>${escapeHtml(item.due_date || "No due date")}</td>
       <td>${reminderBadge(item.reminder_level, item.reminder_text)}</td>
       <td>${escapeHtml(formatMoney(item.outstanding, item.currency))}</td>
+      <td>${paystackStateBadge(item)}</td>
+      <td>${actionHtml}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -361,7 +408,7 @@ function renderQueue(rows) {
       <td>${escapeHtml(row.payment_item_title || "-")}</td>
       <td>${escapeHtml(formatMoney(row.amount, row.currency))}</td>
       <td>${escapeHtml(row.txn_ref || "-")}</td>
-      <td>${escapeHtml(row.source || "-")}</td>
+      <td>${sourceBadge(row.source)}</td>
       <td>${statusBadge(row.status)}</td>
       <td>${reasonHtml}</td>
       <td>${actions.join(" ")}</td>
@@ -408,6 +455,79 @@ async function loadStudentLedger() {
   renderLedger(paymentState.ledger);
   renderReminderCalendar(paymentState.ledger);
   renderPaymentTimeline(paymentState.ledger);
+}
+
+function applyPaystackCallbackStatusFromQuery() {
+  const params = new URLSearchParams(window.location.search || "");
+  const paystackStatus = String(params.get("paystack_status") || "").trim().toLowerCase();
+  const paystackReference = String(params.get("paystack_reference") || "").trim();
+  if (!paystackStatus) {
+    return;
+  }
+  const statusMessage =
+    paystackStatus === "pending_webhook"
+      ? `Paystack checkout${paystackReference ? ` (${paystackReference})` : ""} returned. Waiting for webhook confirmation.`
+      : `Paystack status: ${paystackStatus}${paystackReference ? ` (${paystackReference})` : ""}.`;
+  setPaymentStatus("paystackCheckoutStatus", statusMessage, paystackStatus === "failed");
+  if (window.showToast) {
+    window.showToast(statusMessage, { type: paystackStatus === "failed" ? "error" : "warning" });
+  }
+  params.delete("paystack_status");
+  params.delete("paystack_reference");
+  const next = params.toString();
+  window.history.replaceState({}, "", `${window.location.pathname}${next ? `?${next}` : ""}`);
+}
+
+function bindPaystackCheckoutActions() {
+  const tableBody = document.getElementById("paymentReminderRows");
+  if (!tableBody) {
+    return;
+  }
+  tableBody.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    const button = target.closest("button[data-action='paystack-checkout']");
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    const obligationId = Number.parseInt(button.dataset.obligationId || "", 10);
+    const outstanding = Number.parseFloat(button.dataset.outstanding || "");
+    if (!Number.isFinite(obligationId) || obligationId <= 0 || !Number.isFinite(outstanding) || outstanding <= 0) {
+      setPaymentStatus("paystackCheckoutStatus", "Unable to start checkout for this obligation.", true);
+      return;
+    }
+    setButtonBusy(button, true, "Initializing...");
+    setPaymentStatus("paystackCheckoutStatus", "Initializing Paystack checkout...", false);
+    const loadingToast = window.showToast
+      ? window.showToast("Initializing Paystack checkout...", { type: "loading", sticky: true })
+      : null;
+    try {
+      const payload = await requestJson("/api/payments/paystack/initialize", {
+        method: "POST",
+        payload: {
+          obligationId,
+          amount: outstanding.toFixed(2),
+        },
+      });
+      if (!payload?.authorization_url) {
+        throw new Error("Paystack checkout URL was not returned.");
+      }
+      setPaymentStatus("paystackCheckoutStatus", "Redirecting to Paystack...", false);
+      window.location.assign(payload.authorization_url);
+    } catch (err) {
+      setPaymentStatus("paystackCheckoutStatus", err.message || "Could not initialize Paystack checkout.", true);
+      if (window.showToast) {
+        window.showToast(err.message || "Could not initialize Paystack checkout.", { type: "error" });
+      }
+    } finally {
+      setButtonBusy(button, false, "");
+      if (loadingToast) {
+        loadingToast.close();
+      }
+    }
+  });
 }
 
 async function loadQueue() {
@@ -1015,7 +1135,9 @@ async function initPaymentsPage() {
       if (reviewSection) reviewSection.remove();
       if (queueSection) queueSection.remove();
       bindStudentSubmit();
+      bindPaystackCheckoutActions();
       await Promise.all([loadStudentReceipts(), loadStudentLedger()]);
+      applyPaystackCallbackStatusFromQuery();
       if (paymentState.ledger && paymentState.ledger.summary && window.showToast) {
         const overdueCount = Number(paymentState.ledger.summary.overdueCount || 0);
         const dueSoonCount = Number(paymentState.ledger.summary.dueSoonCount || 0);

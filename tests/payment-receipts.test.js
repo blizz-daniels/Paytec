@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const request = require("supertest");
 const XLSX = require("xlsx");
@@ -12,6 +13,10 @@ process.env.ADMIN_USERNAME = "admin";
 process.env.ADMIN_PASSWORD = "admin-pass-123";
 process.env.STUDENT_ROSTER_PATH = path.join(testDataDir, "students.csv");
 process.env.TEACHER_ROSTER_PATH = path.join(testDataDir, "teachers.csv");
+process.env.PAYSTACK_SECRET_KEY = "sk_test_paystack_secret";
+process.env.PAYSTACK_PUBLIC_KEY = "pk_test_paystack_public";
+process.env.PAYSTACK_WEBHOOK_SECRET = "sk_test_paystack_secret";
+process.env.PAYSTACK_CALLBACK_URL = "http://localhost:3000/api/payments/paystack/callback";
 
 const { app, initDatabase, run, get, all, db } = require("../server");
 
@@ -47,6 +52,12 @@ async function deleteWithCsrf(agent, url) {
   return agent.delete(url).set("X-CSRF-Token", csrfToken);
 }
 
+function signPaystackPayload(payload, secret = process.env.PAYSTACK_WEBHOOK_SECRET) {
+  const rawBody = JSON.stringify(payload);
+  const signature = crypto.createHmac("sha512", secret).update(rawBody).digest("hex");
+  return { rawBody, signature };
+}
+
 beforeAll(async () => {
   fs.rmSync(testDataDir, { recursive: true, force: true });
   fs.mkdirSync(testDataDir, { recursive: true });
@@ -58,6 +69,7 @@ beforeAll(async () => {
   await run("DELETE FROM payment_matches");
   await run("DELETE FROM reconciliation_events");
   await run("DELETE FROM payment_transactions");
+  await run("DELETE FROM paystack_sessions");
   await run("DELETE FROM payment_obligations");
   await run("DELETE FROM payment_items");
   await run("DELETE FROM teacher_payment_statements");
@@ -83,6 +95,10 @@ beforeAll(async () => {
     `,
     [surnameHashDoe, surnameHashRoe, surnameHashTeach, surnameHashTutor]
   );
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 afterAll(async () => {
@@ -468,6 +484,408 @@ test("teacher statement upload parses real xlsx files for verification", async (
   expect(verify.status).toBe(200);
   expect(verify.body.matched).toBe(true);
   expect(verify.body.receipt.status).toBe("approved");
+});
+
+test("paystack initialize validates ownership and amount constraints", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "Paystack Init Fee",
+    description: "Initialize checks",
+    expectedAmount: 33000,
+    currency: "NGN",
+    dueDate: "2026-07-15",
+    availabilityDays: 30,
+  });
+  expect(createItem.status).toBe(201);
+
+  const studentA = request.agent(app);
+  await login(studentA, "std_001", "doe");
+  const studentALedger = await studentA.get("/api/my/payment-ledger");
+  expect(studentALedger.status).toBe(200);
+  const obligation = (studentALedger.body?.items || []).find((row) => Number(row.id) === Number(createItem.body.id));
+  expect(obligation).toBeTruthy();
+  expect(Number(obligation.obligation_id || 0)).toBeGreaterThan(0);
+
+  const studentB = request.agent(app);
+  await login(studentB, "std_002", "roe");
+  const forbidden = await postJson(studentB, "/api/payments/paystack/initialize", {
+    obligationId: obligation.obligation_id,
+    amount: 1000,
+  });
+  expect(forbidden.status).toBe(403);
+  expect(forbidden.body.code).toBe("paystack_initialize_forbidden");
+
+  const tooHigh = await postJson(studentA, "/api/payments/paystack/initialize", {
+    obligationId: obligation.obligation_id,
+    amount: 999999,
+  });
+  expect(tooHigh.status).toBe(400);
+  expect(tooHigh.body.code).toBe("paystack_initialize_amount_exceeds_outstanding");
+
+  const fetchSpy = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        status: true,
+        message: "Authorization URL created",
+        data: {
+          authorization_url: "https://checkout.paystack.com/mock-session-001",
+          access_code: "mock-access-code-001",
+          reference: "PSTK-MOCK-REF-001",
+        },
+      }),
+  });
+  const valid = await postJson(studentA, "/api/payments/paystack/initialize", {
+    obligationId: obligation.obligation_id,
+    amount: 15000,
+  });
+  expect(valid.status).toBe(200);
+  expect(valid.body.authorization_url).toContain("paystack.com");
+  expect(valid.body.access_code).toBeTruthy();
+  expect(valid.body.reference).toBeTruthy();
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+  const sessionRow = await get("SELECT status, amount FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [
+    valid.body.reference,
+  ]);
+  expect(sessionRow).toBeTruthy();
+  expect(sessionRow.status).toBe("initiated");
+  expect(Number(sessionRow.amount || 0)).toBeCloseTo(15000, 2);
+});
+
+test("paystack callback redirects safely and does not auto-approve without webhook", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "Paystack Callback Fee",
+    description: "Callback should stay pending",
+    expectedAmount: 12500,
+    currency: "NGN",
+    dueDate: "2026-08-01",
+  });
+  expect(createItem.status).toBe(201);
+
+  const student = request.agent(app);
+  await login(student, "std_001", "doe");
+  const ledger = await student.get("/api/my/payment-ledger");
+  const row = (ledger.body?.items || []).find((entry) => Number(entry.id) === Number(createItem.body.id));
+  expect(row).toBeTruthy();
+
+  jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        status: true,
+        data: {
+          authorization_url: "https://checkout.paystack.com/mock-session-callback",
+          access_code: "mock-access-code-callback",
+          reference: "PSTK-MOCK-CALLBACK-001",
+        },
+      }),
+  });
+  const init = await postJson(student, "/api/payments/paystack/initialize", {
+    obligationId: row.obligation_id,
+    amount: 12500,
+  });
+  expect(init.status).toBe(200);
+
+  const callback = await request(app).get(
+    `/api/payments/paystack/callback?reference=${encodeURIComponent(init.body.reference)}`
+  );
+  expect(callback.status).toBe(302);
+  expect(callback.headers.location).toContain("/payments.html");
+  expect(callback.headers.location).toContain("paystack_status=pending_webhook");
+
+  const transactions = await get("SELECT COUNT(*) AS total FROM payment_transactions WHERE source = 'paystack'");
+  expect(Number(transactions.total || 0)).toBe(0);
+  const session = await get("SELECT status FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [init.body.reference]);
+  expect(session).toBeTruthy();
+  expect(session.status).toBe("pending_webhook");
+});
+
+test("paystack webhook validates signature and auto-approves exact metadata reference", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "Paystack Webhook Exact",
+    description: "Exact reference auto-approval",
+    expectedAmount: 47000,
+    currency: "NGN",
+    dueDate: "2026-08-20",
+  });
+  expect(createItem.status).toBe(201);
+
+  const student = request.agent(app);
+  await login(student, "std_001", "doe");
+  const ledger = await student.get("/api/my/payment-ledger");
+  const row = (ledger.body?.items || []).find((entry) => Number(entry.id) === Number(createItem.body.id));
+  expect(row?.my_reference).toBeTruthy();
+  expect(Number(row?.obligation_id || 0)).toBeGreaterThan(0);
+
+  const webhookPayload = {
+    id: "evt-paystack-exact-001",
+    event: "charge.success",
+    data: {
+      id: 999001,
+      reference: "PSTK-GW-EXACT-001",
+      amount: 4700000,
+      paid_at: "2026-02-23T11:00:00Z",
+      customer: {
+        email: "std_001@paytec.local",
+        first_name: "Std",
+        last_name: "One",
+      },
+      metadata: {
+        tenant: "default-school",
+        school_id: "default-school",
+        student_username: "std_001",
+        payment_item_id: createItem.body.id,
+        obligation_id: row.obligation_id,
+        payment_reference: row.my_reference,
+      },
+    },
+  };
+
+  const invalidSignatureResponse = await request(app)
+    .post("/api/payments/webhook/paystack")
+    .set("Content-Type", "application/json")
+    .set("x-paystack-signature", "invalid-signature")
+    .send(JSON.stringify(webhookPayload));
+  expect(invalidSignatureResponse.status).toBe(401);
+  expect(invalidSignatureResponse.body.code).toBe("paystack_webhook_invalid_signature");
+
+  const { rawBody, signature } = signPaystackPayload(webhookPayload);
+  const validResponse = await request(app)
+    .post("/api/payments/webhook/paystack")
+    .set("Content-Type", "application/json")
+    .set("x-paystack-signature", signature)
+    .send(rawBody);
+  expect(validResponse.status).toBe(200);
+  expect(validResponse.body.ok).toBe(true);
+  expect(validResponse.body.inserted).toBe(true);
+  expect(validResponse.body.idempotent).toBe(false);
+
+  const tx = await get("SELECT status, matched_obligation_id, source FROM payment_transactions WHERE id = ? LIMIT 1", [
+    validResponse.body.transaction_id,
+  ]);
+  expect(tx).toBeTruthy();
+  expect(tx.source).toBe("paystack");
+  expect(tx.status).toBe("approved");
+  expect(Number(tx.matched_obligation_id || 0)).toBe(Number(row.obligation_id));
+
+  const session = await get("SELECT status FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", ["PSTK-GW-EXACT-001"]);
+  expect(session).toBeTruthy();
+  expect(session.status).toBe("approved");
+});
+
+test("paystack webhook is idempotent for repeated source event id", async () => {
+  const payload = {
+    id: "evt-paystack-idempotent-001",
+    event: "charge.success",
+    data: {
+      id: 880001,
+      reference: "PSTK-GW-IDEMP-001",
+      amount: 500000,
+      paid_at: "2026-02-23T13:00:00Z",
+      customer: { email: "std_002@paytec.local", first_name: "Std", last_name: "Two" },
+      metadata: {
+        tenant: "default-school",
+        school_id: "default-school",
+        student_username: "std_002",
+        payment_item_id: null,
+        obligation_id: null,
+        payment_reference: "PSTK-GW-IDEMP-001",
+      },
+    },
+  };
+
+  const signed = signPaystackPayload(payload);
+  const first = await request(app)
+    .post("/api/payments/webhook/paystack")
+    .set("Content-Type", "application/json")
+    .set("x-paystack-signature", signed.signature)
+    .send(signed.rawBody);
+  expect(first.status).toBe(200);
+  expect(first.body.idempotent).toBe(false);
+
+  const second = await request(app)
+    .post("/api/payments/webhook/paystack")
+    .set("Content-Type", "application/json")
+    .set("x-paystack-signature", signed.signature)
+    .send(signed.rawBody);
+  expect(second.status).toBe(200);
+  expect(second.body.idempotent).toBe(true);
+
+  const rows = await all("SELECT id FROM payment_transactions WHERE source_event_id = ?", [
+    "paystack-charge.success-evt-paystack-idempotent-001",
+  ]);
+  expect(rows.length).toBe(1);
+});
+
+test("paystack verify endpoint ingests successful reference idempotently", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "Paystack Verify Fee",
+    description: "Verify endpoint test",
+    expectedAmount: 29000,
+    currency: "NGN",
+    dueDate: "2026-09-30",
+  });
+  expect(createItem.status).toBe(201);
+
+  const student = request.agent(app);
+  await login(student, "std_001", "doe");
+  const ledger = await student.get("/api/my/payment-ledger");
+  const row = (ledger.body?.items || []).find((entry) => Number(entry.id) === Number(createItem.body.id));
+  expect(row).toBeTruthy();
+
+  const fetchPayload = {
+    status: true,
+    message: "Verification successful",
+    data: {
+      id: 7722001,
+      status: "success",
+      reference: "PSTK-VERIFY-REF-001",
+      amount: 2900000,
+      paid_at: "2026-02-23T15:10:00Z",
+      customer: {
+        email: "std_001@paytec.local",
+        first_name: "Std",
+        last_name: "One",
+      },
+      metadata: {
+        tenant: "default-school",
+        school_id: "default-school",
+        student_username: "std_001",
+        payment_item_id: createItem.body.id,
+        obligation_id: row.obligation_id,
+        payment_reference: row.my_reference,
+      },
+    },
+  };
+  jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(fetchPayload),
+  });
+
+  const first = await postJson(teacher, "/api/payments/paystack/verify", {
+    reference: "PSTK-VERIFY-REF-001",
+  });
+  expect(first.status).toBe(200);
+  expect(first.body.inserted).toBe(true);
+  expect(first.body.idempotent).toBe(false);
+
+  const second = await postJson(teacher, "/api/payments/paystack/verify", {
+    reference: "PSTK-VERIFY-REF-001",
+  });
+  expect(second.status).toBe(200);
+  expect(second.body.idempotent).toBe(true);
+});
+
+test("paystack verify endpoint accepts internal job secret without session", async () => {
+  const fetchPayload = {
+    status: true,
+    message: "Verification successful",
+    data: {
+      id: 7733001,
+      status: "success",
+      reference: "PSTK-VERIFY-INTERNAL-001",
+      amount: 150000,
+      paid_at: "2026-02-23T16:45:00Z",
+      customer: {
+        email: "std_002@paytec.local",
+        first_name: "Std",
+        last_name: "Two",
+      },
+      metadata: {
+        tenant: "default-school",
+        school_id: "default-school",
+        student_username: "std_002",
+        payment_reference: "PSTK-VERIFY-INTERNAL-001",
+      },
+    },
+  };
+  jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(fetchPayload),
+  });
+
+  const internalVerify = await request(app)
+    .post("/api/payments/paystack/verify")
+    .set("Content-Type", "application/json")
+    .set("x-paytec-webhook-secret", process.env.PAYSTACK_WEBHOOK_SECRET)
+    .send({ reference: "PSTK-VERIFY-INTERNAL-001" });
+  expect(internalVerify.status).toBe(200);
+  expect(internalVerify.body.ok).toBe(true);
+  expect(Number(internalVerify.body.transaction_id || 0)).toBeGreaterThan(0);
+
+  const latestEvent = await get(
+    "SELECT actor_role FROM reconciliation_events WHERE transaction_id = ? ORDER BY id DESC LIMIT 1",
+    [internalVerify.body.transaction_id]
+  );
+  expect(latestEvent).toBeTruthy();
+  expect(latestEvent.actor_role).toBe("system-paystack");
+});
+
+test("paystack amount mismatch routes transaction to exception queue", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "Paystack Mismatch",
+    description: "Mismatch should be queued",
+    expectedAmount: 62000,
+    currency: "NGN",
+    dueDate: "2026-09-10",
+  });
+  expect(createItem.status).toBe(201);
+
+  const student = request.agent(app);
+  await login(student, "std_001", "doe");
+  const ledger = await student.get("/api/my/payment-ledger");
+  const row = (ledger.body?.items || []).find((entry) => Number(entry.id) === Number(createItem.body.id));
+  expect(row).toBeTruthy();
+
+  const payload = {
+    id: "evt-paystack-mismatch-001",
+    event: "charge.success",
+    data: {
+      id: 990091,
+      reference: "PSTK-GW-MISMATCH-001",
+      amount: 50000,
+      paid_at: "2026-02-23T14:30:00Z",
+      customer: { email: "std_001@paytec.local", first_name: "Std", last_name: "One" },
+      metadata: {
+        tenant: "default-school",
+        school_id: "default-school",
+        student_username: "std_001",
+        payment_item_id: createItem.body.id,
+        obligation_id: row.obligation_id,
+        payment_reference: "UNKNOWN-PAYMENT-REF-001",
+      },
+    },
+  };
+  const signed = signPaystackPayload(payload);
+  const webhook = await request(app)
+    .post("/api/payments/webhook/paystack")
+    .set("Content-Type", "application/json")
+    .set("x-paystack-signature", signed.signature)
+    .send(signed.rawBody);
+  expect(webhook.status).toBe(200);
+
+  const tx = await get("SELECT status FROM payment_transactions WHERE id = ? LIMIT 1", [webhook.body.transaction_id]);
+  expect(tx).toBeTruthy();
+  expect(["needs_review", "unmatched"]).toContain(tx.status);
+
+  const queue = await teacher.get("/api/teacher/reconciliation/exceptions?student=std_001");
+  expect(queue.status).toBe(200);
+  const queueItems = Array.isArray(queue.body) ? queue.body : queue.body.items || [];
+  expect(queueItems.some((entry) => Number(entry.id) === Number(webhook.body.transaction_id))).toBe(true);
 });
 
 test("reconciliation auto-approves exact obligation reference from webhook", async () => {

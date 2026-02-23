@@ -9,6 +9,7 @@ const multer = require("multer");
 const session = require("express-session");
 const sqlite3 = require("sqlite3").verbose();
 const SQLiteStore = require("connect-sqlite3")(session);
+const { createPaystackClient } = require("./services/paystack");
 let xlsx = null;
 try {
   xlsx = require("xlsx");
@@ -119,6 +120,10 @@ const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || "").trim();
 const OPENAI_API_BASE_URL = String(process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1").trim().replace(/\/$/, "");
 const OPENAI_STATEMENT_MODEL = String(process.env.OPENAI_STATEMENT_MODEL || "gpt-4o-mini").trim();
 const GATEWAY_WEBHOOK_SECRET = String(process.env.GATEWAY_WEBHOOK_SECRET || "").trim();
+const PAYSTACK_SECRET_KEY = String(process.env.PAYSTACK_SECRET_KEY || "").trim();
+const PAYSTACK_PUBLIC_KEY = String(process.env.PAYSTACK_PUBLIC_KEY || "").trim();
+const PAYSTACK_WEBHOOK_SECRET = String(process.env.PAYSTACK_WEBHOOK_SECRET || PAYSTACK_SECRET_KEY).trim();
+const PAYSTACK_CALLBACK_URL = String(process.env.PAYSTACK_CALLBACK_URL || "").trim();
 const PAYMENT_REFERENCE_PREFIX = String(process.env.PAYMENT_REFERENCE_PREFIX || "PAYTEC").trim().toUpperCase();
 const PAYMENT_REFERENCE_TENANT_ID = String(
   process.env.PAYMENT_REFERENCE_TENANT_ID || process.env.SCHOOL_ID || process.env.TENANT_ID || "default-school"
@@ -127,6 +132,21 @@ const PAYMENT_REFERENCE_TENANT_ID = String(
   .toLowerCase();
 const AUTO_RECONCILE_CONFIDENCE = Number.parseFloat(String(process.env.AUTO_RECONCILE_CONFIDENCE || "0.9"));
 const REVIEW_RECONCILE_CONFIDENCE = Number.parseFloat(String(process.env.REVIEW_RECONCILE_CONFIDENCE || "0.65"));
+const PAYSTACK_SOURCE = "paystack";
+const paystackClient = createPaystackClient({
+  secretKey: PAYSTACK_SECRET_KEY,
+});
+if (isProduction) {
+  const requiredPaystackEnv = [
+    ["PAYSTACK_SECRET_KEY", PAYSTACK_SECRET_KEY],
+    ["PAYSTACK_PUBLIC_KEY", PAYSTACK_PUBLIC_KEY],
+    ["PAYSTACK_CALLBACK_URL", PAYSTACK_CALLBACK_URL],
+  ];
+  const missingPaystackEnv = requiredPaystackEnv.filter(([, value]) => !value).map(([key]) => key);
+  if (missingPaystackEnv.length) {
+    throw new Error(`Missing required Paystack env var(s): ${missingPaystackEnv.join(", ")}`);
+  }
+}
 
 const avatarUpload = multer({
   storage: multer.diskStorage({
@@ -479,6 +499,15 @@ function isSameToken(expected, provided) {
   return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
 }
 
+function isTrustedPaystackInternalVerifyRequest(req) {
+  const configuredSecret = String(GATEWAY_WEBHOOK_SECRET || PAYSTACK_WEBHOOK_SECRET || "").trim();
+  const providedSecret = String(req.get("x-paytec-webhook-secret") || req.get("x-webhook-secret") || "").trim();
+  if (!configuredSecret || !providedSecret) {
+    return false;
+  }
+  return isSameToken(configuredSecret, providedSecret);
+}
+
 function rejectCsrf(req, res) {
   if (req.accepts("json")) {
     return res.status(403).json({ error: "Invalid CSRF token." });
@@ -490,7 +519,10 @@ function requireCsrf(req, res, next) {
   if (CSRF_SAFE_METHODS.has(req.method)) {
     return next();
   }
-  if (req.path === "/api/payments/webhook") {
+  if (req.path === "/api/payments/webhook" || req.path === "/api/payments/webhook/paystack") {
+    return next();
+  }
+  if (req.path === "/api/payments/paystack/verify" && isTrustedPaystackInternalVerifyRequest(req)) {
     return next();
   }
   const expectedToken = req.session ? req.session.csrfToken : "";
@@ -957,6 +989,21 @@ async function initDatabase() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS paystack_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      obligation_id INTEGER NOT NULL,
+      student_id TEXT NOT NULL,
+      gateway_reference TEXT NOT NULL UNIQUE,
+      amount REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'initiated',
+      init_payload_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (obligation_id) REFERENCES payment_obligations(id) ON UPDATE CASCADE ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS payment_matches (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       obligation_id INTEGER,
@@ -1031,6 +1078,10 @@ async function initDatabase() {
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_student_hint ON payment_transactions(student_hint_username)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_item_hint ON payment_transactions(payment_item_hint_id)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_transactions_obligation ON payment_transactions(matched_obligation_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_paystack_sessions_obligation ON paystack_sessions(obligation_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_paystack_sessions_student ON paystack_sessions(student_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_paystack_sessions_status ON paystack_sessions(status)");
+  await runMigrationSql("CREATE UNIQUE INDEX IF NOT EXISTS idx_paystack_sessions_reference ON paystack_sessions(gateway_reference)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_matches_obligation ON payment_matches(obligation_id)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_matches_decision ON payment_matches(decision)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_reconciliation_exceptions_reason ON reconciliation_exceptions(reason)");
@@ -1217,7 +1268,14 @@ if (isProduction) {
 }
 
 app.use(express.urlencoded({ extended: false, limit: "2mb" }));
-app.use(express.json({ limit: "2mb" }));
+app.use(
+  express.json({
+    limit: "2mb",
+    verify(req, _res, buf) {
+      req.rawBody = buf ? Buffer.from(buf) : Buffer.alloc(0);
+    },
+  })
+);
 
 const sessionStore = new SQLiteStore({
   db: "sessions.sqlite",
@@ -1574,6 +1632,137 @@ function buildTransactionChecksum(input = {}) {
   }
   const key = `${txnRef}|${amountToken}|${dateToken}|${payerToken}|${source}`;
   return crypto.createHash("sha1").update(key).digest("hex");
+}
+
+function toKoboFromAmount(amount) {
+  const parsed = Number(amount);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.round(parsed * 100);
+}
+
+function toAmountFromKobo(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed / 100;
+}
+
+function buildPaystackGatewayReference(obligationId, studentUsername) {
+  const idToken = String(Number.parseInt(obligationId, 10) || 0).padStart(6, "0");
+  const studentToken = normalizeIdentifier(studentUsername)
+    .replace(/[^a-z0-9]/g, "")
+    .toUpperCase()
+    .slice(0, 8) || "STUDENT";
+  const timestampToken = Date.now().toString(36).toUpperCase();
+  const randomToken = crypto.randomBytes(4).toString("hex").toUpperCase();
+  return `PSTK-${idToken}-${studentToken}-${timestampToken}-${randomToken}`.slice(0, 120);
+}
+
+function parsePaystackMetadata(rawMetadata) {
+  if (!rawMetadata) {
+    return {};
+  }
+  if (typeof rawMetadata === "string") {
+    return parseJsonObject(rawMetadata, {});
+  }
+  if (typeof rawMetadata === "object" && !Array.isArray(rawMetadata)) {
+    return rawMetadata;
+  }
+  return {};
+}
+
+function extractPaystackPayerName(transaction, metadata) {
+  const customer = transaction && transaction.customer && typeof transaction.customer === "object" ? transaction.customer : {};
+  const first = String(customer.first_name || "").trim();
+  const last = String(customer.last_name || "").trim();
+  const full = [first, last].filter(Boolean).join(" ").trim();
+  return (
+    full ||
+    String(customer.name || "").trim() ||
+    String(metadata.student_username || metadata.studentUsername || metadata.student || "").trim() ||
+    String(customer.email || "").trim() ||
+    "unknown payer"
+  );
+}
+
+function buildPaystackSourceEventId(payload, transaction) {
+  const event = String(payload?.event || "charge.success").trim().toLowerCase();
+  const baseToken =
+    payload?.id ||
+    payload?.event_id ||
+    transaction?.id ||
+    transaction?.reference ||
+    crypto.createHash("sha1").update(JSON.stringify(payload || {})).digest("hex").slice(0, 40);
+  return `paystack-${event}-${String(baseToken).trim().slice(0, 120)}`.slice(0, 160);
+}
+
+function normalizePaystackTransactionForIngestion(payload, options = {}) {
+  const transaction = payload && payload.data && typeof payload.data === "object" ? payload.data : {};
+  const metadata = parsePaystackMetadata(transaction.metadata);
+  const gatewayReference = sanitizeTransactionRef(transaction.reference || transaction.gateway_response || "");
+  const amount = toAmountFromKobo(transaction.amount);
+  const paidAt =
+    String(transaction.paid_at || transaction.created_at || transaction.transaction_date || payload?.paid_at || "").trim() ||
+    new Date().toISOString();
+  const txnReference = sanitizeTransactionRef(metadata.payment_reference || metadata.paymentReference || gatewayReference);
+  const sourceEventId = String(options.sourceEventId || buildPaystackSourceEventId(payload, transaction))
+    .trim()
+    .slice(0, 160);
+  const studentHint = normalizeIdentifier(
+    metadata.student_username || metadata.studentUsername || metadata.student || metadata.student_id || ""
+  );
+  const paymentItemHint = parseResourceId(metadata.payment_item_id || metadata.paymentItemId || "");
+  const payerName = extractPaystackPayerName(transaction, metadata);
+
+  if (!amount || !paidAt || !sourceEventId || !gatewayReference) {
+    return null;
+  }
+
+  const checksum = buildTransactionChecksum({
+    source: PAYSTACK_SOURCE,
+    txn_ref: gatewayReference,
+    amount,
+    date: paidAt,
+    payer_name: payerName,
+  });
+
+  return {
+    payload: {
+      source: PAYSTACK_SOURCE,
+      source_event_id: sourceEventId,
+      txn_ref: txnReference,
+      amount,
+      date: paidAt,
+      payer_name: payerName,
+      payment_item_id: paymentItemHint || null,
+      student_username: studentHint || null,
+      checksum,
+      raw_payload: payload,
+    },
+    gatewayReference,
+    metadata,
+    transaction,
+    sourceEventId,
+    amount,
+  };
+}
+
+function isValidPaystackSignature(rawBody, headerSignature, secret) {
+  const signature = String(headerSignature || "").trim().toLowerCase();
+  const secretKey = String(secret || "").trim();
+  if (!signature || !secretKey || !rawBody || !rawBody.length) {
+    return false;
+  }
+  const expected = crypto.createHmac("sha512", secretKey).update(rawBody).digest("hex");
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const providedBuffer = Buffer.from(signature, "utf8");
+  if (expectedBuffer.length !== providedBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
 }
 
 function normalizeStatementRowsText(rawText) {
@@ -3134,13 +3323,16 @@ async function logReconciliationEvent(transactionId, obligationId, req, action, 
   );
 }
 
-async function createReconciliationStatusNotification(studentUsername, paymentItemId, title, body) {
+async function createReconciliationStatusNotification(studentUsername, paymentItemId, title, body, options = {}) {
   const student = normalizeIdentifier(studentUsername);
   if (!student) {
     return;
   }
   const finalTitle = `${String(title || "Payment Update").slice(0, 90)} (${student})`;
   const finalBody = String(body || "").slice(0, 1800);
+  const createdBy = String(options.createdBy || "system-reconciliation")
+    .trim()
+    .slice(0, 80) || "system-reconciliation";
   await run(
     `
       INSERT INTO notifications (
@@ -3167,9 +3359,99 @@ async function createReconciliationStatusNotification(studentUsername, paymentIt
       JSON.stringify({ student, payment_item_id: paymentItemId || null }),
       student,
       paymentItemId || null,
-      "system-reconciliation",
+      createdBy,
     ]
   );
+}
+
+function mapPaystackSessionStatusFromTransactionStatus(transactionStatus) {
+  const normalized = String(transactionStatus || "").trim().toLowerCase();
+  if (normalized === "approved") {
+    return "approved";
+  }
+  if (!normalized || normalized === "unmatched" || normalized === "needs_review" || normalized === "needs_student_confirmation") {
+    return "failed";
+  }
+  if (normalized === "duplicate" || normalized === "rejected") {
+    return "failed";
+  }
+  return "failed";
+}
+
+function getPaystackSystemRequest() {
+  return {
+    session: {
+      user: {
+        username: "system-paystack",
+        role: "system-paystack",
+      },
+    },
+  };
+}
+
+async function upsertPaystackSession(input = {}) {
+  const obligationId = parseResourceId(input.obligationId || input.obligation_id);
+  const studentId = normalizeIdentifier(input.studentId || input.student_id || "");
+  const gatewayReference = sanitizeTransactionRef(input.gatewayReference || input.gateway_reference || "");
+  const amount = Number(input.amount || 0);
+  const status = String(input.status || "initiated")
+    .trim()
+    .toLowerCase()
+    .slice(0, 40) || "initiated";
+  const payload = input.payload || input.init_payload || {};
+  if (!obligationId || !studentId || !gatewayReference || !Number.isFinite(amount) || amount <= 0) {
+    return null;
+  }
+  await run(
+    `
+      INSERT INTO paystack_sessions (
+        obligation_id,
+        student_id,
+        gateway_reference,
+        amount,
+        status,
+        init_payload_json,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(gateway_reference) DO UPDATE SET
+        obligation_id = excluded.obligation_id,
+        student_id = excluded.student_id,
+        amount = excluded.amount,
+        status = excluded.status,
+        init_payload_json = excluded.init_payload_json,
+        updated_at = CURRENT_TIMESTAMP
+    `,
+    [obligationId, studentId, gatewayReference, amount, status, JSON.stringify(payload)]
+  );
+  return get("SELECT * FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [gatewayReference]);
+}
+
+async function updatePaystackSessionStatusByReference(reference, nextStatus, payload = null) {
+  const gatewayReference = sanitizeTransactionRef(reference || "");
+  const status = String(nextStatus || "").trim().toLowerCase().slice(0, 40);
+  if (!gatewayReference || !status) {
+    return null;
+  }
+  const existing = await get("SELECT * FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [gatewayReference]);
+  if (!existing) {
+    return null;
+  }
+  const nextPayload = payload
+    ? JSON.stringify(payload)
+    : existing.init_payload_json || "{}";
+  await run(
+    `
+      UPDATE paystack_sessions
+      SET status = ?,
+          init_payload_json = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+    [status, nextPayload, existing.id]
+  );
+  return get("SELECT * FROM paystack_sessions WHERE id = ? LIMIT 1", [existing.id]);
 }
 
 function reconciliationDecisionFromStatus(statusValue) {
@@ -3410,7 +3692,7 @@ async function ingestNormalizedTransaction(input, options = {}) {
           return { ok: true, inserted: false, idempotent: true, duplicateKey: "source_event_id", transaction: byEvent };
         }
       }
-      if (normalized.source === "statement_upload" && normalized.checksum) {
+      if ((normalized.source === "statement_upload" || normalized.source === PAYSTACK_SOURCE) && normalized.checksum) {
         const byChecksum = await get(
           "SELECT * FROM payment_transactions WHERE source = ? AND checksum = ? LIMIT 1",
           [normalized.source, normalized.checksum]
@@ -4743,6 +5025,434 @@ app.delete("/api/teacher/payment-statement", requireTeacher, async (req, res) =>
   }
 });
 
+function normalizePaystackError(err, fallbackCode = "paystack_request_failed") {
+  const status = Number(err?.status || 0);
+  return {
+    status: status >= 400 && status < 600 ? status : 502,
+    code: String(err?.code || fallbackCode),
+    message: String(err?.message || "Could not complete Paystack request."),
+  };
+}
+
+app.post("/api/payments/paystack/initialize", requireStudent, async (req, res) => {
+  const obligationId = parseResourceId(req.body?.obligationId);
+  if (!obligationId) {
+    return res.status(400).json({ error: "A valid obligationId is required.", code: "paystack_initialize_obligation_required" });
+  }
+  if (!paystackClient.hasSecretKey || !PAYSTACK_CALLBACK_URL) {
+    return res.status(503).json({
+      error: "Paystack is not configured on this server.",
+      code: "paystack_initialize_not_configured",
+    });
+  }
+
+  try {
+    await ensurePaymentObligationsForStudent(req.session.user.username);
+    await recomputeObligationSnapshotById(obligationId);
+    const obligation = await get(
+      `
+        SELECT po.*, pi.currency, pi.title AS payment_item_title
+        FROM payment_obligations po
+        JOIN payment_items pi ON pi.id = po.payment_item_id
+        WHERE po.id = ?
+        LIMIT 1
+      `,
+      [obligationId]
+    );
+    if (!obligation) {
+      return res.status(404).json({ error: "Payment obligation not found.", code: "paystack_initialize_obligation_not_found" });
+    }
+    if (normalizeIdentifier(obligation.student_username) !== normalizeIdentifier(req.session.user.username)) {
+      return res.status(403).json({ error: "You can only pay your own obligations.", code: "paystack_initialize_forbidden" });
+    }
+
+    const expectedAmount = Number(obligation.expected_amount || 0);
+    const paidAmount = Number(obligation.amount_paid_total || 0);
+    const outstanding = Math.max(0, expectedAmount - paidAmount);
+    if (outstanding <= 0.01) {
+      return res.status(409).json({ error: "This obligation is already settled.", code: "paystack_initialize_settled" });
+    }
+
+    const amountProvided = String(req.body?.amount ?? "").trim();
+    const requestedAmount = amountProvided ? parseMoneyValue(amountProvided) : outstanding;
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+      return res.status(400).json({ error: "Amount must be greater than zero.", code: "paystack_initialize_invalid_amount" });
+    }
+    if (requestedAmount - outstanding > 0.01) {
+      return res.status(400).json({
+        error: "Amount cannot exceed the outstanding balance.",
+        code: "paystack_initialize_amount_exceeds_outstanding",
+      });
+    }
+    const amount = Number(requestedAmount.toFixed(2));
+    const amountKobo = toKoboFromAmount(amount);
+    if (!amountKobo) {
+      return res.status(400).json({ error: "Amount must be greater than zero.", code: "paystack_initialize_invalid_amount" });
+    }
+
+    let gatewayReference = buildPaystackGatewayReference(obligation.id, req.session.user.username);
+    if (normalizeReference(gatewayReference) === normalizeReference(obligation.payment_reference)) {
+      gatewayReference = `${gatewayReference}-P`;
+    }
+    const metadata = {
+      tenant: PAYMENT_REFERENCE_TENANT_ID,
+      school_id: PAYMENT_REFERENCE_TENANT_ID,
+      student_username: normalizeIdentifier(req.session.user.username),
+      payment_item_id: Number(obligation.payment_item_id),
+      obligation_id: Number(obligation.id),
+      payment_reference: String(obligation.payment_reference || ""),
+    };
+    const email = `${normalizeIdentifier(req.session.user.username) || "student"}@paytec.local`;
+    const initializePayload = await paystackClient.initializeTransaction({
+      email,
+      amount: amountKobo,
+      reference: gatewayReference,
+      callback_url: PAYSTACK_CALLBACK_URL,
+      currency: String(obligation.currency || "NGN").toUpperCase(),
+      metadata,
+    });
+    const gatewayData = initializePayload?.data || {};
+    const authorizationUrl = String(gatewayData.authorization_url || "").trim();
+    const accessCode = String(gatewayData.access_code || "").trim();
+    const reference = sanitizeTransactionRef(gatewayData.reference || gatewayReference);
+    if (!authorizationUrl || !accessCode || !reference) {
+      return res.status(502).json({
+        error: "Paystack initialize response was incomplete.",
+        code: "paystack_initialize_invalid_response",
+      });
+    }
+
+    await withSqlTransaction(async () => {
+      const session = await upsertPaystackSession({
+        obligationId: obligation.id,
+        studentId: req.session.user.username,
+        gatewayReference: reference,
+        amount,
+        status: "initiated",
+        payload: {
+          request: {
+            amount,
+            amount_kobo: amountKobo,
+            metadata,
+            callback_url: PAYSTACK_CALLBACK_URL,
+            currency: String(obligation.currency || "NGN").toUpperCase(),
+          },
+          response: initializePayload,
+        },
+      });
+      await logAuditEvent(
+        req,
+        "initialize_paystack",
+        "paystack_session",
+        session?.id || null,
+        req.session.user.username,
+        `Initialized Paystack checkout ${reference} for obligation #${obligation.id}.`
+      );
+    });
+
+    return res.status(200).json({
+      ok: true,
+      authorization_url: authorizationUrl,
+      access_code: accessCode,
+      reference,
+    });
+  } catch (err) {
+    const normalizedError = normalizePaystackError(err, "paystack_initialize_failed");
+    return res.status(normalizedError.status).json({
+      error: normalizedError.message,
+      code: normalizedError.code,
+    });
+  }
+});
+
+app.get("/api/payments/paystack/callback", async (req, res) => {
+  const reference = sanitizeTransactionRef(req.query?.reference || req.query?.trxref || "");
+  if (reference) {
+    try {
+      await updatePaystackSessionStatusByReference(reference, "pending_webhook", {
+        callback_query: req.query || {},
+        callback_received_at: new Date().toISOString(),
+      });
+    } catch (_err) {
+      // Callback endpoint must stay non-blocking for UX redirects.
+    }
+  }
+  const params = new URLSearchParams();
+  params.set("paystack_status", "pending_webhook");
+  if (reference) {
+    params.set("paystack_reference", reference);
+  }
+  return res.redirect(`/payments.html?${params.toString()}`);
+});
+
+app.post("/api/payments/webhook/paystack", async (req, res) => {
+  try {
+    if (!PAYSTACK_WEBHOOK_SECRET) {
+      return res.status(503).json({
+        error: "Paystack webhook secret is not configured.",
+        code: "paystack_webhook_not_configured",
+      });
+    }
+    const signature = req.get("x-paystack-signature");
+    if (!isValidPaystackSignature(req.rawBody, signature, PAYSTACK_WEBHOOK_SECRET)) {
+      return res.status(401).json({
+        error: "Invalid Paystack webhook signature.",
+        code: "paystack_webhook_invalid_signature",
+      });
+    }
+
+    const payload = req.body || {};
+    const eventType = String(payload.event || "").trim().toLowerCase();
+    if (eventType !== "charge.success") {
+      return res.status(200).json({ ok: true, ignored: true });
+    }
+
+    const normalized = normalizePaystackTransactionForIngestion(payload);
+    if (!normalized) {
+      return res.status(400).json({
+        error: "Invalid Paystack charge payload.",
+        code: "paystack_webhook_invalid_payload",
+      });
+    }
+
+    const actorReq = getPaystackSystemRequest();
+    const ingest = await ingestNormalizedTransaction(normalized.payload, {
+      actorReq,
+      allowAutoApprove: true,
+    });
+    if (!ingest.ok) {
+      return res.status(400).json({
+        error: ingest.error || "Could not process Paystack transaction.",
+        code: "paystack_webhook_ingest_failed",
+      });
+    }
+
+    const transactionId = parseResourceId(ingest.transaction?.id);
+    const transaction = transactionId ? await getReconciliationTransactionById(transactionId) : ingest.transaction || null;
+    const nextSessionStatus = mapPaystackSessionStatusFromTransactionStatus(transaction?.status);
+    const existingSession = await get("SELECT * FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [
+      normalized.gatewayReference,
+    ]);
+    const previousStatus = String(existingSession?.status || "").trim().toLowerCase();
+    let sessionRow = null;
+    if (existingSession) {
+      sessionRow = await updatePaystackSessionStatusByReference(normalized.gatewayReference, nextSessionStatus, {
+        webhook_event: eventType,
+        webhook_received_at: new Date().toISOString(),
+        source_event_id: normalized.sourceEventId,
+        transaction_id: transaction?.id || null,
+      });
+    } else {
+      const metadataObligationId = parseResourceId(
+        normalized.metadata?.obligation_id || normalized.metadata?.obligationId || transaction?.matched_obligation_id
+      );
+      const metadataStudent = normalizeIdentifier(
+        normalized.metadata?.student_username ||
+          normalized.metadata?.studentUsername ||
+          normalized.metadata?.student ||
+          transaction?.student_username ||
+          transaction?.student_hint_username
+      );
+      if (metadataObligationId && metadataStudent) {
+        sessionRow = await upsertPaystackSession({
+          obligationId: metadataObligationId,
+          studentId: metadataStudent,
+          gatewayReference: normalized.gatewayReference,
+          amount: normalized.amount,
+          status: nextSessionStatus,
+          payload: {
+            webhook_event: eventType,
+            webhook_received_at: new Date().toISOString(),
+            source_event_id: normalized.sourceEventId,
+            transaction_id: transaction?.id || null,
+          },
+        });
+      }
+    }
+
+    if (transaction && (!previousStatus || previousStatus !== nextSessionStatus)) {
+      const obligationId =
+        transaction.matched_obligation_id ||
+        parseResourceId(normalized.metadata?.obligation_id || normalized.metadata?.obligationId) ||
+        null;
+      await logReconciliationEvent(
+        transaction.id,
+        obligationId,
+        actorReq,
+        "paystack_webhook_confirmed",
+        `Paystack charge.success confirmed (${normalized.gatewayReference}).`
+      );
+      const studentUsername = normalizeIdentifier(
+        transaction.student_username ||
+          transaction.student_hint_username ||
+          normalized.metadata?.student_username ||
+          normalized.metadata?.studentUsername
+      );
+      const paymentItemId =
+        parseResourceId(transaction.payment_item_id || transaction.payment_item_hint_id) ||
+        parseResourceId(normalized.metadata?.payment_item_id || normalized.metadata?.paymentItemId);
+      if (studentUsername && paymentItemId) {
+        if (nextSessionStatus === "approved") {
+          await createReconciliationStatusNotification(
+            studentUsername,
+            paymentItemId,
+            "Paystack payment approved",
+            `Your Paystack payment ${normalized.gatewayReference} was confirmed and approved.`,
+            { createdBy: "system-paystack" }
+          );
+        } else {
+          await createReconciliationStatusNotification(
+            studentUsername,
+            paymentItemId,
+            "Paystack payment needs review",
+            `Your Paystack payment ${normalized.gatewayReference} was received and routed for review.`,
+            { createdBy: "system-paystack" }
+          );
+        }
+      }
+    }
+
+    await run(
+      `
+        INSERT INTO audit_logs (
+          actor_username,
+          actor_role,
+          action,
+          content_type,
+          content_id,
+          target_owner,
+          summary
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        "system-paystack",
+        "system-paystack",
+        "ingest",
+        "payment_transaction",
+        transaction?.id || null,
+        transaction?.student_username || transaction?.student_hint_username || null,
+        `Paystack webhook ${ingest.idempotent ? "idempotent-hit" : "ingested"} (${normalized.sourceEventId})`,
+      ]
+    );
+
+    return res.status(200).json({
+      ok: true,
+      inserted: !!ingest.inserted,
+      idempotent: !!ingest.idempotent,
+      transaction_id: transaction?.id || null,
+      status: transaction?.status || null,
+      session_status: sessionRow?.status || nextSessionStatus,
+    });
+  } catch (err) {
+    const normalizedError = normalizePaystackError(err, "paystack_webhook_failed");
+    return res.status(normalizedError.status).json({
+      error: normalizedError.message,
+      code: normalizedError.code,
+    });
+  }
+});
+
+app.post("/api/payments/paystack/verify", async (req, res) => {
+  const isInternalJob = isTrustedPaystackInternalVerifyRequest(req);
+  if (!isInternalJob) {
+    if (!isAuthenticated(req) || !req.session?.user) {
+      return res.status(401).json({
+        error: "Authentication required.",
+        code: "paystack_verify_auth_required",
+      });
+    }
+    const role = String(req.session.user.role || "").trim().toLowerCase();
+    if (role !== "teacher" && role !== "admin") {
+      return res.status(403).json({
+        error: "Only teachers or admins can verify Paystack references.",
+        code: "paystack_verify_forbidden",
+      });
+    }
+  }
+  const reference = sanitizeTransactionRef(req.body?.reference || "");
+  if (!reference) {
+    return res.status(400).json({
+      error: "A Paystack reference is required.",
+      code: "paystack_verify_reference_required",
+    });
+  }
+  if (!paystackClient.hasSecretKey) {
+    return res.status(503).json({
+      error: "Paystack is not configured on this server.",
+      code: "paystack_verify_not_configured",
+    });
+  }
+  try {
+    const verifyPayload = await paystackClient.verifyTransaction(reference);
+    const verifyData = verifyPayload?.data || {};
+    const gatewayStatus = String(verifyData.status || "").trim().toLowerCase();
+    if (gatewayStatus !== "success") {
+      return res.status(409).json({
+        error: `Paystack transaction is ${gatewayStatus || "not successful"}.`,
+        code: "paystack_verify_not_successful",
+        gateway_status: gatewayStatus || null,
+      });
+    }
+
+    const normalized = normalizePaystackTransactionForIngestion(
+      {
+        id: `verify-${verifyData.id || reference}`,
+        event: "charge.success",
+        data: verifyData,
+      },
+      {
+        sourceEventId: `paystack-verify-${String(verifyData.id || reference).trim().slice(0, 120)}`,
+      }
+    );
+    if (!normalized) {
+      return res.status(400).json({
+        error: "Could not normalize verified Paystack transaction.",
+        code: "paystack_verify_invalid_payload",
+      });
+    }
+
+    const ingest = await ingestNormalizedTransaction(normalized.payload, {
+      actorReq: isInternalJob ? getPaystackSystemRequest() : req,
+      allowAutoApprove: true,
+    });
+    if (!ingest.ok) {
+      return res.status(400).json({
+        error: ingest.error || "Could not ingest verified transaction.",
+        code: "paystack_verify_ingest_failed",
+      });
+    }
+
+    const transactionId = parseResourceId(ingest.transaction?.id);
+    const transaction = transactionId ? await getReconciliationTransactionById(transactionId) : ingest.transaction || null;
+    const nextSessionStatus = mapPaystackSessionStatusFromTransactionStatus(transaction?.status);
+    const existingSession = await get("SELECT * FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [reference]);
+    if (existingSession) {
+      await updatePaystackSessionStatusByReference(reference, nextSessionStatus, {
+        verified_at: new Date().toISOString(),
+        verified_by: isInternalJob ? "system-paystack" : req.session?.user?.username || "unknown",
+        verified_by_role: isInternalJob ? "system-paystack" : req.session?.user?.role || "unknown",
+        transaction_id: transaction?.id || null,
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      inserted: !!ingest.inserted,
+      idempotent: !!ingest.idempotent,
+      transaction_id: transaction?.id || null,
+      status: transaction?.status || null,
+      gateway_status: gatewayStatus,
+    });
+  } catch (err) {
+    const normalizedError = normalizePaystackError(err, "paystack_verify_failed");
+    return res.status(normalizedError.status).json({
+      error: normalizedError.message,
+      code: normalizedError.code,
+    });
+  }
+});
+
 app.post("/api/payments/webhook", async (req, res) => {
   try {
     if (GATEWAY_WEBHOOK_SECRET) {
@@ -5142,6 +5852,7 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
           pi.available_until,
           pi.availability_days,
           pi.created_by,
+          po.id AS obligation_id,
           COALESCE(po.amount_paid_total, 0) AS approved_paid,
           (
             COALESCE(
@@ -5166,7 +5877,23 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
             )
           ) AS pending_paid,
           po.payment_reference AS my_reference,
-          po.status AS obligation_status
+          po.status AS obligation_status,
+          (
+            SELECT ps.status
+            FROM paystack_sessions ps
+            WHERE ps.obligation_id = po.id
+              AND ps.student_id = ?
+            ORDER BY ps.updated_at DESC, ps.id DESC
+            LIMIT 1
+          ) AS paystack_state,
+          (
+            SELECT ps.gateway_reference
+            FROM paystack_sessions ps
+            WHERE ps.obligation_id = po.id
+              AND ps.student_id = ?
+            ORDER BY ps.updated_at DESC, ps.id DESC
+            LIMIT 1
+          ) AS paystack_reference
         FROM payment_items pi
         LEFT JOIN payment_obligations po
           ON po.payment_item_id = pi.id
@@ -5177,7 +5904,12 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
           pi.due_date ASC,
           pi.id ASC
       `,
-      [req.session.user.username, req.session.user.username]
+      [
+        req.session.user.username,
+        req.session.user.username,
+        req.session.user.username,
+        req.session.user.username,
+      ]
     );
 
     const items = rows.map((row) => {
