@@ -88,6 +88,8 @@ Receipt and statement extraction supports:
 
 Statement upload accepts CSV, TXT, TSV, JSON, XML, PDF, JPG, PNG, WEBP, XLS/XLSX, DOC/DOCX, and RTF.
 
+Excel files (`.xls`/`.xlsx`) are parsed natively by reading workbook sheets and extracting structured rows for matching.
+
 Parsing order for statement uploads:
 - Structured table parse (`normalizeStatementRowsText`)
 - Loose-line parse (`parseStatementRowsFromLooseText`)

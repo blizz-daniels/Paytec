@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const bcrypt = require("bcryptjs");
 const request = require("supertest");
+const XLSX = require("xlsx");
 
 const testDataDir = path.join(__dirname, "tmp-data");
 process.env.NODE_ENV = "test";
@@ -400,6 +401,57 @@ test("teacher statement upload accepts extended formats for verification parsing
     .attach("statementFile", Buffer.from(statementXmlLikeLine), {
       filename: "statement.xml",
       contentType: "application/xml",
+    });
+  expect(upload.status).toBe(201);
+  expect(Number(upload.body.parsed_row_count || 0)).toBeGreaterThan(0);
+
+  const verify = await postJson(teacher, `/api/payment-receipts/${submit.body.id}/verify`, {});
+  expect(verify.status).toBe(200);
+  expect(verify.body.matched).toBe(true);
+  expect(verify.body.receipt.status).toBe("approved");
+});
+
+test("teacher statement upload parses real xlsx files for verification", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "XLSX Verify Fee",
+    description: "Excel parsing test",
+    expectedAmount: 26000,
+    currency: "NGN",
+    dueDate: "2026-06-01",
+    availabilityDays: 30,
+  });
+  expect(createItem.status).toBe(201);
+
+  const student = request.agent(app);
+  await login(student, "std_001", "doe");
+  const studentCsrf = await getCsrfToken(student);
+  const submit = await student
+    .post("/api/payment-receipts")
+    .set("X-CSRF-Token", studentCsrf)
+    .field("paymentItemId", String(createItem.body.id))
+    .field("amountPaid", "26000")
+    .field("paidAt", "2026-02-22T10:00:00")
+    .field("transactionRef", "TX-XLSX-VERIFY-001")
+    .attach("receiptFile", Buffer.from("img"), { filename: "auto-xlsx.png", contentType: "image/png" });
+  expect(submit.status).toBe(201);
+
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    ["name", "amount", "date", "reference"],
+    ["std_001", "26000", "2026-02-22", "TX-XLSX-VERIFY-001"],
+  ]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Statement");
+  const statementBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "buffer" });
+
+  const teacherCsrf = await getCsrfToken(teacher);
+  const upload = await teacher
+    .post("/api/teacher/payment-statement")
+    .set("X-CSRF-Token", teacherCsrf)
+    .attach("statementFile", statementBuffer, {
+      filename: "statement.xlsx",
+      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
   expect(upload.status).toBe(201);
   expect(Number(upload.body.parsed_row_count || 0)).toBeGreaterThan(0);

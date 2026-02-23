@@ -9,6 +9,12 @@ const multer = require("multer");
 const session = require("express-session");
 const sqlite3 = require("sqlite3").verbose();
 const SQLiteStore = require("connect-sqlite3")(session);
+let xlsx = null;
+try {
+  xlsx = require("xlsx");
+} catch (_err) {
+  xlsx = null;
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1397,6 +1403,69 @@ function parseStatementRowsFromLooseText(rawText) {
   return parsedRows;
 }
 
+function escapeCsvCell(value) {
+  const text = String(value == null ? "" : value);
+  if (/[",\r\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+async function parseStatementRowsFromExcelFile(filePath) {
+  if (!xlsx) {
+    return { extractedText: "", parsedRows: [] };
+  }
+  try {
+    const workbook = xlsx.readFile(filePath, {
+      cellDates: true,
+      raw: false,
+      dense: false,
+    });
+    if (!workbook || !Array.isArray(workbook.SheetNames) || !workbook.SheetNames.length) {
+      return { extractedText: "", parsedRows: [] };
+    }
+
+    let combinedCsv = "";
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) {
+        continue;
+      }
+      const rows = xlsx.utils.sheet_to_json(sheet, {
+        header: 1,
+        raw: false,
+        defval: "",
+        blankrows: false,
+      });
+      if (!Array.isArray(rows) || !rows.length) {
+        continue;
+      }
+      const csvLines = rows.map((row) =>
+        (Array.isArray(row) ? row : [row]).map((cell) => escapeCsvCell(cell)).join(",")
+      );
+      if (csvLines.length) {
+        combinedCsv += (combinedCsv ? "\n" : "") + csvLines.join("\n");
+      }
+    }
+
+    const extractedText = combinedCsv.slice(0, 300000);
+    if (!extractedText) {
+      return { extractedText: "", parsedRows: [] };
+    }
+
+    let parsedRows = normalizeStatementRowsText(extractedText);
+    if (!parsedRows.length) {
+      parsedRows = parseStatementRowsFromLooseText(extractedText);
+    }
+    return {
+      extractedText,
+      parsedRows,
+    };
+  } catch (_err) {
+    return { extractedText: "", parsedRows: [] };
+  }
+}
+
 function isLikelyOcrFileExtension(ext) {
   return [".pdf", ".png", ".jpg", ".jpeg", ".webp"].includes(String(ext || "").toLowerCase());
 }
@@ -1528,7 +1597,13 @@ async function parseStatementRowsWithAi(rawText, context = {}) {
 async function parseStatementRowsFromUpload(statementPath, originalFilename) {
   const ext = path.extname(String(originalFilename || statementPath || "")).toLowerCase();
   let extractedText = "";
-  if (isLikelyOcrFileExtension(ext)) {
+  let parsedRows = [];
+
+  if (ext === ".xls" || ext === ".xlsx") {
+    const excelResult = await parseStatementRowsFromExcelFile(statementPath);
+    extractedText = excelResult.extractedText;
+    parsedRows = excelResult.parsedRows;
+  } else if (isLikelyOcrFileExtension(ext)) {
     const ocrResult = await extractReceiptText(statementPath);
     extractedText = String(ocrResult?.text || "");
   } else {
@@ -1538,9 +1613,11 @@ async function parseStatementRowsFromUpload(statementPath, originalFilename) {
       extractedText = "";
     }
   }
-  let parsedRows = normalizeStatementRowsText(extractedText);
   if (!parsedRows.length) {
-    parsedRows = parseStatementRowsFromLooseText(extractedText);
+    parsedRows = normalizeStatementRowsText(extractedText);
+    if (!parsedRows.length) {
+      parsedRows = parseStatementRowsFromLooseText(extractedText);
+    }
   }
   if (!parsedRows.length) {
     const aiRows = await parseStatementRowsWithAi(extractedText, { filename: originalFilename, extension: ext });
