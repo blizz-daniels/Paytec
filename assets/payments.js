@@ -588,7 +588,7 @@ async function loadQueue() {
   const endpoint =
     paymentState.me.role === "admin"
       ? "/api/admin/reconciliation/exceptions"
-      : "/api/teacher/reconciliation/exceptions";
+      : "/api/lecturer/reconciliation/exceptions";
   const params = new URLSearchParams();
   const status = document.getElementById("queueStatus")?.value || "all";
   const reason = document.getElementById("queueReason")?.value || "all";
@@ -649,7 +649,7 @@ async function loadReconciliationSummary() {
   const endpoint =
     paymentState.me.role === "admin"
       ? "/api/admin/reconciliation/summary"
-      : "/api/teacher/reconciliation/summary";
+      : "/api/lecturer/reconciliation/summary";
   paymentState.reconciliationSummary = await requestJson(endpoint);
   renderReconciliationSummary();
 }
@@ -679,7 +679,7 @@ function renderStatementStatus() {
 }
 
 async function loadStatementInfo() {
-  paymentState.statementInfo = await requestJson("/api/teacher/payment-statement");
+  paymentState.statementInfo = await requestJson("/api/lecturer/payment-statement");
   renderStatementStatus();
 }
 
@@ -764,7 +764,7 @@ function bindStatementManagement() {
       try {
         const formData = new FormData();
         formData.append("statementFile", selectedFile);
-        const response = await fetch(`/api/teacher/payment-statement${dryRun ? "?dryRun=true" : ""}`, {
+        const response = await fetch(`/api/lecturer/payment-statement${dryRun ? "?dryRun=true" : ""}`, {
           method: "POST",
           credentials: "same-origin",
           body: formData,
@@ -815,7 +815,7 @@ function bindStatementManagement() {
         ? window.showToast("Deleting statement...", { type: "loading", sticky: true })
         : null;
       try {
-        await requestJson("/api/teacher/payment-statement", { method: "DELETE" });
+        await requestJson("/api/lecturer/payment-statement", { method: "DELETE" });
         if (window.showToast) {
           window.showToast("Statement deleted.", { type: "success" });
         }

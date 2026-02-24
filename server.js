@@ -26,7 +26,9 @@ const dbPath = path.join(dataDir, "paytec.sqlite");
 const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || "admin").trim().toLowerCase();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const STUDENT_ROSTER_PATH = path.resolve(process.env.STUDENT_ROSTER_PATH || path.join(__dirname, "data", "students.csv"));
-const TEACHER_ROSTER_PATH = path.resolve(process.env.TEACHER_ROSTER_PATH || path.join(__dirname, "data", "teachers.csv"));
+const LECTURER_ROSTER_PATH = path.resolve(
+  process.env.LECTURER_ROSTER_PATH || process.env.TEACHER_ROSTER_PATH || path.join(__dirname, "data", "teachers.csv")
+);
 
 if (isProduction && !process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required when NODE_ENV=production");
@@ -1320,7 +1322,7 @@ async function initDatabase() {
   }
 
   await importRoster(STUDENT_ROSTER_PATH, "student", "matric_number");
-  await importRoster(TEACHER_ROSTER_PATH, "teacher", "teacher_code");
+  await importRoster(LECTURER_ROSTER_PATH, "teacher", "teacher_code");
   await migrateLegacyReceiptsToReconciliation();
 }
 
@@ -2735,7 +2737,7 @@ async function syncPaymentItemNotification(req, paymentItem) {
   }
   const title = `New Payment Item: ${String(paymentItem.title || "").slice(0, 90)}`;
   const duePart = paymentItem.due_date ? `Due: ${paymentItem.due_date}. ` : "";
-  let availabilityPart = "Available until removed by teacher.";
+  let availabilityPart = "Available until removed by lecturer.";
   if (paymentItem.available_until) {
     const availableDate = new Date(paymentItem.available_until);
     if (!Number.isNaN(availableDate.getTime())) {
@@ -4236,7 +4238,7 @@ async function applyReconciliationReviewAction(req, transactionId, action, optio
         obligation.student_username,
         obligation.payment_item_id,
         "Payment confirmation requested",
-        "Your payment needs additional confirmation. Please share your proof of payment with your teacher."
+        "Your payment needs additional confirmation. Please share your proof of payment with your lecturer."
       );
     }
     await syncPaymentMatchAndExceptionRecords(id, req, actor);
@@ -4445,7 +4447,8 @@ app.get("/login", (req, res) => {
 app.get("/login.html", (_req, res) => res.redirect("/login"));
 app.get("/admin.html", (_req, res) => res.redirect("/admin"));
 app.get("/admin-import.html", (_req, res) => res.redirect("/admin/import"));
-app.get("/teacher.html", (_req, res) => res.redirect("/teacher"));
+app.get("/teacher.html", (_req, res) => res.redirect("/lecturer"));
+app.get("/lecturer.html", (_req, res) => res.redirect("/lecturer"));
 
 app.post("/login", async (req, res) => {
   const rawIdentifier = String(req.body.username || "");
@@ -4501,7 +4504,7 @@ app.post("/login", async (req, res) => {
         username: rosterUser.auth_id,
         role: rosterUser.role,
       };
-      source = rosterUser.role === "teacher" ? "login-teacher" : "login-student";
+      source = rosterUser.role === "teacher" ? "login-lecturer" : "login-student";
     }
 
     clearFailedLogins(req, identifier || "*");
@@ -4519,7 +4522,7 @@ app.post("/login", async (req, res) => {
       return res.redirect("/admin");
     }
     if (authUser.role === "teacher") {
-      return res.redirect("/teacher");
+      return res.redirect("/lecturer");
     }
     return res.redirect("/");
   } catch (_err) {
@@ -4689,6 +4692,7 @@ app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
         Number(rosterCounts.total_teachers || 0) +
         Number(adminCount.total_admins || 0),
       totalStudents: Number(rosterCounts.total_students || 0),
+      totalLecturers: Number(rosterCounts.total_teachers || 0),
       totalTeachers: Number(rosterCounts.total_teachers || 0),
       totalAdmins: Number(adminCount.total_admins || 0),
       totalLogins: Number(loginCounts.total_logins || 0),
@@ -4956,7 +4960,7 @@ app.delete("/api/payment-items/:id", requireTeacher, async (req, res) => {
   }
 });
 
-app.get("/api/teacher/payment-statement", requireTeacher, async (req, res) => {
+app.get(["/api/lecturer/payment-statement", "/api/teacher/payment-statement"], requireTeacher, async (req, res) => {
   try {
     const row = await getTeacherStatement(req.session.user.username);
     if (!row) {
@@ -4971,11 +4975,11 @@ app.get("/api/teacher/payment-statement", requireTeacher, async (req, res) => {
       parse_stages: Array.isArray(row.parse_stages) ? row.parse_stages : [],
     });
   } catch (_err) {
-    return res.status(500).json({ error: "Could not load teacher statement." });
+    return res.status(500).json({ error: "Could not load lecturer statement." });
   }
 });
 
-app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
+app.post(["/api/lecturer/payment-statement", "/api/teacher/payment-statement"], requireTeacher, (req, res) => {
   statementUpload.single("statementFile")(req, res, async (err) => {
     if (err) {
       const message =
@@ -5084,7 +5088,7 @@ app.post("/api/teacher/payment-statement", requireTeacher, (req, res) => {
   });
 });
 
-app.delete("/api/teacher/payment-statement", requireTeacher, async (req, res) => {
+app.delete(["/api/lecturer/payment-statement", "/api/teacher/payment-statement"], requireTeacher, async (req, res) => {
   try {
     const teacherUsername = normalizeIdentifier(req.session.user.username);
     const row = await get(
@@ -5101,7 +5105,7 @@ app.delete("/api/teacher/payment-statement", requireTeacher, async (req, res) =>
     await logAuditEvent(req, "delete", "payment_statement", null, teacherUsername, "Deleted uploaded statement.");
     return res.json({ ok: true });
   } catch (_err) {
-    return res.status(500).json({ error: "Could not delete teacher statement." });
+    return res.status(500).json({ error: "Could not delete lecturer statement." });
   }
 });
 
@@ -5453,7 +5457,7 @@ app.post("/api/payments/paystack/verify", async (req, res) => {
     const role = String(req.session.user.role || "").trim().toLowerCase();
     if (role !== "teacher" && role !== "admin") {
       return res.status(403).json({
-        error: "Only teachers or admins can verify Paystack references.",
+        error: "Only lecturers or admins can verify Paystack references.",
         code: "paystack_verify_forbidden",
       });
     }
@@ -5634,7 +5638,7 @@ async function loadReconciliationExceptionsPayload(queryInput) {
   };
 }
 
-app.get("/api/teacher/reconciliation/summary", requireTeacher, async (_req, res) => {
+app.get(["/api/lecturer/reconciliation/summary", "/api/teacher/reconciliation/summary"], requireTeacher, async (_req, res) => {
   try {
     const summary = await getReconciliationSummary();
     return res.json(summary);
@@ -5673,7 +5677,7 @@ async function handleReconciliationExceptionsList(req, res) {
   }
 }
 
-app.get("/api/teacher/reconciliation/exceptions", requireTeacher, async (req, res) => {
+app.get(["/api/lecturer/reconciliation/exceptions", "/api/teacher/reconciliation/exceptions"], requireTeacher, async (req, res) => {
   return handleReconciliationExceptionsList(req, res);
 });
 
@@ -6077,7 +6081,7 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
   }
 });
 
-app.get("/api/teacher/payment-receipts", requireTeacher, async (req, res) => {
+app.get(["/api/lecturer/payment-receipts", "/api/teacher/payment-receipts"], requireTeacher, async (req, res) => {
   try {
     const filters = parseQueueFilters(req.query || {});
     const query = buildReceiptQueueQuery(filters, 100, {
@@ -6174,7 +6178,7 @@ async function assignReceiptReviewer(req, receiptId, assigneeRaw, noteRaw = "") 
     throw { status: 403, error: "You can only assign receipts to yourself." };
   }
   if (assignee && !(await isValidReviewerAssignee(assignee))) {
-    throw { status: 400, error: "Assignee must be a valid teacher/admin account." };
+    throw { status: 400, error: "Assignee must be a valid lecturer/admin account." };
   }
 
   const previousAssignee = normalizeIdentifier(row.assigned_reviewer || "");
@@ -6586,8 +6590,8 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/teacher", requireTeacher, (_req, res) => {
-  res.sendFile(path.join(__dirname, "teacher.html"));
+app.get(["/lecturer", "/teacher"], requireTeacher, (_req, res) => {
+  res.sendFile(path.join(__dirname, "lecturer.html"));
 });
 
 app.get("/api/notifications", requireAuth, async (req, res) => {
@@ -7228,17 +7232,17 @@ app.post("/api/admin/import/students/preview", requireAdmin, async (req, res) =>
   }
 });
 
-app.post("/api/admin/import/teachers", requireAdmin, async (req, res) => {
+app.post(["/api/admin/import/lecturers", "/api/admin/import/teachers"], requireAdmin, async (req, res) => {
   const csvText = String(req.body.csvText || "");
   if (!csvText.trim()) {
-    return res.status(400).json({ error: "Teacher CSV is required." });
+    return res.status(400).json({ error: "Lecturer CSV is required." });
   }
 
   try {
     const result = await processRosterCsv(csvText, {
       role: "teacher",
       idHeader: "teacher_code",
-      sourceName: "admin-upload-teachers.csv",
+      sourceName: "admin-upload-lecturers.csv",
       applyChanges: true,
     });
     return res.status(200).json({
@@ -7249,33 +7253,37 @@ app.post("/api/admin/import/teachers", requireAdmin, async (req, res) => {
       reportCsv: result.reportCsv,
     });
   } catch (err) {
-    return res.status(400).json({ error: err.message || "Could not import teacher roster." });
+    return res.status(400).json({ error: err.message || "Could not import lecturer roster." });
   }
 });
 
-app.post("/api/admin/import/teachers/preview", requireAdmin, async (req, res) => {
-  const csvText = String(req.body.csvText || "");
-  if (!csvText.trim()) {
-    return res.status(400).json({ error: "Teacher CSV is required." });
-  }
+app.post(
+  ["/api/admin/import/lecturers/preview", "/api/admin/import/teachers/preview"],
+  requireAdmin,
+  async (req, res) => {
+    const csvText = String(req.body.csvText || "");
+    if (!csvText.trim()) {
+      return res.status(400).json({ error: "Lecturer CSV is required." });
+    }
 
-  try {
-    const result = await processRosterCsv(csvText, {
-      role: "teacher",
-      idHeader: "teacher_code",
-      sourceName: "admin-preview-teachers.csv",
-      applyChanges: false,
-    });
-    return res.status(200).json({
-      ok: true,
-      summary: result.summary,
-      rows: result.rows,
-      reportCsv: result.reportCsv,
-    });
-  } catch (err) {
-    return res.status(400).json({ error: err.message || "Could not preview teacher roster." });
+    try {
+      const result = await processRosterCsv(csvText, {
+        role: "teacher",
+        idHeader: "teacher_code",
+        sourceName: "admin-preview-lecturers.csv",
+        applyChanges: false,
+      });
+      return res.status(200).json({
+        ok: true,
+        summary: result.summary,
+        rows: result.rows,
+        reportCsv: result.reportCsv,
+      });
+    } catch (err) {
+      return res.status(400).json({ error: err.message || "Could not preview lecturer roster." });
+    }
   }
-});
+);
 
 app.get("/api/shared-files", requireAuth, async (req, res) => {
   try {

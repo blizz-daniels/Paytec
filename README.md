@@ -6,18 +6,18 @@ CampusPay Hub is a role-based school portal for student communication, class res
 
 The payment system now runs on an exception-only reconciliation model:
 
-1. Teachers create payment items.
+1. Lecturers create payment items.
 2. System creates per-student payment obligations with deterministic references.
 3. Transactions are ingested from statement imports and webhooks.
 4. Matching engine auto-approves high-confidence matches.
-5. Low-confidence or duplicate transactions go to an exception queue for teacher action.
+5. Low-confidence or duplicate transactions go to an exception queue for lecturer action.
 6. Student receipt upload remains available as a fallback evidence path.
 
 ## Roles
 
 - `student`: see payment items/obligations, submit fallback receipts, view ledger.
-- `teacher`: upload statements, review exceptions, apply reconciliation actions.
-- `admin`: all teacher capabilities + broader monitoring.
+- `lecturer` (stored as `teacher` role value): upload statements, review exceptions, apply reconciliation actions.
+- `admin`: all lecturer capabilities + broader monitoring.
 
 ## Core APIs
 
@@ -25,9 +25,9 @@ The payment system now runs on an exception-only reconciliation model:
 
 - `GET /api/payment-items` (auth required)
   - for students, includes `my_reference`, `obligation_status`, `amount_paid_total`
-- `POST /api/payment-items` (teacher/admin)
-- `PUT /api/payment-items/:id` (teacher owner/admin)
-- `DELETE /api/payment-items/:id` (teacher owner/admin)
+- `POST /api/payment-items` (lecturer/admin)
+- `PUT /api/payment-items/:id` (lecturer owner/admin)
+- `DELETE /api/payment-items/:id` (lecturer owner/admin)
 
 ### Student Receipt (Fallback)
 
@@ -39,14 +39,14 @@ The payment system now runs on an exception-only reconciliation model:
 
 ### Statement Import + Auto Reconcile
 
-- `GET /api/teacher/payment-statement`
-- `POST /api/teacher/payment-statement`
+- `GET /api/lecturer/payment-statement`
+- `POST /api/lecturer/payment-statement`
   - parses rows from CSV/XLSX/PDF/image/etc
   - validation keeps bad rows in `ingestion.unparsedRows`
   - supports `?dryRun=true` preview mode (no DB writes)
   - ingests normalized transactions
   - auto-reconciles and returns ingestion summary
-- `DELETE /api/teacher/payment-statement`
+- `DELETE /api/lecturer/payment-statement`
 
 ### Gateway Webhook (Idempotent)
 
@@ -56,12 +56,12 @@ The payment system now runs on an exception-only reconciliation model:
 
 ### Exception Queue + Actions
 
-- `GET /api/teacher/reconciliation/summary`
+- `GET /api/lecturer/reconciliation/summary`
 - `GET /api/admin/reconciliation/summary`
-- `GET /api/reconciliation/summary` (teacher/admin generic)
-- `GET /api/teacher/reconciliation/exceptions`
+- `GET /api/reconciliation/summary` (lecturer/admin generic)
+- `GET /api/lecturer/reconciliation/exceptions`
 - `GET /api/admin/reconciliation/exceptions`
-- `GET /api/reconciliation/exceptions` (teacher/admin generic)
+- `GET /api/reconciliation/exceptions` (lecturer/admin generic)
   - filters: `status`, `reason`, `student`, `paymentItemId`, `dateFrom`, `dateTo`, `page`, `pageSize`
   - default response is paginated: `{items, pagination}`
   - use `legacy=1` for array-only compatibility
@@ -158,7 +158,7 @@ npm test
 1. Deploy schema + migration release.
 2. Enable statement ingestion first and monitor exception rates.
 3. Enable gateway webhook ingestion with idempotency checks.
-4. Move teachers fully to reconciliation exception queue.
+4. Move lecturers fully to reconciliation exception queue.
 5. Keep legacy receipt endpoints active during transition window.
 
 ## Backward Compatibility Notes
@@ -166,3 +166,4 @@ npm test
 - Legacy receipt endpoints remain available.
 - Existing receipt history is preserved and migrated into normalized transaction records.
 - Student receipt upload is still supported as fallback proof, but reconciliation now prioritizes transaction ingestion.
+- Legacy `/teacher` and `/api/teacher/*` routes still work as aliases for `/lecturer` and `/api/lecturer/*`.

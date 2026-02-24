@@ -138,9 +138,13 @@ window.addEventListener("DOMContentLoaded", () => {
       profileNameEl.textContent = displayName;
     }
     if (profileRoleEl) {
-      const roleText = profile.role
-        ? `${profile.role.charAt(0).toUpperCase()}${profile.role.slice(1)}`
-        : "Member";
+      const normalizedRole = String(profile.role || "").trim().toLowerCase();
+      const roleText =
+        normalizedRole === "teacher"
+          ? "Lecturer"
+          : normalizedRole
+          ? `${normalizedRole.charAt(0).toUpperCase()}${normalizedRole.slice(1)}`
+          : "Member";
       profileRoleEl.textContent = roleText;
     }
     if (displayNameInput) {

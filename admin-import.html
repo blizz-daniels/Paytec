@@ -29,9 +29,9 @@
     <main class="container">
       <section class="page-title">
         <h1>Roster CSV Import</h1>
-        <p>Upload CSV files to provision student and teacher accounts.</p>
-        <p>Required columns: students (matric_number,surname,name), teachers (teacher_code,surname,name).</p>
-        <p>The <code>name</code> column powers the greeting on the student home page and now also the teacher dashboard.</p>
+        <p>Upload CSV files to provision student and lecturer accounts.</p>
+        <p>Required columns: students (matric_number,surname,name), lecturers (lecturer_code,surname,name).</p>
+        <p>The <code>name</code> column powers the greeting on the student home page and now also the lecturer dashboard.</p>
       </section>
 
       <section class="grid two-col">
@@ -63,15 +63,15 @@
         </article>
 
         <article class="card">
-          <h2>Import Teacher Roster</h2>
-          <p id="teacherImportStatus" class="auth-subtitle"></p>
-          <form id="teacherImportForm" class="auth-form">
-            <label for="teacherCsv">Teacher CSV File</label>
-            <input id="teacherCsv" name="teacherCsv" type="file" accept=".csv,text/csv" required />
+          <h2>Import Lecturer Roster</h2>
+          <p id="lecturerImportStatus" class="auth-subtitle"></p>
+          <form id="lecturerImportForm" class="auth-form">
+            <label for="lecturerCsv">Lecturer CSV File</label>
+            <input id="lecturerCsv" name="lecturerCsv" type="file" accept=".csv,text/csv" required />
             <div class="cta-row">
-              <button id="teacherPreviewButton" type="button" class="btn btn-secondary">Preview Teachers</button>
-              <button type="submit" class="btn">Import Teachers</button>
-              <button id="teacherDownloadReport" type="button" class="btn" hidden>Download Report</button>
+              <button id="lecturerPreviewButton" type="button" class="btn btn-secondary">Preview Lecturers</button>
+              <button type="submit" class="btn">Import Lecturers</button>
+              <button id="lecturerDownloadReport" type="button" class="btn" hidden>Download Report</button>
             </div>
           </form>
           <div class="table-wrap" style="margin-top: 0.75rem;">
@@ -84,7 +84,7 @@
                   <th>Message</th>
                 </tr>
               </thead>
-              <tbody id="teacherImportRows"></tbody>
+              <tbody id="lecturerImportRows"></tbody>
             </table>
           </div>
         </article>

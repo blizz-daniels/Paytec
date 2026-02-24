@@ -96,9 +96,9 @@ function arrangeSidebarNav() {
   }
 }
 
-async function toggleTeacherLinks() {
-  const teacherLinks = document.querySelectorAll('[data-role-link="teacher"]');
-  if (!teacherLinks.length) {
+async function toggleLecturerLinks() {
+  const lecturerLinks = document.querySelectorAll('[data-role-link="lecturer"]');
+  if (!lecturerLinks.length) {
     return;
   }
 
@@ -109,12 +109,12 @@ async function toggleTeacherLinks() {
     }
 
     const user = await response.json();
-    const canSeeTeacherLink = user && (user.role === 'teacher' || user.role === 'admin');
-    if (!canSeeTeacherLink) {
+    const canSeeLecturerLink = user && (user.role === 'teacher' || user.role === 'admin');
+    if (!canSeeLecturerLink) {
       return;
     }
 
-    teacherLinks.forEach((link) => {
+    lecturerLinks.forEach((link) => {
       link.hidden = false;
     });
   } catch (_err) {
@@ -122,7 +122,7 @@ async function toggleTeacherLinks() {
   }
 }
 
-toggleTeacherLinks();
+toggleLecturerLinks();
 
 (function initThemeToggle() {
   const storageKey = "campuspay-theme";

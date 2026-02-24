@@ -19,5 +19,5 @@ services:
         generateValue: true
       - key: STUDENT_ROSTER_PATH
         value: /opt/render/project/src/data/students.csv
-      - key: TEACHER_ROSTER_PATH
+      - key: LECTURER_ROSTER_PATH
         value: /opt/render/project/src/data/teachers.csv

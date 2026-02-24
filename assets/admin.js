@@ -89,7 +89,7 @@ async function loadAdminStats() {
     const stats = await response.json();
     setText("totalUsers", stats.totalUsers || 0);
     setText("totalStudents", stats.totalStudents || 0);
-    setText("totalTeachers", stats.totalTeachers || 0);
+    setText("totalLecturers", stats.totalLecturers ?? stats.totalTeachers ?? 0);
     setText("totalAdmins", stats.totalAdmins || 0);
     setText("totalLogins", stats.totalLogins || 0);
     setText("uniqueLoggedInUsers", stats.uniqueLoggedInUsers || 0);

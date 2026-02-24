@@ -217,13 +217,13 @@ bindImportSection({
 });
 
 bindImportSection({
-  role: "teachers",
-  formId: "teacherImportForm",
-  inputId: "teacherCsv",
-  statusId: "teacherImportStatus",
-  rowsId: "teacherImportRows",
-  previewButtonId: "teacherPreviewButton",
-  reportButtonId: "teacherDownloadReport",
-  previewEndpoint: "/api/admin/import/teachers/preview",
-  importEndpoint: "/api/admin/import/teachers",
+  role: "lecturers",
+  formId: "lecturerImportForm",
+  inputId: "lecturerCsv",
+  statusId: "lecturerImportStatus",
+  rowsId: "lecturerImportRows",
+  previewButtonId: "lecturerPreviewButton",
+  reportButtonId: "lecturerDownloadReport",
+  previewEndpoint: "/api/admin/import/lecturers/preview",
+  importEndpoint: "/api/admin/import/lecturers",
 });

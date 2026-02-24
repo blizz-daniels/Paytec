@@ -34,7 +34,7 @@ const contentState = {
   filters: {
     query: "",
     category: "",
-    teacher: "",
+    lecturer: "",
     urgency: "all",
     dateFrom: "",
   },
@@ -117,7 +117,7 @@ function normalizeForFilter(item, type) {
 
 function passesFilters(item, type) {
   const normalized = normalizeForFilter(item, type);
-  const { query, category, teacher, urgency, dateFrom } = contentState.filters;
+  const { query, category, lecturer, urgency, dateFrom } = contentState.filters;
 
   if (query && !normalized.searchText.includes(query.toLowerCase())) {
     return false;
@@ -125,7 +125,7 @@ function passesFilters(item, type) {
   if (category && normalized.category !== category) {
     return false;
   }
-  if (teacher && normalized.createdBy !== teacher) {
+  if (lecturer && normalized.createdBy !== lecturer) {
     return false;
   }
   if (urgency === "urgent" && !normalized.isUrgent) {
@@ -579,7 +579,7 @@ function refreshFilterChoices() {
   const page = document.body.dataset.page;
   const sources = getPageSources(page);
   const categories = new Set();
-  const teachers = new Set();
+  const lecturers = new Set();
 
   sources.forEach((source) => {
     source.items.forEach((item) => {
@@ -588,7 +588,7 @@ function refreshFilterChoices() {
         categories.add(normalized.category);
       }
       if (normalized.createdBy) {
-        teachers.add(normalized.createdBy);
+        lecturers.add(normalized.createdBy);
       }
     });
   });
@@ -599,18 +599,18 @@ function refreshFilterChoices() {
     "All categories"
   );
   setSelectOptions(
-    document.getElementById("filterTeacher"),
-    Array.from(teachers).sort((a, b) => a.localeCompare(b)),
-    "All teachers"
+    document.getElementById("filterLecturer"),
+    Array.from(lecturers).sort((a, b) => a.localeCompare(b)),
+    "All lecturers"
   );
 
   const categoryNode = document.getElementById("filterCategory");
-  const teacherNode = document.getElementById("filterTeacher");
+  const lecturerNode = document.getElementById("filterLecturer");
   if (categoryNode) {
     categoryNode.value = contentState.filters.category;
   }
-  if (teacherNode) {
-    teacherNode.value = contentState.filters.teacher;
+  if (lecturerNode) {
+    lecturerNode.value = contentState.filters.lecturer;
   }
 }
 
@@ -670,9 +670,9 @@ function bindFilterBar() {
         </select>
       </label>
       <label>
-        Teacher
-        <select id="filterTeacher">
-          <option value="">All teachers</option>
+        Lecturer
+        <select id="filterLecturer">
+          <option value="">All lecturers</option>
         </select>
       </label>
       <label>
@@ -697,7 +697,7 @@ function bindFilterBar() {
 
   const searchNode = document.getElementById("filterSearch");
   const categoryNode = document.getElementById("filterCategory");
-  const teacherNode = document.getElementById("filterTeacher");
+  const lecturerNode = document.getElementById("filterLecturer");
   const dateNode = document.getElementById("filterDateFrom");
   const urgencyNode = document.getElementById("filterUrgency");
   const resetNode = document.getElementById("filterReset");
@@ -714,9 +714,9 @@ function bindFilterBar() {
       renderPageFromState();
     });
   }
-  if (teacherNode) {
-    teacherNode.addEventListener("change", () => {
-      contentState.filters.teacher = teacherNode.value;
+  if (lecturerNode) {
+    lecturerNode.addEventListener("change", () => {
+      contentState.filters.lecturer = lecturerNode.value;
       renderPageFromState();
     });
   }
@@ -736,7 +736,7 @@ function bindFilterBar() {
     resetNode.addEventListener("click", () => {
       contentState.filters.query = "";
       contentState.filters.category = "";
-      contentState.filters.teacher = "";
+      contentState.filters.lecturer = "";
       contentState.filters.urgency = "all";
       contentState.filters.dateFrom = "";
       if (searchNode) {
@@ -745,8 +745,8 @@ function bindFilterBar() {
       if (categoryNode) {
         categoryNode.value = "";
       }
-      if (teacherNode) {
-        teacherNode.value = "";
+      if (lecturerNode) {
+        lecturerNode.value = "";
       }
       if (urgencyNode) {
         urgencyNode.value = "all";
