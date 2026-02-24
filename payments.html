@@ -160,6 +160,22 @@
             </div>
           </form>
         </article>
+
+        <article class="card">
+          <h2>Verify Paystack Reference</h2>
+          <p id="verifyPaystackStatus" class="auth-subtitle">Use this when a successful Paystack payment has not reflected yet.</p>
+          <form id="verifyPaystackForm" class="auth-form">
+            <label for="verifyPaystackReference">Paystack reference</label>
+            <input
+              id="verifyPaystackReference"
+              type="text"
+              maxlength="120"
+              placeholder="e.g. 7PVGX8MEK85"
+              required
+            />
+            <button id="verifyPaystackButton" type="submit" class="btn">Verify Reference</button>
+          </form>
+        </article>
       </section>
 
       <section id="receiptQueueSection" class="card" style="margin-top: 1rem;" hidden>

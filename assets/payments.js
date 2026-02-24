@@ -835,6 +835,55 @@ function bindStatementManagement() {
   }
 }
 
+function bindPaystackReferenceVerify() {
+  const form = document.getElementById("verifyPaystackForm");
+  const referenceInput = document.getElementById("verifyPaystackReference");
+  if (!form || !referenceInput) {
+    return;
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const reference = String(referenceInput.value || "").trim();
+    if (!reference) {
+      setPaymentStatus("verifyPaystackStatus", "Enter a Paystack reference first.", true);
+      return;
+    }
+
+    const submitButton = form.querySelector('button[type="submit"]');
+    setButtonBusy(submitButton, true, "Verifying...");
+    setPaymentStatus("verifyPaystackStatus", `Verifying ${reference}...`, false);
+    const loadingToast = window.showToast
+      ? window.showToast("Verifying Paystack reference...", { type: "loading", sticky: true })
+      : null;
+
+    try {
+      const payload = await requestJson("/api/payments/paystack/verify", {
+        method: "POST",
+        payload: { reference },
+      });
+      const status = String(payload?.status || "unknown");
+      const transactionId = Number(payload?.transaction_id || 0);
+      const summary = transactionId > 0 ? `Transaction #${transactionId}` : "Transaction";
+      setPaymentStatus("verifyPaystackStatus", `${summary} status: ${status}.`, false);
+      if (window.showToast) {
+        window.showToast("Paystack reference verified.", { type: "success" });
+      }
+      await Promise.all([loadQueue(), loadReconciliationSummary()]);
+    } catch (err) {
+      setPaymentStatus("verifyPaystackStatus", err.message || "Could not verify Paystack reference.", true);
+      if (window.showToast) {
+        window.showToast(err.message || "Could not verify Paystack reference.", { type: "error" });
+      }
+    } finally {
+      setButtonBusy(submitButton, false, "");
+      if (loadingToast) {
+        loadingToast.close();
+      }
+    }
+  });
+}
+
 function bindPaymentItemsManagement() {
   const form = document.getElementById("paymentItemForm");
   const rows = document.getElementById("paymentItemRows");
@@ -1208,6 +1257,7 @@ async function initPaymentsPage() {
     if (reviewSection) reviewSection.hidden = false;
     if (queueSection) queueSection.hidden = false;
     bindStatementManagement();
+    bindPaystackReferenceVerify();
     bindPaymentItemsManagement();
     bindQueueActions();
     bindBulkActions();
