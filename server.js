@@ -3432,13 +3432,16 @@ function mapPaystackSessionStatusFromTransactionStatus(transactionStatus) {
   if (normalized === "approved") {
     return "approved";
   }
-  if (!normalized || normalized === "unmatched" || normalized === "needs_review" || normalized === "needs_student_confirmation") {
-    return "failed";
+  if (!normalized) {
+    return "pending_webhook";
+  }
+  if (normalized === "needs_review" || normalized === "needs_student_confirmation" || normalized === "unmatched") {
+    return "under_review";
   }
   if (normalized === "duplicate" || normalized === "rejected") {
     return "failed";
   }
-  return "failed";
+  return "under_review";
 }
 
 function getPaystackSystemRequest() {

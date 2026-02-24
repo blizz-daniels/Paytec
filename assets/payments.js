@@ -33,6 +33,62 @@ function formatMoney(value, currency = "NGN") {
   return `${safeCurrency} ${amount.toFixed(2)}`;
 }
 
+function normalizePaystackSessionState(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized === "pending" || normalized === "processing") {
+    return "pending_webhook";
+  }
+  return normalized;
+}
+
+function formatPaystackCheckoutStatusMessage(status, reference = "") {
+  const state = normalizePaystackSessionState(status);
+  const refPart = reference ? ` (${reference})` : "";
+  if (state === "approved") {
+    return {
+      text: `Paystack payment${refPart} is confirmed and approved.`,
+      isError: false,
+      toastType: "success",
+    };
+  }
+  if (state === "under_review") {
+    return {
+      text: `Paystack payment${refPart} was received and is under review.`,
+      isError: false,
+      toastType: "warning",
+    };
+  }
+  if (state === "failed") {
+    return {
+      text: `Paystack payment${refPart} could not be confirmed yet.`,
+      isError: true,
+      toastType: "error",
+    };
+  }
+  if (state === "pending_webhook") {
+    return {
+      text: `Paystack checkout${refPart} returned. Waiting for webhook confirmation.`,
+      isError: false,
+      toastType: "warning",
+    };
+  }
+  if (state === "initiated") {
+    return {
+      text: `Paystack checkout${refPart} was initiated.`,
+      isError: false,
+      toastType: "warning",
+    };
+  }
+  return {
+    text: `Paystack status: ${state || "unknown"}${refPart}.`,
+    isError: false,
+    toastType: "warning",
+  };
+}
+
 function statusBadge(status) {
   const normalized = String(status || "").toLowerCase();
   if (normalized === "approved") {
@@ -77,13 +133,16 @@ function sourceBadge(source) {
 }
 
 function paystackStateBadge(item) {
-  const explicitState = String(item?.paystack_state || "").toLowerCase();
+  const explicitState = normalizePaystackSessionState(item?.paystack_state);
   const obligationStatus = String(item?.obligation_status || "").toLowerCase();
   if (obligationStatus === "paid" || obligationStatus === "overpaid") {
     return '<span class="status-badge status-badge--success">approved</span>';
   }
   if (explicitState === "approved") {
     return '<span class="status-badge status-badge--success">approved</span>';
+  }
+  if (explicitState === "under_review") {
+    return '<span class="status-badge status-badge--warning">under review</span>';
   }
   if (explicitState === "failed") {
     return '<span class="status-badge status-badge--error">failed</span>';
@@ -180,7 +239,168 @@ const paymentState = {
   selectedQueueIds: new Set(),
   statementInfo: null,
   reconciliationSummary: null,
+  paystack: {
+    pollTimer: null,
+    pollAttempts: 0,
+    maxAttempts: 20,
+    pollEveryMs: 6000,
+  },
 };
+
+function getPaystackStatusStorageKey(kind) {
+  const username = String(paymentState?.me?.username || "anonymous")
+    .trim()
+    .toLowerCase();
+  return `paytec:paystack:${username}:${kind}`;
+}
+
+function persistLatestPaystackStatus(status, reference = "") {
+  if (!window.sessionStorage) {
+    return;
+  }
+  const normalizedStatus = normalizePaystackSessionState(status);
+  if (!normalizedStatus) {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(getPaystackStatusStorageKey("status"), normalizedStatus);
+    window.sessionStorage.setItem(getPaystackStatusStorageKey("reference"), String(reference || ""));
+    window.sessionStorage.setItem(getPaystackStatusStorageKey("updated_at"), String(Date.now()));
+  } catch (_err) {
+    // Ignore storage failures.
+  }
+}
+
+function readLatestPaystackStatus() {
+  if (!window.sessionStorage) {
+    return null;
+  }
+  try {
+    const status = window.sessionStorage.getItem(getPaystackStatusStorageKey("status")) || "";
+    const reference = window.sessionStorage.getItem(getPaystackStatusStorageKey("reference")) || "";
+    const updatedAtRaw = window.sessionStorage.getItem(getPaystackStatusStorageKey("updated_at")) || "";
+    const updatedAt = Number(updatedAtRaw || 0);
+    if (!status) {
+      return null;
+    }
+    return {
+      status: normalizePaystackSessionState(status),
+      reference: String(reference || "").trim(),
+      updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+function stopPaystackLedgerPolling() {
+  if (paymentState.paystack.pollTimer) {
+    window.clearInterval(paymentState.paystack.pollTimer);
+    paymentState.paystack.pollTimer = null;
+  }
+  paymentState.paystack.pollAttempts = 0;
+}
+
+function shouldKeepPollingPaystack(ledger) {
+  const items = ledger && Array.isArray(ledger.items) ? ledger.items : [];
+  const hasPendingInLedger = items.some((item) => {
+    const state = normalizePaystackSessionState(item?.paystack_state);
+    return state === "pending_webhook" || state === "initiated";
+  });
+  if (hasPendingInLedger) {
+    return true;
+  }
+  const latest = readLatestPaystackStatus();
+  if (!latest) {
+    return false;
+  }
+  const isPending = latest.status === "pending_webhook" || latest.status === "initiated";
+  if (!isPending) {
+    return false;
+  }
+  const ageMs = Date.now() - Number(latest.updatedAt || 0);
+  return ageMs <= 1000 * 60 * 20;
+}
+
+function startPaystackLedgerPollingIfNeeded() {
+  if (paymentState?.me?.role !== "student") {
+    return;
+  }
+  if (!shouldKeepPollingPaystack(paymentState.ledger)) {
+    stopPaystackLedgerPolling();
+    return;
+  }
+  if (paymentState.paystack.pollTimer) {
+    return;
+  }
+  paymentState.paystack.pollAttempts = 0;
+  paymentState.paystack.pollTimer = window.setInterval(async () => {
+    paymentState.paystack.pollAttempts += 1;
+    if (paymentState.paystack.pollAttempts > paymentState.paystack.maxAttempts) {
+      stopPaystackLedgerPolling();
+      const latest = readLatestPaystackStatus();
+      if (latest && (latest.status === "pending_webhook" || latest.status === "initiated")) {
+        const message = formatPaystackCheckoutStatusMessage(latest.status, latest.reference);
+        setPaymentStatus(
+          "paystackCheckoutStatus",
+          `${message.text} If this takes too long, contact a lecturer with the reference.`,
+          false
+        );
+      }
+      return;
+    }
+    try {
+      await loadStudentLedger();
+    } catch (_err) {
+      // Keep polling until attempts are exhausted.
+    }
+  }, paymentState.paystack.pollEveryMs);
+}
+
+function pickMostRelevantPaystackLedgerItem(ledger) {
+  const items = ledger && Array.isArray(ledger.items) ? ledger.items : [];
+  if (!items.length) {
+    return null;
+  }
+  const scoreByState = {
+    pending_webhook: 60,
+    initiated: 50,
+    approved: 40,
+    under_review: 30,
+    failed: 20,
+  };
+  let best = null;
+  let bestScore = -1;
+  items.forEach((item) => {
+    const obligationStatus = String(item?.obligation_status || "").toLowerCase();
+    const state =
+      obligationStatus === "paid" || obligationStatus === "overpaid"
+        ? "approved"
+        : normalizePaystackSessionState(item?.paystack_state);
+    const hasRef = String(item?.paystack_reference || "").trim().length > 0;
+    const score = Number(scoreByState[state] || 0) + (hasRef ? 5 : 0);
+    if (score > bestScore) {
+      best = { state, reference: String(item?.paystack_reference || "").trim() };
+      bestScore = score;
+    }
+  });
+  return bestScore > 0 ? best : null;
+}
+
+function syncPaystackCheckoutStatusFromLedger(ledger) {
+  const candidate = pickMostRelevantPaystackLedgerItem(ledger);
+  if (candidate && candidate.state) {
+    persistLatestPaystackStatus(candidate.state, candidate.reference);
+    const message = formatPaystackCheckoutStatusMessage(candidate.state, candidate.reference);
+    setPaymentStatus("paystackCheckoutStatus", message.text, message.isError);
+    return;
+  }
+  const latest = readLatestPaystackStatus();
+  if (latest && latest.status) {
+    const message = formatPaystackCheckoutStatusMessage(latest.status, latest.reference);
+    setPaymentStatus("paystackCheckoutStatus", message.text, message.isError);
+  }
+}
 
 function parseVerificationNotes(row) {
   try {
@@ -300,6 +520,10 @@ function renderReminderCalendar(ledger) {
         <div class="details-tile__field">
           <p class="details-tile__label">Paystack state</p>
           <p class="details-tile__value">${paystackStateBadge(item)}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Paystack reference</p>
+          <p class="details-tile__value">${escapeHtml(item.paystack_reference || "-")}</p>
         </div>
       </div>
       <div class="details-tile__actions">${actionHtml}</div>
@@ -509,6 +733,8 @@ async function loadStudentLedger() {
   renderLedger(paymentState.ledger);
   renderReminderCalendar(paymentState.ledger);
   renderPaymentTimeline(paymentState.ledger);
+  syncPaystackCheckoutStatusFromLedger(paymentState.ledger);
+  startPaystackLedgerPollingIfNeeded();
 }
 
 function applyPaystackCallbackStatusFromQuery() {
@@ -518,13 +744,12 @@ function applyPaystackCallbackStatusFromQuery() {
   if (!paystackStatus) {
     return;
   }
-  const statusMessage =
-    paystackStatus === "pending_webhook"
-      ? `Paystack checkout${paystackReference ? ` (${paystackReference})` : ""} returned. Waiting for webhook confirmation.`
-      : `Paystack status: ${paystackStatus}${paystackReference ? ` (${paystackReference})` : ""}.`;
-  setPaymentStatus("paystackCheckoutStatus", statusMessage, paystackStatus === "failed");
+  persistLatestPaystackStatus(paystackStatus, paystackReference);
+  const message = formatPaystackCheckoutStatusMessage(paystackStatus, paystackReference);
+  setPaymentStatus("paystackCheckoutStatus", message.text, message.isError);
+  startPaystackLedgerPollingIfNeeded();
   if (window.showToast) {
-    window.showToast(statusMessage, { type: paystackStatus === "failed" ? "error" : "warning" });
+    window.showToast(message.text, { type: message.toastType });
   }
   params.delete("paystack_status");
   params.delete("paystack_reference");
