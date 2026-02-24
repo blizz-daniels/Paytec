@@ -1061,6 +1061,25 @@ async function initDatabase() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS paystack_reference_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      student_username TEXT NOT NULL,
+      obligation_id INTEGER,
+      reference TEXT NOT NULL,
+      normalized_reference TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      result_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      resolved_at TEXT,
+      resolved_by TEXT,
+      resolved_by_role TEXT,
+      FOREIGN KEY (obligation_id) REFERENCES payment_obligations(id) ON UPDATE CASCADE ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS payment_matches (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       obligation_id INTEGER,
@@ -1139,6 +1158,9 @@ async function initDatabase() {
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_paystack_sessions_student ON paystack_sessions(student_id)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_paystack_sessions_status ON paystack_sessions(status)");
   await runMigrationSql("CREATE UNIQUE INDEX IF NOT EXISTS idx_paystack_sessions_reference ON paystack_sessions(gateway_reference)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_paystack_ref_requests_student ON paystack_reference_requests(student_username)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_paystack_ref_requests_status ON paystack_reference_requests(status)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_paystack_ref_requests_reference ON paystack_reference_requests(normalized_reference)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_matches_obligation ON payment_matches(obligation_id)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_matches_decision ON payment_matches(decision)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_reconciliation_exceptions_reason ON reconciliation_exceptions(reason)");
@@ -3520,6 +3542,254 @@ async function updatePaystackSessionStatusByReference(reference, nextStatus, pay
   return get("SELECT * FROM paystack_sessions WHERE id = ? LIMIT 1", [existing.id]);
 }
 
+function normalizePaystackReferenceRequestStatus(value, fallback = "pending") {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "pending" || normalized === "verified" || normalized === "failed") {
+    return normalized;
+  }
+  return fallback;
+}
+
+function formatPaystackReferenceRequestRow(row) {
+  if (!row) {
+    return null;
+  }
+  return {
+    id: Number(row.id || 0),
+    student_username: String(row.student_username || ""),
+    obligation_id: parseResourceId(row.obligation_id),
+    payment_item_id: parseResourceId(row.payment_item_id),
+    payment_item_title: String(row.payment_item_title || ""),
+    payment_item_owner: String(row.payment_item_owner || ""),
+    reference: String(row.reference || ""),
+    note: String(row.note || ""),
+    status: normalizePaystackReferenceRequestStatus(row.status),
+    result: parseJsonObject(row.result_json || "{}", {}),
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+    resolved_at: row.resolved_at || null,
+    resolved_by: row.resolved_by || null,
+    resolved_by_role: row.resolved_by_role || null,
+  };
+}
+
+async function getPaystackReferenceRequestDetailsById(id) {
+  const requestId = parseResourceId(id);
+  if (!requestId) {
+    return null;
+  }
+  const row = await get(
+    `
+      SELECT
+        prr.*,
+        po.payment_item_id,
+        pi.title AS payment_item_title,
+        pi.created_by AS payment_item_owner
+      FROM paystack_reference_requests prr
+      LEFT JOIN payment_obligations po ON po.id = prr.obligation_id
+      LEFT JOIN payment_items pi ON pi.id = po.payment_item_id
+      WHERE prr.id = ?
+      LIMIT 1
+    `,
+    [requestId]
+  );
+  return formatPaystackReferenceRequestRow(row);
+}
+
+async function updatePaystackReferenceRequestById(id, input = {}) {
+  const requestId = parseResourceId(id);
+  if (!requestId) {
+    return null;
+  }
+  const status = normalizePaystackReferenceRequestStatus(input.status, "pending");
+  const result =
+    input.result && typeof input.result === "object" && !Array.isArray(input.result)
+      ? input.result
+      : {};
+  const resultJson = JSON.stringify(result);
+  const shouldResolve = status !== "pending";
+  const resolvedBy = shouldResolve
+    ? normalizeIdentifier(input.resolvedBy || "").slice(0, 80) || "system-paystack"
+    : null;
+  const resolvedByRole = shouldResolve
+    ? String(input.resolvedByRole || "")
+        .trim()
+        .toLowerCase()
+        .slice(0, 40) || "system-paystack"
+    : null;
+  await run(
+    `
+      UPDATE paystack_reference_requests
+      SET status = ?,
+          result_json = ?,
+          resolved_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END,
+          resolved_by = ?,
+          resolved_by_role = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+    [status, resultJson, shouldResolve ? 1 : 0, resolvedBy, resolvedByRole, requestId]
+  );
+  return getPaystackReferenceRequestDetailsById(requestId);
+}
+
+async function resolvePendingPaystackReferenceRequestsByReference(reference, input = {}) {
+  const normalizedReference = normalizeReference(reference);
+  if (!normalizedReference) {
+    return [];
+  }
+  const rows = await all(
+    `
+      SELECT id
+      FROM paystack_reference_requests
+      WHERE normalized_reference = ?
+        AND status = 'pending'
+      ORDER BY id ASC
+    `,
+    [normalizedReference]
+  );
+  const updates = [];
+  for (const row of rows) {
+    const updated = await updatePaystackReferenceRequestById(row.id, input);
+    if (updated) {
+      updates.push(updated);
+    }
+  }
+  return updates;
+}
+
+async function listPaystackReferenceRequests(options = {}) {
+  const filters = [];
+  const params = [];
+  const status = normalizePaystackReferenceRequestStatus(options.status, "all");
+  if (status !== "all") {
+    filters.push("prr.status = ?");
+    params.push(status);
+  }
+  const studentUsername = normalizeIdentifier(options.studentUsername || "");
+  if (studentUsername) {
+    filters.push("prr.student_username = ?");
+    params.push(studentUsername);
+  }
+  const whereSql = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const requestedLimit = Number.parseInt(options.limit, 10);
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 500)) : 200;
+  const rows = await all(
+    `
+      SELECT
+        prr.*,
+        po.payment_item_id,
+        pi.title AS payment_item_title,
+        pi.created_by AS payment_item_owner
+      FROM paystack_reference_requests prr
+      LEFT JOIN payment_obligations po ON po.id = prr.obligation_id
+      LEFT JOIN payment_items pi ON pi.id = po.payment_item_id
+      ${whereSql}
+      ORDER BY
+        CASE
+          WHEN prr.status = 'pending' THEN 0
+          WHEN prr.status = 'failed' THEN 1
+          ELSE 2
+        END ASC,
+        prr.created_at DESC,
+        prr.id DESC
+      LIMIT ?
+    `,
+    params.concat(limit)
+  );
+  return rows.map((row) => formatPaystackReferenceRequestRow(row));
+}
+
+async function verifyAndIngestPaystackReference(reference, options = {}) {
+  const safeReference = sanitizeTransactionRef(reference || "");
+  if (!safeReference) {
+    const err = new Error("A Paystack reference is required.");
+    err.status = 400;
+    err.code = "paystack_verify_reference_required";
+    throw err;
+  }
+  if (!paystackClient.hasSecretKey) {
+    const err = new Error("Paystack is not configured on this server.");
+    err.status = 503;
+    err.code = "paystack_verify_not_configured";
+    throw err;
+  }
+
+  const verifyPayload = await paystackClient.verifyTransaction(safeReference);
+  const verifyData = verifyPayload?.data || {};
+  const gatewayStatus = String(verifyData.status || "")
+    .trim()
+    .toLowerCase();
+  if (gatewayStatus !== "success") {
+    const err = new Error(`Paystack transaction is ${gatewayStatus || "not successful"}.`);
+    err.status = 409;
+    err.code = "paystack_verify_not_successful";
+    err.gateway_status = gatewayStatus || null;
+    throw err;
+  }
+
+  const normalized = normalizePaystackTransactionForIngestion(
+    {
+      id: `verify-${verifyData.id || safeReference}`,
+      event: "charge.success",
+      data: verifyData,
+    },
+    {
+      sourceEventId: `paystack-verify-${String(verifyData.id || safeReference).trim().slice(0, 120)}`,
+    }
+  );
+  if (!normalized) {
+    const err = new Error("Could not normalize verified Paystack transaction.");
+    err.status = 400;
+    err.code = "paystack_verify_invalid_payload";
+    throw err;
+  }
+
+  const actorReq = options.actorReq || getPaystackSystemRequest();
+  const ingest = await ingestNormalizedTransaction(normalized.payload, {
+    actorReq,
+    allowAutoApprove: true,
+  });
+  if (!ingest.ok) {
+    const err = new Error(ingest.error || "Could not ingest verified transaction.");
+    err.status = 400;
+    err.code = "paystack_verify_ingest_failed";
+    throw err;
+  }
+
+  const transactionId = parseResourceId(ingest.transaction?.id);
+  const transaction = transactionId ? await getReconciliationTransactionById(transactionId) : ingest.transaction || null;
+  const nextSessionStatus = mapPaystackSessionStatusFromTransactionStatus(transaction?.status);
+  const gatewayReference = sanitizeTransactionRef(normalized.gatewayReference || safeReference);
+  const existingSession = await get("SELECT * FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [gatewayReference]);
+  if (existingSession) {
+    const verifiedBy =
+      String(options.verifiedBy || actorReq?.session?.user?.username || "")
+        .trim()
+        .slice(0, 80) || "system-paystack";
+    const verifiedByRole =
+      String(options.verifiedByRole || actorReq?.session?.user?.role || "")
+        .trim()
+        .slice(0, 40) || "system-paystack";
+    await updatePaystackSessionStatusByReference(gatewayReference, nextSessionStatus, {
+      verified_at: new Date().toISOString(),
+      verified_by: verifiedBy,
+      verified_by_role: verifiedByRole,
+      transaction_id: transaction?.id || null,
+    });
+  }
+
+  return {
+    reference: gatewayReference,
+    gatewayStatus,
+    ingest,
+    transaction,
+    sessionStatus: nextSessionStatus,
+  };
+}
+
 function reconciliationDecisionFromStatus(statusValue) {
   const status = String(statusValue || "").toLowerCase();
   if (status === "approved") return "approved";
@@ -5280,6 +5550,160 @@ app.get("/api/payments/paystack/callback", async (req, res) => {
   return res.redirect(`/payments.html?${params.toString()}`);
 });
 
+app.post("/api/payments/paystack/reference-requests", requireStudent, async (req, res) => {
+  const reference = sanitizeTransactionRef(req.body?.reference || "");
+  if (!reference) {
+    return res.status(400).json({
+      error: "A Paystack reference is required.",
+      code: "paystack_reference_request_reference_required",
+    });
+  }
+
+  const studentUsername = normalizeIdentifier(req.session?.user?.username || "");
+  if (!studentUsername) {
+    return res.status(401).json({
+      error: "Authentication required.",
+      code: "paystack_reference_request_auth_required",
+    });
+  }
+  const note = String(req.body?.note || "")
+    .trim()
+    .slice(0, 500);
+  let obligationId = parseResourceId(req.body?.obligationId);
+
+  try {
+    if (obligationId) {
+      const obligation = await get("SELECT id, student_username FROM payment_obligations WHERE id = ? LIMIT 1", [obligationId]);
+      if (!obligation) {
+        return res.status(404).json({
+          error: "Payment obligation not found.",
+          code: "paystack_reference_request_obligation_not_found",
+        });
+      }
+      if (normalizeIdentifier(obligation.student_username) !== studentUsername) {
+        return res.status(403).json({
+          error: "You can only post references for your own payment obligations.",
+          code: "paystack_reference_request_forbidden",
+        });
+      }
+    } else {
+      const paystackSession = await get(
+        `
+          SELECT obligation_id
+          FROM paystack_sessions
+          WHERE gateway_reference = ?
+            AND student_id = ?
+          ORDER BY updated_at DESC, id DESC
+          LIMIT 1
+        `,
+        [reference, studentUsername]
+      );
+      obligationId = parseResourceId(paystackSession?.obligation_id);
+    }
+
+    const normalizedReference = normalizeReference(reference);
+    const existingPending = await get(
+      `
+        SELECT id
+        FROM paystack_reference_requests
+        WHERE student_username = ?
+          AND normalized_reference = ?
+          AND status = 'pending'
+        ORDER BY id DESC
+        LIMIT 1
+      `,
+      [studentUsername, normalizedReference]
+    );
+    if (existingPending?.id) {
+      const existingRequest = await getPaystackReferenceRequestDetailsById(existingPending.id);
+      return res.status(200).json({
+        ok: true,
+        duplicate: true,
+        request: existingRequest,
+      });
+    }
+
+    await run(
+      `
+        INSERT INTO paystack_reference_requests (
+          student_username,
+          obligation_id,
+          reference,
+          normalized_reference,
+          note,
+          status,
+          result_json,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, 'pending', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `,
+      [studentUsername, obligationId || null, reference, normalizedReference, note]
+    );
+    const inserted = await get("SELECT last_insert_rowid() AS id");
+    const requestRow = await getPaystackReferenceRequestDetailsById(inserted?.id);
+    return res.status(201).json({
+      ok: true,
+      request: requestRow,
+    });
+  } catch (_err) {
+    return res.status(500).json({
+      error: "Could not post Paystack reference request.",
+      code: "paystack_reference_request_create_failed",
+    });
+  }
+});
+
+app.get("/api/my/payments/paystack/reference-requests", requireStudent, async (req, res) => {
+  try {
+    const status = String(req.query?.status || "all").trim().toLowerCase();
+    const items = await listPaystackReferenceRequests({
+      status,
+      studentUsername: req.session.user.username,
+      limit: req.query?.limit,
+    });
+    return res.json({ items });
+  } catch (_err) {
+    return res.status(500).json({
+      error: "Could not load your Paystack reference requests.",
+      code: "paystack_reference_request_list_failed",
+    });
+  }
+});
+
+async function handlePaystackReferenceRequestList(req, res) {
+  try {
+    const status = String(req.query?.status || "all").trim().toLowerCase();
+    const items = await listPaystackReferenceRequests({
+      status,
+      limit: req.query?.limit,
+    });
+    return res.json({ items });
+  } catch (_err) {
+    return res.status(500).json({
+      error: "Could not load Paystack reference requests.",
+      code: "paystack_reference_request_list_failed",
+    });
+  }
+}
+
+app.get(
+  [
+    "/api/lecturer/paystack-reference-requests",
+    "/api/teacher/paystack-reference-requests",
+    "/api/lecturer/payments/paystack/reference-requests",
+    "/api/teacher/payments/paystack/reference-requests",
+  ],
+  requireTeacher,
+  async (req, res) => {
+    return handlePaystackReferenceRequestList(req, res);
+  }
+);
+
+app.get(["/api/admin/paystack-reference-requests", "/api/admin/payments/paystack/reference-requests"], requireAdmin, async (req, res) => {
+  return handlePaystackReferenceRequestList(req, res);
+});
+
 app.post("/api/payments/webhook/paystack", async (req, res) => {
   try {
     if (!PAYSTACK_WEBHOOK_SECRET) {
@@ -5472,78 +5896,183 @@ app.post("/api/payments/paystack/verify", async (req, res) => {
       code: "paystack_verify_reference_required",
     });
   }
-  if (!paystackClient.hasSecretKey) {
-    return res.status(503).json({
-      error: "Paystack is not configured on this server.",
-      code: "paystack_verify_not_configured",
-    });
-  }
   try {
-    const verifyPayload = await paystackClient.verifyTransaction(reference);
-    const verifyData = verifyPayload?.data || {};
-    const gatewayStatus = String(verifyData.status || "").trim().toLowerCase();
-    if (gatewayStatus !== "success") {
-      return res.status(409).json({
-        error: `Paystack transaction is ${gatewayStatus || "not successful"}.`,
-        code: "paystack_verify_not_successful",
-        gateway_status: gatewayStatus || null,
-      });
-    }
-
-    const normalized = normalizePaystackTransactionForIngestion(
-      {
-        id: `verify-${verifyData.id || reference}`,
-        event: "charge.success",
-        data: verifyData,
-      },
-      {
-        sourceEventId: `paystack-verify-${String(verifyData.id || reference).trim().slice(0, 120)}`,
-      }
-    );
-    if (!normalized) {
-      return res.status(400).json({
-        error: "Could not normalize verified Paystack transaction.",
-        code: "paystack_verify_invalid_payload",
-      });
-    }
-
-    const ingest = await ingestNormalizedTransaction(normalized.payload, {
+    const actorUsername = isInternalJob ? "system-paystack" : req.session?.user?.username || "unknown";
+    const actorRole = isInternalJob ? "system-paystack" : req.session?.user?.role || "unknown";
+    const result = await verifyAndIngestPaystackReference(reference, {
       actorReq: isInternalJob ? getPaystackSystemRequest() : req,
-      allowAutoApprove: true,
+      verifiedBy: actorUsername,
+      verifiedByRole: actorRole,
     });
-    if (!ingest.ok) {
-      return res.status(400).json({
-        error: ingest.error || "Could not ingest verified transaction.",
-        code: "paystack_verify_ingest_failed",
-      });
-    }
-
-    const transactionId = parseResourceId(ingest.transaction?.id);
-    const transaction = transactionId ? await getReconciliationTransactionById(transactionId) : ingest.transaction || null;
-    const nextSessionStatus = mapPaystackSessionStatusFromTransactionStatus(transaction?.status);
-    const existingSession = await get("SELECT * FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [reference]);
-    if (existingSession) {
-      await updatePaystackSessionStatusByReference(reference, nextSessionStatus, {
-        verified_at: new Date().toISOString(),
-        verified_by: isInternalJob ? "system-paystack" : req.session?.user?.username || "unknown",
-        verified_by_role: isInternalJob ? "system-paystack" : req.session?.user?.role || "unknown",
-        transaction_id: transaction?.id || null,
-      });
-    }
+    const resultPayload = {
+      verified_at: new Date().toISOString(),
+      reference: result.reference,
+      transaction_id: result.transaction?.id || null,
+      status: result.transaction?.status || null,
+      gateway_status: result.gatewayStatus,
+      idempotent: !!result.ingest?.idempotent,
+      inserted: !!result.ingest?.inserted,
+      session_status: result.sessionStatus || null,
+    };
+    await resolvePendingPaystackReferenceRequestsByReference(result.reference, {
+      status: "verified",
+      resolvedBy: actorUsername,
+      resolvedByRole: actorRole,
+      result: resultPayload,
+    });
 
     return res.status(200).json({
       ok: true,
-      inserted: !!ingest.inserted,
-      idempotent: !!ingest.idempotent,
-      transaction_id: transaction?.id || null,
-      status: transaction?.status || null,
-      gateway_status: gatewayStatus,
+      inserted: !!result.ingest?.inserted,
+      idempotent: !!result.ingest?.idempotent,
+      transaction_id: result.transaction?.id || null,
+      status: result.transaction?.status || null,
+      gateway_status: result.gatewayStatus,
+      reference: result.reference,
+      session_status: result.sessionStatus || null,
     });
   } catch (err) {
     const normalizedError = normalizePaystackError(err, "paystack_verify_failed");
     return res.status(normalizedError.status).json({
       error: normalizedError.message,
       code: normalizedError.code,
+    });
+  }
+});
+
+app.post("/api/payments/paystack/reference-requests/bulk-verify", requireTeacher, async (req, res) => {
+  const ids = parseReceiptIdList(req.body?.requestIds, 200);
+  if (!ids.length) {
+    return res.status(400).json({
+      error: "At least one Paystack reference request must be selected.",
+      code: "paystack_reference_request_bulk_empty",
+    });
+  }
+
+  try {
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = await all(
+      `
+        SELECT id, reference, status
+        FROM paystack_reference_requests
+        WHERE id IN (${placeholders})
+      `,
+      ids
+    );
+    const rowsById = new Map(rows.map((row) => [Number(row.id || 0), row]));
+    const verificationCache = new Map();
+    const results = [];
+    const actorUsername = req.session?.user?.username || "unknown";
+    const actorRole = req.session?.user?.role || "teacher";
+
+    for (const requestId of ids) {
+      const row = rowsById.get(requestId);
+      if (!row) {
+        results.push({
+          id: requestId,
+          ok: false,
+          error: "Reference request not found.",
+          code: "paystack_reference_request_not_found",
+        });
+        continue;
+      }
+      if (normalizePaystackReferenceRequestStatus(row.status) === "verified") {
+        const updated = await getPaystackReferenceRequestDetailsById(requestId);
+        results.push({
+          id: requestId,
+          ok: true,
+          skipped: true,
+          status: "verified",
+          transaction_id: updated?.result?.transaction_id || null,
+        });
+        continue;
+      }
+
+      const normalizedReference = normalizeReference(row.reference);
+      let verification = verificationCache.get(normalizedReference);
+      if (!verification) {
+        try {
+          const verifyResult = await verifyAndIngestPaystackReference(row.reference, {
+            actorReq: req,
+            verifiedBy: actorUsername,
+            verifiedByRole: actorRole,
+          });
+          verification = { ok: true, verifyResult };
+        } catch (err) {
+          verification = { ok: false, err };
+        }
+        verificationCache.set(normalizedReference, verification);
+      }
+
+      if (verification.ok) {
+        const verifyResult = verification.verifyResult;
+        const successPayload = {
+          verified_at: new Date().toISOString(),
+          reference: verifyResult.reference,
+          transaction_id: verifyResult.transaction?.id || null,
+          status: verifyResult.transaction?.status || null,
+          gateway_status: verifyResult.gatewayStatus,
+          idempotent: !!verifyResult.ingest?.idempotent,
+          inserted: !!verifyResult.ingest?.inserted,
+          session_status: verifyResult.sessionStatus || null,
+        };
+        await updatePaystackReferenceRequestById(requestId, {
+          status: "verified",
+          resolvedBy: actorUsername,
+          resolvedByRole: actorRole,
+          result: successPayload,
+        });
+        await resolvePendingPaystackReferenceRequestsByReference(verifyResult.reference, {
+          status: "verified",
+          resolvedBy: actorUsername,
+          resolvedByRole: actorRole,
+          result: successPayload,
+        });
+        results.push({
+          id: requestId,
+          ok: true,
+          status: "verified",
+          reference: verifyResult.reference,
+          transaction_id: verifyResult.transaction?.id || null,
+        });
+      } else {
+        const normalizedError = normalizePaystackError(verification.err, "paystack_verify_failed");
+        const failedPayload = {
+          failed_at: new Date().toISOString(),
+          error: normalizedError.message,
+          code: normalizedError.code,
+          gateway_status: verification.err?.gateway_status || null,
+        };
+        await updatePaystackReferenceRequestById(requestId, {
+          status: "failed",
+          resolvedBy: actorUsername,
+          resolvedByRole: actorRole,
+          result: failedPayload,
+        });
+        results.push({
+          id: requestId,
+          ok: false,
+          status: "failed",
+          reference: String(row.reference || ""),
+          error: normalizedError.message,
+          code: normalizedError.code,
+          gateway_status: verification.err?.gateway_status || null,
+        });
+      }
+    }
+
+    const successCount = results.filter((entry) => entry.ok).length;
+    return res.json({
+      ok: true,
+      total: results.length,
+      successCount,
+      failureCount: results.length - successCount,
+      results,
+    });
+  } catch (_err) {
+    return res.status(500).json({
+      error: "Could not bulk verify Paystack reference requests.",
+      code: "paystack_reference_request_bulk_failed",
     });
   }
 });

@@ -57,6 +57,28 @@
         </article>
 
         <article class="card">
+          <h2>Webhook Fallback</h2>
+          <p id="postPaystackReferenceStatus" class="auth-subtitle">
+            If your Paystack payment remains pending, post the reference directly to lecturers for manual verification.
+          </p>
+          <form id="postPaystackReferenceForm" class="auth-form">
+            <label for="postPaystackReferenceInput">Paystack reference</label>
+            <input id="postPaystackReferenceInput" type="text" maxlength="120" placeholder="e.g. 7PVGX8MEK85" required />
+
+            <label for="postPaystackReferenceNote">Note (optional)</label>
+            <textarea
+              id="postPaystackReferenceNote"
+              rows="2"
+              maxlength="300"
+              placeholder="e.g. Payment completed but still waiting for webhook confirmation."
+            ></textarea>
+
+            <button id="postPaystackReferenceButton" type="submit" class="btn btn-secondary">Post Reference to Lecturer</button>
+          </form>
+          <div id="myPaystackReferenceRequestRows" class="details-tile-list" aria-live="polite"></div>
+        </article>
+
+        <article class="card">
           <h2>Payment Timeline</h2>
           <p class="auth-subtitle">Recent reconciliation status updates.</p>
           <div class="table-wrap">
@@ -175,6 +197,34 @@
             />
             <button id="verifyPaystackButton" type="submit" class="btn">Verify Reference</button>
           </form>
+        </article>
+
+        <article class="card" style="grid-column: 1 / -1;">
+          <h2>Paystack Reference Requests</h2>
+          <p id="paystackReferenceRequestsStatus" class="auth-subtitle">
+            Posted by students when webhook confirmation is delayed.
+          </p>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th><input id="paystackReferenceRequestsSelectAll" type="checkbox" aria-label="Select all paystack reference requests" /></th>
+                  <th>Requested</th>
+                  <th>Student</th>
+                  <th>Item</th>
+                  <th>Reference</th>
+                  <th>Note</th>
+                  <th>Status</th>
+                  <th>Result</th>
+                </tr>
+              </thead>
+              <tbody id="paystackReferenceRequestRows"></tbody>
+            </table>
+          </div>
+          <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-top:0.65rem;">
+            <button id="verifySelectedPaystackRequestsButton" type="button" class="btn">Verify Selected References</button>
+            <button id="refreshPaystackRequestsButton" type="button" class="btn btn-secondary">Refresh Requests</button>
+          </div>
         </article>
       </section>
 

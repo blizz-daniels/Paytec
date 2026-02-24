@@ -156,6 +156,50 @@ function paystackStateBadge(item) {
   return '<span class="status-badge">not started</span>';
 }
 
+function normalizePaystackReferenceRequestStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "pending" || normalized === "verified" || normalized === "failed") {
+    return normalized;
+  }
+  return "pending";
+}
+
+function paystackReferenceRequestStatusBadge(statusValue) {
+  const status = normalizePaystackReferenceRequestStatus(statusValue);
+  if (status === "verified") {
+    return '<span class="status-badge status-badge--success">verified</span>';
+  }
+  if (status === "failed") {
+    return '<span class="status-badge status-badge--error">failed</span>';
+  }
+  return '<span class="status-badge status-badge--warning">pending</span>';
+}
+
+function formatPaystackReferenceRequestResult(result) {
+  if (!result || typeof result !== "object") {
+    return "-";
+  }
+  if (result.error) {
+    return String(result.error);
+  }
+  const transactionId = Number(result.transaction_id || 0);
+  const status = String(result.status || "").trim().toLowerCase();
+  if (transactionId > 0) {
+    if (status) {
+      return `Txn #${transactionId} (${status})`;
+    }
+    return `Txn #${transactionId}`;
+  }
+  if (status) {
+    return status;
+  }
+  const gatewayStatus = String(result.gateway_status || "").trim().toLowerCase();
+  if (gatewayStatus) {
+    return `Gateway: ${gatewayStatus}`;
+  }
+  return "-";
+}
+
 function reminderBadge(level, text) {
   const normalized = String(level || "").toLowerCase();
   if (normalized === "overdue") {
@@ -229,6 +273,9 @@ const paymentState = {
   paymentItems: [],
   myReceipts: [],
   ledger: null,
+  myPaystackReferenceRequests: [],
+  paystackReferenceRequests: [],
+  selectedPaystackReferenceRequestIds: new Set(),
   queueRows: [],
   queuePagination: {
     page: 1,
@@ -343,7 +390,7 @@ function startPaystackLedgerPollingIfNeeded() {
         const message = formatPaystackCheckoutStatusMessage(latest.status, latest.reference);
         setPaymentStatus(
           "paystackCheckoutStatus",
-          `${message.text} If this takes too long, contact a lecturer with the reference.`,
+          `${message.text} If this takes too long, use Post Reference to Lecturer.`,
           false
         );
       }
@@ -399,6 +446,28 @@ function syncPaystackCheckoutStatusFromLedger(ledger) {
   if (latest && latest.status) {
     const message = formatPaystackCheckoutStatusMessage(latest.status, latest.reference);
     setPaymentStatus("paystackCheckoutStatus", message.text, message.isError);
+  }
+}
+
+function syncPostPaystackReferenceInputFromLatest() {
+  const referenceInput = document.getElementById("postPaystackReferenceInput");
+  if (!(referenceInput instanceof HTMLInputElement)) {
+    return;
+  }
+  const hasManualValue = String(referenceInput.value || "").trim().length > 0;
+  if (hasManualValue) {
+    return;
+  }
+  const latest = readLatestPaystackStatus();
+  const latestReference = String(latest?.reference || "").trim();
+  if (latestReference) {
+    referenceInput.value = latestReference;
+    return;
+  }
+  const bestLedgerItem = pickMostRelevantPaystackLedgerItem(paymentState.ledger);
+  const ledgerReference = String(bestLedgerItem?.reference || "").trim();
+  if (ledgerReference) {
+    referenceInput.value = ledgerReference;
   }
 }
 
@@ -601,6 +670,86 @@ function renderMyReceipts(rows) {
   });
 }
 
+function renderMyPaystackReferenceRequests(rows) {
+  const container = document.getElementById("myPaystackReferenceRequestRows");
+  if (!container) {
+    return;
+  }
+  container.innerHTML = "";
+  if (!Array.isArray(rows) || !rows.length) {
+    container.innerHTML = '<p class="details-tile-list__empty">No posted Paystack references yet.</p>';
+    return;
+  }
+  rows.forEach((row) => {
+    const tile = document.createElement("article");
+    tile.className = "details-tile";
+    tile.innerHTML = `
+      <div class="details-tile__fields">
+        <div class="details-tile__field">
+          <p class="details-tile__label">Reference</p>
+          <p class="details-tile__value">${escapeHtml(row.reference || "-")}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Status</p>
+          <p class="details-tile__value">${paystackReferenceRequestStatusBadge(row.status)}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Posted</p>
+          <p class="details-tile__value">${escapeHtml(formatDate(row.created_at))}</p>
+        </div>
+        <div class="details-tile__field">
+          <p class="details-tile__label">Result</p>
+          <p class="details-tile__value">${escapeHtml(formatPaystackReferenceRequestResult(row.result || {}))}</p>
+        </div>
+        <div class="details-tile__field details-tile__field--full">
+          <p class="details-tile__label">Note</p>
+          <p class="details-tile__value details-tile__value--normal">${escapeHtml(row.note || "-")}</p>
+        </div>
+      </div>
+    `;
+    container.appendChild(tile);
+  });
+}
+
+function renderPaystackReferenceRequests(rows) {
+  const tbody = document.getElementById("paystackReferenceRequestRows");
+  const selectAllNode = document.getElementById("paystackReferenceRequestsSelectAll");
+  if (!tbody) {
+    return;
+  }
+  tbody.innerHTML = "";
+  if (!Array.isArray(rows) || !rows.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="color:#636b8a;">No Paystack reference requests found.</td></tr>';
+    if (selectAllNode) {
+      selectAllNode.checked = false;
+    }
+    return;
+  }
+
+  rows.forEach((row) => {
+    const id = Number(row.id || 0);
+    const checkedAttr = paymentState.selectedPaystackReferenceRequestIds.has(id) ? "checked" : "";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><input type="checkbox" class="paystack-ref-request-select-row" data-id="${id}" ${checkedAttr} /></td>
+      <td>${escapeHtml(formatDate(row.created_at || ""))}</td>
+      <td>${escapeHtml(row.student_username || "-")}</td>
+      <td>${escapeHtml(row.payment_item_title || "-")}</td>
+      <td>${escapeHtml(row.reference || "-")}</td>
+      <td>${escapeHtml(row.note || "-")}</td>
+      <td>${paystackReferenceRequestStatusBadge(row.status)}</td>
+      <td>${escapeHtml(formatPaystackReferenceRequestResult(row.result || {}))}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  if (selectAllNode) {
+    const selectableRows = rows.length;
+    const selectedCount = rows.filter((row) => paymentState.selectedPaystackReferenceRequestIds.has(Number(row.id || 0))).length;
+    selectAllNode.checked = selectableRows > 0 && selectedCount === selectableRows;
+  }
+}
+
 function renderPaymentItemsTable(items) {
   const container = document.getElementById("paymentItemRows");
   if (!container || !paymentState.me) {
@@ -734,7 +883,31 @@ async function loadStudentLedger() {
   renderReminderCalendar(paymentState.ledger);
   renderPaymentTimeline(paymentState.ledger);
   syncPaystackCheckoutStatusFromLedger(paymentState.ledger);
+  syncPostPaystackReferenceInputFromLatest();
   startPaystackLedgerPollingIfNeeded();
+}
+
+async function loadStudentPaystackReferenceRequests() {
+  const payload = await requestJson("/api/my/payments/paystack/reference-requests");
+  paymentState.myPaystackReferenceRequests = Array.isArray(payload?.items) ? payload.items : [];
+  renderMyPaystackReferenceRequests(paymentState.myPaystackReferenceRequests);
+}
+
+async function loadPaystackReferenceRequests() {
+  if (!paymentState.me || (paymentState.me.role !== "teacher" && paymentState.me.role !== "admin")) {
+    return;
+  }
+  const endpoint =
+    paymentState.me.role === "admin"
+      ? "/api/admin/paystack-reference-requests"
+      : "/api/lecturer/paystack-reference-requests";
+  const payload = await requestJson(endpoint);
+  paymentState.paystackReferenceRequests = Array.isArray(payload?.items) ? payload.items : [];
+  const validIds = new Set(paymentState.paystackReferenceRequests.map((row) => Number(row.id || 0)));
+  paymentState.selectedPaystackReferenceRequestIds = new Set(
+    [...paymentState.selectedPaystackReferenceRequestIds].filter((id) => validIds.has(id))
+  );
+  renderPaystackReferenceRequests(paymentState.paystackReferenceRequests);
 }
 
 function applyPaystackCallbackStatusFromQuery() {
@@ -747,6 +920,7 @@ function applyPaystackCallbackStatusFromQuery() {
   persistLatestPaystackStatus(paystackStatus, paystackReference);
   const message = formatPaystackCheckoutStatusMessage(paystackStatus, paystackReference);
   setPaymentStatus("paystackCheckoutStatus", message.text, message.isError);
+  syncPostPaystackReferenceInputFromLatest();
   startPaystackLedgerPollingIfNeeded();
   if (window.showToast) {
     window.showToast(message.text, { type: message.toastType });
@@ -968,6 +1142,75 @@ function bindStudentSubmit() {
   });
 }
 
+function bindPostPaystackReferenceForm() {
+  const form = document.getElementById("postPaystackReferenceForm");
+  const referenceInput = document.getElementById("postPaystackReferenceInput");
+  const noteInput = document.getElementById("postPaystackReferenceNote");
+  if (!form || !(referenceInput instanceof HTMLInputElement)) {
+    return;
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const reference = String(referenceInput.value || "").trim();
+    if (!reference) {
+      setPaymentStatus("postPaystackReferenceStatus", "Enter a Paystack reference first.", true);
+      return;
+    }
+
+    const payload = {
+      reference,
+      note: noteInput instanceof HTMLTextAreaElement ? String(noteInput.value || "").trim() : "",
+    };
+    const ledgerItems = Array.isArray(paymentState?.ledger?.items) ? paymentState.ledger.items : [];
+    const matchedItem = ledgerItems.find(
+      (item) => String(item?.paystack_reference || "").trim().toLowerCase() === reference.toLowerCase()
+    );
+    if (matchedItem?.obligation_id) {
+      payload.obligationId = matchedItem.obligation_id;
+    }
+
+    const submitButton = form.querySelector('button[type="submit"]');
+    setButtonBusy(submitButton, true, "Posting...");
+    setPaymentStatus("postPaystackReferenceStatus", `Posting ${reference} to lecturer queue...`, false);
+    const loadingToast = window.showToast
+      ? window.showToast("Posting Paystack reference to lecturer queue...", { type: "loading", sticky: true })
+      : null;
+    try {
+      const response = await requestJson("/api/payments/paystack/reference-requests", {
+        method: "POST",
+        payload,
+      });
+      const postedRequest = response?.request || null;
+      const duplicate = !!response?.duplicate;
+      const statusText = duplicate
+        ? `Reference ${reference} is already pending in lecturer queue.`
+        : `Reference ${reference} was posted to lecturer queue.`;
+      setPaymentStatus("postPaystackReferenceStatus", statusText, false);
+      if (window.showToast) {
+        window.showToast(statusText, { type: duplicate ? "warning" : "success" });
+      }
+      if (!duplicate && noteInput instanceof HTMLTextAreaElement) {
+        noteInput.value = "";
+      }
+      if (postedRequest?.reference) {
+        referenceInput.value = postedRequest.reference;
+      }
+      await loadStudentPaystackReferenceRequests();
+    } catch (err) {
+      setPaymentStatus("postPaystackReferenceStatus", err.message || "Could not post Paystack reference.", true);
+      if (window.showToast) {
+        window.showToast(err.message || "Could not post Paystack reference.", { type: "error" });
+      }
+    } finally {
+      setButtonBusy(submitButton, false, "");
+      if (loadingToast) {
+        loadingToast.close();
+      }
+    }
+  });
+}
+
 function bindStatementManagement() {
   const form = document.getElementById("statementUploadForm");
   const deleteButton = document.getElementById("deleteStatementButton");
@@ -1094,7 +1337,7 @@ function bindPaystackReferenceVerify() {
       if (window.showToast) {
         window.showToast("Paystack reference verified.", { type: "success" });
       }
-      await Promise.all([loadQueue(), loadReconciliationSummary()]);
+      await Promise.all([loadQueue(), loadReconciliationSummary(), loadPaystackReferenceRequests()]);
     } catch (err) {
       setPaymentStatus("verifyPaystackStatus", err.message || "Could not verify Paystack reference.", true);
       if (window.showToast) {
@@ -1244,6 +1487,123 @@ function bindPaymentItemsManagement() {
 
 function getSelectedQueueIds() {
   return paymentState.queueRows.filter((row) => paymentState.selectedQueueIds.has(row.id)).map((row) => row.id);
+}
+
+function getSelectedPaystackReferenceRequestIds() {
+  return paymentState.paystackReferenceRequests
+    .filter((row) => paymentState.selectedPaystackReferenceRequestIds.has(Number(row.id || 0)))
+    .map((row) => Number(row.id || 0))
+    .filter((id) => Number.isFinite(id) && id > 0);
+}
+
+function bindPaystackReferenceRequestActions() {
+  const tableBody = document.getElementById("paystackReferenceRequestRows");
+  const selectAllNode = document.getElementById("paystackReferenceRequestsSelectAll");
+  const verifyButton = document.getElementById("verifySelectedPaystackRequestsButton");
+  const refreshButton = document.getElementById("refreshPaystackRequestsButton");
+
+  if (selectAllNode) {
+    selectAllNode.addEventListener("change", () => {
+      if (selectAllNode.checked) {
+        paymentState.paystackReferenceRequests.forEach((row) => {
+          const id = Number(row.id || 0);
+          if (id > 0) {
+            paymentState.selectedPaystackReferenceRequestIds.add(id);
+          }
+        });
+      } else {
+        paymentState.selectedPaystackReferenceRequestIds.clear();
+      }
+      renderPaystackReferenceRequests(paymentState.paystackReferenceRequests);
+    });
+  }
+
+  if (tableBody) {
+    tableBody.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement) || !target.classList.contains("paystack-ref-request-select-row")) {
+        return;
+      }
+      const id = Number.parseInt(target.dataset.id || "", 10);
+      if (!Number.isFinite(id) || id <= 0) {
+        return;
+      }
+      if (target.checked) {
+        paymentState.selectedPaystackReferenceRequestIds.add(id);
+      } else {
+        paymentState.selectedPaystackReferenceRequestIds.delete(id);
+      }
+      renderPaystackReferenceRequests(paymentState.paystackReferenceRequests);
+    });
+  }
+
+  if (refreshButton) {
+    refreshButton.addEventListener("click", async () => {
+      setButtonBusy(refreshButton, true, "Refreshing...");
+      try {
+        await loadPaystackReferenceRequests();
+        setPaymentStatus("paystackReferenceRequestsStatus", "Paystack reference requests refreshed.", false);
+      } catch (err) {
+        setPaymentStatus("paystackReferenceRequestsStatus", err.message || "Could not refresh requests.", true);
+        if (window.showToast) {
+          window.showToast(err.message || "Could not refresh requests.", { type: "error" });
+        }
+      } finally {
+        setButtonBusy(refreshButton, false, "");
+      }
+    });
+  }
+
+  if (verifyButton) {
+    verifyButton.addEventListener("click", async () => {
+      const selectedIds = getSelectedPaystackReferenceRequestIds();
+      if (!selectedIds.length) {
+        setPaymentStatus("paystackReferenceRequestsStatus", "Select at least one request first.", true);
+        return;
+      }
+      setButtonBusy(verifyButton, true, "Verifying...");
+      setPaymentStatus(
+        "paystackReferenceRequestsStatus",
+        `Bulk verifying ${selectedIds.length} Paystack reference request(s)...`,
+        false
+      );
+      const loadingToast = window.showToast
+        ? window.showToast("Bulk verifying Paystack references...", { type: "loading", sticky: true })
+        : null;
+      try {
+        const result = await requestJson("/api/payments/paystack/reference-requests/bulk-verify", {
+          method: "POST",
+          payload: {
+            requestIds: selectedIds,
+          },
+        });
+        const failureCount = Number(result?.failureCount || 0);
+        const successCount = Number(result?.successCount || 0);
+        setPaymentStatus(
+          "paystackReferenceRequestsStatus",
+          `Bulk verify complete. Success: ${successCount}, Failed: ${failureCount}.`,
+          failureCount > 0
+        );
+        if (window.showToast) {
+          window.showToast(`Bulk verify complete. Success: ${successCount}, Failed: ${failureCount}.`, {
+            type: failureCount > 0 ? "warning" : "success",
+          });
+        }
+        paymentState.selectedPaystackReferenceRequestIds.clear();
+        await Promise.all([loadPaystackReferenceRequests(), loadQueue(), loadReconciliationSummary()]);
+      } catch (err) {
+        setPaymentStatus("paystackReferenceRequestsStatus", err.message || "Could not bulk verify references.", true);
+        if (window.showToast) {
+          window.showToast(err.message || "Could not bulk verify references.", { type: "error" });
+        }
+      } finally {
+        setButtonBusy(verifyButton, false, "");
+        if (loadingToast) {
+          loadingToast.close();
+        }
+      }
+    });
+  }
 }
 
 function bindBulkActions() {
@@ -1464,7 +1824,8 @@ async function initPaymentsPage() {
       if (queueSection) queueSection.remove();
       bindStudentSubmit();
       bindPaystackCheckoutActions();
-      await Promise.all([loadStudentReceipts(), loadStudentLedger()]);
+      bindPostPaystackReferenceForm();
+      await Promise.all([loadStudentReceipts(), loadStudentLedger(), loadStudentPaystackReferenceRequests()]);
       applyPaystackCallbackStatusFromQuery();
       if (paymentState.ledger && paymentState.ledger.summary && window.showToast) {
         const overdueCount = Number(paymentState.ledger.summary.overdueCount || 0);
@@ -1483,10 +1844,11 @@ async function initPaymentsPage() {
     if (queueSection) queueSection.hidden = false;
     bindStatementManagement();
     bindPaystackReferenceVerify();
+    bindPaystackReferenceRequestActions();
     bindPaymentItemsManagement();
     bindQueueActions();
     bindBulkActions();
-    await Promise.all([loadQueue(), loadStatementInfo(), loadReconciliationSummary()]);
+    await Promise.all([loadQueue(), loadStatementInfo(), loadReconciliationSummary(), loadPaystackReferenceRequests()]);
   } catch (err) {
     const errorNode = document.getElementById("paymentsError");
     if (errorNode) {
