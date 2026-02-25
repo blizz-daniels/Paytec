@@ -48,6 +48,10 @@ const receiptsDir = path.join(dataDir, "receipts");
 fs.mkdirSync(receiptsDir, { recursive: true });
 const approvedReceiptsDir = path.resolve(process.env.RECEIPT_OUTPUT_DIR || path.join(__dirname, "outputs", "receipts"));
 fs.mkdirSync(approvedReceiptsDir, { recursive: true });
+const RECEIPT_LEGACY_FALLBACK_MAX_BYTES = Number.parseInt(
+  String(process.env.RECEIPT_LEGACY_FALLBACK_MAX_BYTES || "1500"),
+  10
+);
 const statementsDir = path.join(dataDir, "statements");
 fs.mkdirSync(statementsDir, { recursive: true });
 const contentFilesDir = path.join(dataDir, "content-files");
@@ -303,6 +307,18 @@ function isPathInsideDirectory(baseDir, candidatePath) {
   const resolvedCandidate = path.resolve(String(candidatePath || ""));
   const relativeCheck = path.relative(resolvedBase, resolvedCandidate);
   return relativeCheck === "" || (!relativeCheck.startsWith("..") && !path.isAbsolute(relativeCheck));
+}
+
+function isLikelyLegacyPlainReceipt(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    const threshold = Number.isFinite(RECEIPT_LEGACY_FALLBACK_MAX_BYTES)
+      ? Math.max(400, RECEIPT_LEGACY_FALLBACK_MAX_BYTES)
+      : 1500;
+    return stat.isFile() && stat.size > 0 && stat.size <= threshold;
+  } catch (_err) {
+    return false;
+  }
 }
 
 function removeStoredContentFile(relativeUrl) {
@@ -4206,7 +4222,7 @@ function primaryExceptionReason(reasons, statusValue) {
   return "manual_review";
 }
 
-async function syncPaymentMatchAndExceptionRecords(transactionId, req, decidedByOverride) {
+async function syncPaymentMatchAndExceptionRecords(transactionId, req, decidedByOverride, options = {}) {
   const id = parseResourceId(transactionId);
   if (!id) {
     return;
@@ -4284,6 +4300,23 @@ async function syncPaymentMatchAndExceptionRecords(transactionId, req, decidedBy
     `,
     [matchRow.id]
   );
+
+  if (status === "approved" && !options.skipApprovedReceiptGeneration) {
+    const receiptGeneration = await ensureApprovedReceiptGeneratedForTransaction(id, {
+      actorReq:
+        req && req.session && req.session.user
+          ? req
+          : createSystemActorRequest("system-reconciliation", "system-reconciliation"),
+      reason: String(options.approvedReceiptReason || "approved_status_written").trim().slice(0, 120) || "approved_status_written",
+    });
+    if (!receiptGeneration.ok && receiptGeneration.attempted) {
+      console.error(
+        `[approved-receipts] status-based generation failed transaction_id=${id} reason=${
+          receiptGeneration.delivery?.error || receiptGeneration.reason || receiptGeneration.error || "unknown"
+        }`
+      );
+    }
+  }
 }
 
 async function reconcileTransactionById(transactionId, options = {}) {
@@ -4388,7 +4421,9 @@ async function reconcileTransactionById(transactionId, options = {}) {
     shouldAutoApprove ? "auto_approved" : "queued_for_review",
     shouldAutoApprove ? `Auto-approved with confidence ${best.score.toFixed(2)}` : `Queued for review (${best.score.toFixed(2)})`
   );
-  await syncPaymentMatchAndExceptionRecords(id, options.actorReq);
+  await syncPaymentMatchAndExceptionRecords(id, options.actorReq, null, {
+    approvedReceiptReason: shouldAutoApprove ? "auto_approved_transaction" : "",
+  });
   if (shouldAutoApprove) {
     const obligation = await recomputeObligationSnapshotById(best.obligation.id);
     if (obligation) {
@@ -4397,17 +4432,6 @@ async function reconcileTransactionById(transactionId, options = {}) {
         obligation.payment_item_id,
         "Payment auto-confirmed",
         `A transaction was auto-matched to ${best.obligation.payment_item_title || "your payment item"} and approved.`
-      );
-    }
-    const receiptGeneration = await ensureApprovedReceiptGeneratedForTransaction(id, {
-      actorReq: options.actorReq || createSystemActorRequest("system-reconciliation", "system-reconciliation"),
-      reason: "auto_approved_transaction",
-    });
-    if (!receiptGeneration.ok && receiptGeneration.attempted) {
-      console.error(
-        `[approved-receipts] auto-approve generation failed transaction_id=${id} reason=${
-          receiptGeneration.delivery?.error || receiptGeneration.reason || receiptGeneration.error || "unknown"
-        }`
       );
     }
   }
@@ -4847,7 +4871,9 @@ async function applyReconciliationReviewAction(req, transactionId, action, optio
       [matchedObligationId, Math.max(0.75, toSafeConfidence(tx.confidence, 0.75)), JSON.stringify(reasons), actor, id]
     );
     const obligation = await recomputeObligationSnapshotById(matchedObligationId);
-    await syncPaymentMatchAndExceptionRecords(id, req, actor);
+    await syncPaymentMatchAndExceptionRecords(id, req, actor, {
+      approvedReceiptReason: "manual_approved_transaction",
+    });
     await logReconciliationEvent(id, matchedObligationId, req, "manual_approve", options.note || "Manually approved.");
     if (obligation) {
       await createReconciliationStatusNotification(
@@ -4855,17 +4881,6 @@ async function applyReconciliationReviewAction(req, transactionId, action, optio
         obligation.payment_item_id,
         "Payment approved",
         "Your payment was approved by your reviewer."
-      );
-    }
-    const receiptGeneration = await ensureApprovedReceiptGeneratedForTransaction(id, {
-      actorReq: req || createSystemActorRequest("system-reconciliation", "system-reconciliation"),
-      reason: "manual_approved_transaction",
-    });
-    if (!receiptGeneration.ok && receiptGeneration.attempted) {
-      console.error(
-        `[approved-receipts] manual-approve generation failed transaction_id=${id} reason=${
-          receiptGeneration.delivery?.error || receiptGeneration.reason || receiptGeneration.error || "unknown"
-        }`
       );
     }
     return getReconciliationTransactionById(id);
@@ -5041,7 +5056,9 @@ async function migrateLegacyReceiptsToTransactions() {
   }
   const txRows = await all("SELECT id FROM payment_transactions WHERE source_event_id LIKE 'legacy-receipt-%'");
   for (const row of txRows) {
-    await syncPaymentMatchAndExceptionRecords(row.id, null, "system-migration");
+    await syncPaymentMatchAndExceptionRecords(row.id, null, "system-migration", {
+      skipApprovedReceiptGeneration: true,
+    });
   }
   await recomputeAllObligationSnapshots();
 }
@@ -7160,6 +7177,21 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
         if (delivery && (delivery.error || Number(delivery.failed || 0) > 0)) {
           console.error(
             `[approved-receipts] on-demand regeneration failed payment_receipt_id=${id} reason=${
+              delivery.error || "unknown"
+            }`
+          );
+        }
+        const dispatch = await getApprovedReceiptDispatchByReceiptId(id);
+        selectedPath = String(dispatch?.receipt_file_path || "").trim();
+      } else if (!refreshRequested && isLikelyLegacyPlainReceipt(absoluteApprovedPath)) {
+        const delivery = await triggerApprovedReceiptDispatchForReceipt(id, {
+          actorUsername: req.session?.user?.username || "system-download",
+          forceEnabled: true,
+          forceRegenerate: true,
+        });
+        if (delivery && (delivery.error || Number(delivery.failed || 0) > 0)) {
+          console.error(
+            `[approved-receipts] auto-upgrade regeneration failed payment_receipt_id=${id} reason=${
               delivery.error || "unknown"
             }`
           );

@@ -537,6 +537,312 @@ function buildFallbackReceiptLines(row, placeholders) {
   ];
 }
 
+function parseDataUriImage(input) {
+  const raw = String(input || "").trim();
+  const match = /^data:(image\/(?:png|jpe?g));base64,([a-z0-9+/=\s]+)$/i.exec(raw);
+  if (!match) {
+    return null;
+  }
+  try {
+    return {
+      mime: String(match[1] || "").toLowerCase(),
+      bytes: Buffer.from(String(match[2] || "").replace(/\s+/g, ""), "base64"),
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+function rgbFromHex(hex, rgb) {
+  const normalized = String(hex || "")
+    .trim()
+    .replace(/^#/, "");
+  if (!/^[\da-f]{6}$/i.test(normalized)) {
+    return rgb(0.1, 0.2, 0.3);
+  }
+  const int = Number.parseInt(normalized, 16);
+  const r = ((int >> 16) & 255) / 255;
+  const g = ((int >> 8) & 255) / 255;
+  const b = (int & 255) / 255;
+  return rgb(r, g, b);
+}
+
+function clampText(value, maxLength) {
+  const str = String(value || "").trim();
+  if (!str) {
+    return "-";
+  }
+  const limit = Number.isFinite(Number(maxLength)) ? Number(maxLength) : 64;
+  if (str.length <= limit) {
+    return str;
+  }
+  return `${str.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
+  const { PDFDocument, StandardFonts, rgb } = requireOptionalPackage("pdf-lib", "npm install pdf-lib");
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([A4_WIDTH_POINTS, A4_HEIGHT_POINTS]);
+  const width = page.getWidth();
+  const height = page.getHeight();
+  const margin = 28;
+  const cardX = margin;
+  const cardY = margin;
+  const cardW = width - margin * 2;
+  const cardH = height - margin * 2;
+  const headerH = 108;
+  const bodyTopY = cardY + cardH - headerH;
+
+  const colorPageBg = rgbFromHex("eef3f8", rgb);
+  const colorCardBg = rgbFromHex("ffffff", rgb);
+  const colorCardBorder = rgbFromHex("c8d2dd", rgb);
+  const colorHeader = rgbFromHex("1d3f61", rgb);
+  const colorAccent = rgbFromHex("f0f6fc", rgb);
+  const colorTitle = rgbFromHex("0f2339", rgb);
+  const colorText = rgbFromHex("27435f", rgb);
+  const colorMuted = rgbFromHex("55708b", rgb);
+  const colorLightText = rgbFromHex("f4f8fc", rgb);
+
+  page.drawRectangle({
+    x: 0,
+    y: 0,
+    width,
+    height,
+    color: colorPageBg,
+  });
+  page.drawRectangle({
+    x: cardX,
+    y: cardY,
+    width: cardW,
+    height: cardH,
+    color: colorCardBg,
+    borderColor: colorCardBorder,
+    borderWidth: 2,
+  });
+  page.drawRectangle({
+    x: cardX,
+    y: bodyTopY,
+    width: cardW,
+    height: headerH,
+    color: colorHeader,
+  });
+
+  const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const fontRegular = await doc.embedFont(StandardFonts.Helvetica);
+  const padX = cardX + 28;
+  const headerBaseY = bodyTopY + headerH - 34;
+
+  page.drawText("PAYTEC", {
+    x: padX,
+    y: headerBaseY + 3,
+    size: 18,
+    font: fontBold,
+    color: colorLightText,
+  });
+  page.drawText("Approved Student Receipt", {
+    x: padX + 92,
+    y: headerBaseY + 1,
+    size: 19,
+    font: fontBold,
+    color: colorLightText,
+  });
+  page.drawText("Official confirmation of approved payment", {
+    x: padX + 92,
+    y: headerBaseY - 19,
+    size: 10,
+    font: fontRegular,
+    color: colorLightText,
+  });
+
+  const metaX = cardX + cardW - 228;
+  page.drawText("Receipt No", {
+    x: metaX,
+    y: headerBaseY + 2,
+    size: 8.5,
+    font: fontRegular,
+    color: colorLightText,
+  });
+  page.drawText(clampText(placeholders?.receipt_no, 28), {
+    x: metaX,
+    y: headerBaseY - 13,
+    size: 10.5,
+    font: fontBold,
+    color: colorLightText,
+  });
+  page.drawText("Approval Date", {
+    x: metaX,
+    y: headerBaseY - 33,
+    size: 8.5,
+    font: fontRegular,
+    color: colorLightText,
+  });
+  page.drawText(clampText(placeholders?.approval_date, 24), {
+    x: metaX,
+    y: headerBaseY - 48,
+    size: 10.5,
+    font: fontBold,
+    color: colorLightText,
+  });
+
+  const photoW = 120;
+  const photoH = 146;
+  const photoX = cardX + cardW - photoW - 34;
+  const photoY = bodyTopY - photoH - 34;
+  page.drawRectangle({
+    x: photoX,
+    y: photoY,
+    width: photoW,
+    height: photoH,
+    color: colorAccent,
+    borderColor: colorCardBorder,
+    borderWidth: 1.2,
+  });
+
+  const parsedPhoto = parseDataUriImage(placeholders?.passport_photo);
+  if (parsedPhoto) {
+    try {
+      const embedded =
+        parsedPhoto.mime === "image/png"
+          ? await doc.embedPng(parsedPhoto.bytes)
+          : await doc.embedJpg(parsedPhoto.bytes);
+      page.drawImage(embedded, {
+        x: photoX + 5,
+        y: photoY + 5,
+        width: photoW - 10,
+        height: photoH - 10,
+      });
+    } catch (_err) {
+      page.drawText("Passport", {
+        x: photoX + 34,
+        y: photoY + 70,
+        size: 11,
+        font: fontBold,
+        color: colorMuted,
+      });
+      page.drawText("Photo", {
+        x: photoX + 44,
+        y: photoY + 53,
+        size: 11,
+        font: fontBold,
+        color: colorMuted,
+      });
+    }
+  } else {
+    page.drawText("Passport", {
+      x: photoX + 34,
+      y: photoY + 70,
+      size: 11,
+      font: fontBold,
+      color: colorMuted,
+    });
+    page.drawText("Photo", {
+      x: photoX + 44,
+      y: photoY + 53,
+      size: 11,
+      font: fontBold,
+      color: colorMuted,
+    });
+  }
+
+  const contentX = padX;
+  let contentY = bodyTopY - 40;
+  page.drawText(clampText(placeholders?.full_name || row?.student_username || "Student", 48), {
+    x: contentX,
+    y: contentY,
+    size: 21,
+    font: fontBold,
+    color: colorTitle,
+  });
+  contentY -= 35;
+
+  const details = [
+    ["Application ID", placeholders?.application_id || row?.payment_reference || row?.student_username || "-"],
+    ["Program", placeholders?.program || row?.payment_item_title || "-"],
+    ["Receipt No", placeholders?.receipt_no || row?.payment_receipt_id || row?.id || "-"],
+    ["Approval Date", placeholders?.approval_date || formatHumanDate(row?.reviewed_at || row?.submitted_at || new Date())],
+  ];
+  details.forEach(([label, value]) => {
+    page.drawText(`${label}:`, {
+      x: contentX,
+      y: contentY,
+      size: 10.2,
+      font: fontBold,
+      color: colorMuted,
+    });
+    page.drawText(clampText(value, 64), {
+      x: contentX + 94,
+      y: contentY,
+      size: 11,
+      font: fontRegular,
+      color: colorText,
+    });
+    contentY -= 20;
+  });
+
+  const amountBoxY = contentY - 8;
+  page.drawRectangle({
+    x: contentX,
+    y: amountBoxY,
+    width: 290,
+    height: 48,
+    color: colorAccent,
+    borderColor: colorCardBorder,
+    borderWidth: 1,
+  });
+  page.drawText("Amount Paid", {
+    x: contentX + 12,
+    y: amountBoxY + 30,
+    size: 9.5,
+    font: fontBold,
+    color: colorMuted,
+  });
+  page.drawText(clampText(placeholders?.amount_paid || formatMoney(row?.amount_paid, row?.currency || "NGN"), 28), {
+    x: contentX + 12,
+    y: amountBoxY + 12,
+    size: 16,
+    font: fontBold,
+    color: colorTitle,
+  });
+
+  const noteY = cardY + 118;
+  page.drawRectangle({
+    x: contentX,
+    y: noteY,
+    width: cardW - 56,
+    height: 66,
+    color: colorAccent,
+    borderColor: colorCardBorder,
+    borderWidth: 1,
+  });
+  page.drawText(
+    "This certifies that the payment linked to this application was reviewed and approved by the accounts office.",
+    {
+      x: contentX + 12,
+      y: noteY + 42,
+      size: 10.3,
+      font: fontRegular,
+      color: colorText,
+    }
+  );
+  page.drawText("Generated by Paytec Receipt Service", {
+    x: contentX + 12,
+    y: cardY + 72,
+    size: 9,
+    font: fontBold,
+    color: colorMuted,
+  });
+  page.drawText(`Generated: ${formatHumanDate(new Date())}`, {
+    x: contentX + 12,
+    y: cardY + 58,
+    size: 9,
+    font: fontRegular,
+    color: colorMuted,
+  });
+
+  const bytes = await doc.save();
+  return Buffer.from(bytes);
+}
+
 async function renderHtmlToImagePdf({ html, outputPdfPath, row, placeholders }) {
   let browser = null;
   const renderFailures = [];
@@ -600,17 +906,32 @@ async function renderHtmlToImagePdf({ html, outputPdfPath, row, placeholders }) 
       throw new Error(renderFailures.join(" | "));
     }
   } catch (err) {
-    const fallbackLines = buildFallbackReceiptLines(row, placeholders);
-    const fallbackPdf = buildSimpleReceiptPdfBuffer(fallbackLines);
-    await fs.promises.writeFile(outputPdfPath, fallbackPdf);
-    console.warn(
-      `[approved-receipts] renderer fallback used for ${path.basename(outputPdfPath)}: ${trimErrorMessage(err)}`
-    );
-    return {
-      method: "built_in_fallback",
-      usedFallback: true,
-      warning: trimErrorMessage(err),
-    };
+    const primaryError = trimErrorMessage(err);
+    try {
+      const styledFallbackPdf = await buildStyledFallbackReceiptPdfBuffer(row, placeholders);
+      await fs.promises.writeFile(outputPdfPath, styledFallbackPdf);
+      console.warn(
+        `[approved-receipts] styled fallback used for ${path.basename(outputPdfPath)}: ${primaryError}`
+      );
+      return {
+        method: "styled_pdf_lib_fallback",
+        usedFallback: true,
+        warning: primaryError,
+      };
+    } catch (fallbackErr) {
+      const fallbackLines = buildFallbackReceiptLines(row, placeholders);
+      const fallbackPdf = buildSimpleReceiptPdfBuffer(fallbackLines);
+      await fs.promises.writeFile(outputPdfPath, fallbackPdf);
+      const fallbackMessage = `${primaryError} | fallback failure: ${trimErrorMessage(fallbackErr)}`;
+      console.warn(
+        `[approved-receipts] renderer fallback used for ${path.basename(outputPdfPath)}: ${fallbackMessage}`
+      );
+      return {
+        method: "built_in_fallback",
+        usedFallback: true,
+        warning: fallbackMessage,
+      };
+    }
   } finally {
     if (browser) {
       try {
