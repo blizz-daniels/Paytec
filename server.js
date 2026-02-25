@@ -43,6 +43,8 @@ const usersDir = path.join(dataDir, "users");
 fs.mkdirSync(usersDir, { recursive: true });
 const receiptsDir = path.join(dataDir, "receipts");
 fs.mkdirSync(receiptsDir, { recursive: true });
+const approvedReceiptsDir = path.resolve(process.env.RECEIPT_OUTPUT_DIR || path.join(__dirname, "outputs", "receipts"));
+fs.mkdirSync(approvedReceiptsDir, { recursive: true });
 const statementsDir = path.join(dataDir, "statements");
 fs.mkdirSync(statementsDir, { recursive: true });
 const contentFilesDir = path.join(dataDir, "content-files");
@@ -287,6 +289,13 @@ function resolveStoredContentPath(relativeUrl) {
     return null;
   }
   return absolute;
+}
+
+function isPathInsideDirectory(baseDir, candidatePath) {
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedCandidate = path.resolve(String(candidatePath || ""));
+  const relativeCheck = path.relative(resolvedBase, resolvedCandidate);
+  return relativeCheck === "" || (!relativeCheck.startsWith("..") && !path.isAbsolute(relativeCheck));
 }
 
 function removeStoredContentFile(relativeUrl) {
@@ -999,6 +1008,23 @@ async function initDatabase() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS approved_receipt_dispatches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_receipt_id INTEGER NOT NULL UNIQUE,
+      student_username TEXT NOT NULL,
+      receipt_generated_at TEXT,
+      receipt_sent_at TEXT,
+      receipt_file_path TEXT,
+      receipt_sent INTEGER NOT NULL DEFAULT 0,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (payment_receipt_id) REFERENCES payment_receipts(id) ON UPDATE CASCADE ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS payment_obligations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       payment_item_id INTEGER NOT NULL,
@@ -1141,6 +1167,12 @@ async function initDatabase() {
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_receipts_status ON payment_receipts(status)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_receipts_item ON payment_receipts(payment_item_id)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_receipt_events_receipt ON payment_receipt_events(receipt_id)");
+  await runMigrationSql(
+    "CREATE INDEX IF NOT EXISTS idx_approved_receipt_dispatches_sent ON approved_receipt_dispatches(receipt_sent)"
+  );
+  await runMigrationSql(
+    "CREATE INDEX IF NOT EXISTS idx_approved_receipt_dispatches_receipt ON approved_receipt_dispatches(payment_receipt_id)"
+  );
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_obligations_student ON payment_obligations(student_username)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_obligations_item ON payment_obligations(payment_item_id)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_obligations_status ON payment_obligations(status)");
@@ -6444,12 +6476,20 @@ app.get("/api/my/payment-receipts", requireAuth, async (req, res) => {
           pr.reviewed_at,
           pr.rejection_reason,
           pr.verification_notes,
+          COALESCE(ard.receipt_sent, 0) AS approved_receipt_sent,
+          ard.receipt_generated_at AS approved_receipt_generated_at,
+          ard.receipt_sent_at AS approved_receipt_sent_at,
+          CASE
+            WHEN COALESCE(ard.receipt_sent, 0) = 1 AND COALESCE(ard.receipt_file_path, '') != '' THEN 1
+            ELSE 0
+          END AS approved_receipt_available,
           pi.title AS payment_item_title,
           pi.expected_amount,
           pi.currency,
           pi.due_date
         FROM payment_receipts pr
         JOIN payment_items pi ON pi.id = pr.payment_item_id
+        LEFT JOIN approved_receipt_dispatches ard ON ard.payment_receipt_id = pr.id
         WHERE pr.student_username = ?
         ORDER BY pr.submitted_at DESC, pr.id DESC
       `,
@@ -7087,12 +7127,25 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
   if (!id) {
     return res.status(400).json({ error: "Invalid receipt ID." });
   }
+  const requestedVariant = String(req.query.variant || "submitted")
+    .trim()
+    .toLowerCase();
+  if (requestedVariant !== "submitted" && requestedVariant !== "approved") {
+    return res.status(400).json({ error: "Invalid receipt variant." });
+  }
+  const wantsApprovedVariant = requestedVariant === "approved";
   try {
     const row = await get(
       `
-        SELECT id, student_username, receipt_file_path
-        FROM payment_receipts
-        WHERE id = ?
+        SELECT
+          pr.id,
+          pr.student_username,
+          pr.receipt_file_path,
+          COALESCE(ard.receipt_sent, 0) AS approved_receipt_sent,
+          ard.receipt_file_path AS approved_receipt_file_path
+        FROM payment_receipts pr
+        LEFT JOIN approved_receipt_dispatches ard ON ard.payment_receipt_id = pr.id
+        WHERE pr.id = ?
         LIMIT 1
       `,
       [id]
@@ -7107,14 +7160,23 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
     if (!canAccess) {
       return res.status(403).json({ error: "You do not have permission to view this receipt file." });
     }
-    if (!row.receipt_file_path) {
-      return res.status(404).json({ error: "No receipt file attached to this submission." });
+    if (wantsApprovedVariant && Number(row.approved_receipt_sent || 0) !== 1) {
+      return res.status(404).json({ error: "Approved receipt is not available yet." });
     }
-    const absolutePath = path.resolve(row.receipt_file_path);
-    const relativeFromReceipts = path.relative(receiptsDir, absolutePath);
-    const isInsideReceipts = relativeFromReceipts && !relativeFromReceipts.startsWith("..") && !path.isAbsolute(relativeFromReceipts);
-    if (!isInsideReceipts || !fs.existsSync(absolutePath)) {
-      return res.status(404).json({ error: "Receipt file is missing." });
+
+    const selectedPath = wantsApprovedVariant ? row.approved_receipt_file_path : row.receipt_file_path;
+    if (!selectedPath) {
+      return res.status(404).json({
+        error: wantsApprovedVariant ? "Approved receipt file is missing." : "No receipt file attached to this submission.",
+      });
+    }
+
+    const absolutePath = path.resolve(selectedPath);
+    const allowedBaseDir = wantsApprovedVariant ? approvedReceiptsDir : receiptsDir;
+    if (!isPathInsideDirectory(allowedBaseDir, absolutePath) || !fs.existsSync(absolutePath)) {
+      return res.status(404).json({
+        error: wantsApprovedVariant ? "Approved receipt file is missing." : "Receipt file is missing.",
+      });
     }
     return res.sendFile(absolutePath);
   } catch (_err) {

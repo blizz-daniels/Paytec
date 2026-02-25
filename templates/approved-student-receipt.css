@@ -1,0 +1,214 @@
+:root {
+  --paper: #ffffff;
+  --paper-border: #c8d2dd;
+  --ink-900: #0f2339;
+  --ink-700: #24415f;
+  --ink-500: #516b86;
+  --ink-300: #88a0b9;
+  --line: #d5dee8;
+  --accent: #f0f6fc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 1240px;
+  height: 1754px;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  color: var(--ink-900);
+  background: #eef3f8;
+}
+
+.receipt-page {
+  width: 1240px;
+  min-height: 1754px;
+  padding: 68px;
+  background:
+    radial-gradient(1200px 560px at 8% -8%, #dce9f7 0%, rgba(220, 233, 247, 0) 60%),
+    radial-gradient(1000px 460px at 100% 0, #e6f0fb 0%, rgba(230, 240, 251, 0) 70%),
+    #eef3f8;
+}
+
+.receipt-shell {
+  width: 100%;
+  min-height: 100%;
+  background: var(--paper);
+  border: 3px solid var(--paper-border);
+  border-radius: 18px;
+  padding: 54px 58px;
+  display: flex;
+  flex-direction: column;
+  gap: 38px;
+}
+
+.receipt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  border-bottom: 2px solid var(--line);
+  padding-bottom: 26px;
+}
+
+.brand-block {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.brand-badge {
+  width: 120px;
+  height: 120px;
+  border-radius: 22px;
+  background: linear-gradient(135deg, #19395d, #2e5c86);
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  font-size: 29px;
+  letter-spacing: 1px;
+  font-weight: 700;
+}
+
+.brand-block h1 {
+  margin: 0;
+  font-size: 48px;
+  line-height: 1.08;
+}
+
+.subhead {
+  margin: 10px 0 0;
+  color: var(--ink-500);
+  font-size: 22px;
+}
+
+.meta-block {
+  min-width: 330px;
+  display: grid;
+  gap: 18px;
+}
+
+.meta-block p {
+  margin: 0;
+  padding: 14px 18px;
+  border-radius: 12px;
+  background: var(--accent);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.meta-block span {
+  font-size: 18px;
+  color: var(--ink-500);
+}
+
+.meta-block strong {
+  font-size: 27px;
+  font-weight: 700;
+  color: var(--ink-900);
+}
+
+.identity-section {
+  display: flex;
+  justify-content: space-between;
+  gap: 40px;
+  align-items: flex-start;
+}
+
+.identity-copy {
+  flex: 1;
+}
+
+.identity-copy h2 {
+  margin: 0 0 24px;
+  font-size: 44px;
+  line-height: 1.08;
+}
+
+.identity-copy dl {
+  margin: 0;
+  display: grid;
+  gap: 16px;
+}
+
+.identity-copy dl div {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+  display: grid;
+  gap: 7px;
+}
+
+.identity-copy dt {
+  margin: 0;
+  font-size: 19px;
+  color: var(--ink-500);
+}
+
+.identity-copy dd {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 650;
+  color: var(--ink-900);
+  word-break: break-word;
+}
+
+.passport-frame {
+  margin: 0;
+  /* 195x240 CSS px with deviceScaleFactor=2 -> 390x480 output px (1.3in x 1.6in at 300 DPI). */
+  width: 195px;
+  height: 240px;
+  border: 3px solid var(--paper-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f0f5fb;
+}
+
+.passport-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.approval-note {
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #f8fbff;
+  padding: 24px 28px;
+}
+
+.approval-note p {
+  margin: 0;
+  font-size: 23px;
+  line-height: 1.45;
+  color: var(--ink-700);
+}
+
+.receipt-footer {
+  margin-top: auto;
+  border-top: 2px solid var(--line);
+  padding-top: 20px;
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.receipt-footer div {
+  display: grid;
+  gap: 5px;
+}
+
+.receipt-footer span {
+  font-size: 18px;
+  color: var(--ink-500);
+}
+
+.receipt-footer strong {
+  font-size: 24px;
+  color: var(--ink-900);
+}

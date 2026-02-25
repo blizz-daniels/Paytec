@@ -636,6 +636,23 @@ function renderMyReceipts(rows) {
   rows.forEach((row) => {
     const flags = parseFlags(row);
     const reviewNotes = row.rejection_reason || flags.reviewer_note || "-";
+    const normalizedStatus = String(row.status || "").toLowerCase();
+    const approvedReceiptAvailable = Number(row.approved_receipt_available || 0) === 1;
+    const approvedReceiptField =
+      normalizedStatus === "approved"
+        ? `
+        <div class="details-tile__field details-tile__field--full">
+          <p class="details-tile__label">Approved receipt</p>
+          <p class="details-tile__value details-tile__value--normal">${
+            approvedReceiptAvailable
+              ? `<a class="btn btn-secondary" href="/api/payment-receipts/${encodeURIComponent(
+                  String(row.id || "")
+                )}/file?variant=approved" target="_blank" rel="noopener">Download approved receipt</a>`
+              : '<span class="status-badge status-badge--warning">Pending generation</span>'
+          }</p>
+        </div>
+      `
+        : "";
     const tile = document.createElement("article");
     tile.className = "details-tile";
     tile.innerHTML = `
@@ -664,6 +681,7 @@ function renderMyReceipts(rows) {
           <p class="details-tile__label">Review notes</p>
           <p class="details-tile__value details-tile__value--normal">${escapeHtml(reviewNotes)}</p>
         </div>
+        ${approvedReceiptField}
       </div>
     `;
     container.appendChild(tile);

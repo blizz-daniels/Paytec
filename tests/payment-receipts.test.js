@@ -8,6 +8,7 @@ const XLSX = require("xlsx");
 const testDataDir = path.join(__dirname, "tmp-data");
 process.env.NODE_ENV = "test";
 process.env.DATA_DIR = testDataDir;
+process.env.RECEIPT_OUTPUT_DIR = path.join(testDataDir, "outputs", "receipts");
 process.env.SESSION_SECRET = "test-session-secret";
 process.env.ADMIN_USERNAME = "admin";
 process.env.ADMIN_PASSWORD = "admin-pass-123";
@@ -163,6 +164,87 @@ test("student can submit valid receipt", async () => {
   expect(myReceipts.status).toBe(200);
   expect(Array.isArray(myReceipts.body)).toBe(true);
   expect(myReceipts.body.length).toBeGreaterThan(0);
+});
+
+test("student can download generated approved receipt PDF", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const itemResponse = await postJson(teacher, "/api/payment-items", {
+    title: "Acceptance Fee",
+    description: "Approved receipt download test",
+    expectedAmount: 15000,
+    currency: "NGN",
+    dueDate: "2026-03-01",
+  });
+  expect(itemResponse.status).toBe(201);
+
+  const student = request.agent(app);
+  await login(student, "std_001", "doe");
+  const csrfToken = await getCsrfToken(student);
+  const submitResponse = await student
+    .post("/api/payment-receipts")
+    .set("X-CSRF-Token", csrfToken)
+    .field("paymentItemId", String(itemResponse.body.id))
+    .field("amountPaid", "15000")
+    .field("paidAt", "2026-02-20T10:00:00")
+    .field("transactionRef", "TX-APPROVED-PDF-001")
+    .attach("receiptFile", Buffer.from("fake-image-data"), {
+      filename: "receipt.png",
+      contentType: "image/png",
+    });
+  expect(submitResponse.status).toBe(201);
+  const receiptId = Number(submitResponse.body.id || 0);
+  expect(receiptId).toBeGreaterThan(0);
+
+  const approveResponse = await postJson(teacher, `/api/payment-receipts/${receiptId}/approve`, {});
+  expect(approveResponse.status).toBe(200);
+
+  const outputDir = process.env.RECEIPT_OUTPUT_DIR;
+  const approvedPdfPath = path.join(outputDir, `APPROVED-${receiptId}.pdf`);
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.writeFileSync(approvedPdfPath, Buffer.from("%PDF-1.4\n%approved\n"));
+
+  await run(
+    `
+      INSERT INTO approved_receipt_dispatches (
+        payment_receipt_id,
+        student_username,
+        receipt_generated_at,
+        receipt_sent_at,
+        receipt_file_path,
+        receipt_sent,
+        attempt_count,
+        last_error
+      )
+      VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, 1, 1, NULL)
+      ON CONFLICT(payment_receipt_id) DO UPDATE SET
+        receipt_file_path = excluded.receipt_file_path,
+        receipt_sent = excluded.receipt_sent,
+        receipt_generated_at = excluded.receipt_generated_at,
+        receipt_sent_at = excluded.receipt_sent_at,
+        attempt_count = excluded.attempt_count,
+        last_error = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    `,
+    [receiptId, "std_001", approvedPdfPath]
+  );
+
+  const myReceipts = await student.get("/api/my/payment-receipts");
+  expect(myReceipts.status).toBe(200);
+  const matchingReceipt = myReceipts.body.find((row) => Number(row.id) === receiptId);
+  expect(matchingReceipt).toBeTruthy();
+  expect(Number(matchingReceipt.approved_receipt_available || 0)).toBe(1);
+
+  const downloadResponse = await student.get(`/api/payment-receipts/${receiptId}/file?variant=approved`);
+  expect(downloadResponse.status).toBe(200);
+  expect(String(downloadResponse.headers["content-type"] || "")).toContain("application/pdf");
+  const payloadSize = Buffer.isBuffer(downloadResponse.body)
+    ? downloadResponse.body.length
+    : Buffer.byteLength(String(downloadResponse.text || ""), "utf8");
+  expect(payloadSize).toBeGreaterThan(0);
+
+  const invalidVariant = await student.get(`/api/payment-receipts/${receiptId}/file?variant=unknown`);
+  expect(invalidVariant.status).toBe(400);
 });
 
 test("invalid file type is rejected", async () => {

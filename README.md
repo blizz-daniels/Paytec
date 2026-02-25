@@ -137,6 +137,86 @@ SQL migration scripts:
 - `reconciliation_events` for transaction reconciliation actions
 - `audit_logs` for actor-level accountability
 
+## Approved Student Receipt Generator
+
+Automated workflow included in this repo:
+
+1. Reads approved rows from `payment_receipts` (`status='approved'`).
+2. Skips already-sent rows unless `--force`.
+3. Fills HTML/CSS template placeholders.
+4. Inserts profile picture (`user_profiles.profile_image_url`) into passport slot; falls back to a placeholder image if missing.
+5. Creates image-based PDF (300 DPI) at:
+   - `outputs/receipts/{application_id}_{yyyy-mm-dd}.pdf`
+6. Emails the PDF attachment.
+7. Tracks delivery state in `approved_receipt_dispatches`:
+   - `receipt_generated_at`
+   - `receipt_sent_at`
+   - `receipt_file_path`
+   - `receipt_sent`
+8. Students can download generated approved PDFs from:
+   - `/api/payment-receipts/:id/file?variant=approved` (authorized owner/admin/lecturer)
+
+### Manual Command
+
+```bash
+npm run generate:approved-receipts
+```
+
+### One-Off With Limit
+
+```bash
+node scripts/generate-receipts.js --limit=50
+```
+
+### Scheduled Mode
+
+```bash
+node scripts/generate-receipts.js --schedule --interval-minutes=30
+```
+
+### Force Resend
+
+```bash
+node scripts/generate-receipts.js --force
+```
+
+### Template Files
+
+- `templates/approved-student-receipt.html`
+- `templates/approved-student-receipt.css`
+
+### Sample Placeholder Map
+
+```json
+{
+  "full_name": "Ada Lovelace",
+  "application_id": "APP-0001",
+  "program": "Computer Science",
+  "amount_paid": "NGN 50,000.00",
+  "receipt_no": "RCP-000001",
+  "approval_date": "Feb 25, 2026",
+  "passport_photo": "data:image/png;base64,..."
+}
+```
+
+### Dependencies
+
+- `nodemailer` for SMTP delivery
+- `puppeteer` for HTML-to-image rendering
+- `pdf-lib` to package image into PDF
+- Optional: set `RECEIPT_BROWSER_EXECUTABLE_PATH` if you want to use a system browser binary
+
+Install/update dependencies:
+
+```bash
+npm install
+```
+
+Runtime notes:
+
+- Puppeteer downloads a Chromium binary during install; allow this in CI/build environments.
+- If your host blocks bundled Chromium, set `RECEIPT_BROWSER_EXECUTABLE_PATH` to a system Chrome/Chromium path.
+
 ## Environment Variables
 
 See `.env.example`, including:
@@ -146,6 +226,7 @@ See `.env.example`, including:
 - `PAYMENT_REFERENCE_TENANT_ID`
 - `AUTO_RECONCILE_CONFIDENCE`
 - `REVIEW_RECONCILE_CONFIDENCE`
+- `SMTP_*` and `RECEIPT_*` values for automated approved receipt delivery
 
 ## Running Tests
 
