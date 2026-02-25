@@ -122,6 +122,9 @@ const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 8;
 const LOGIN_RATE_LIMIT_BLOCK_MS = 15 * 60 * 1000;
 const loginAttempts = new Map();
+let contentStreamClientSequence = 0;
+const contentStreamClients = new Map();
+const CONTENT_STREAM_KEEPALIVE_MS = 25 * 1000;
 const execFileAsync = promisify(execFile);
 const OCR_PROVIDER = String(process.env.OCR_PROVIDER || "none").trim().toLowerCase();
 const OCR_SPACE_API_KEY = String(process.env.OCR_SPACE_API_KEY || "").trim();
@@ -595,6 +598,58 @@ function requireCsrf(req, res, next) {
     return rejectCsrf(req, res);
   }
   return next();
+}
+
+function removeContentStreamClient(clientId) {
+  const client = contentStreamClients.get(clientId);
+  if (!client) {
+    return;
+  }
+  if (client.keepAliveTimer) {
+    clearInterval(client.keepAliveTimer);
+  }
+  contentStreamClients.delete(clientId);
+}
+
+function writeContentStreamEvent(res, eventName, payload) {
+  if (!res || res.writableEnded) {
+    return;
+  }
+  const safeEventName = String(eventName || "message").replace(/[\r\n]/g, "");
+  const safePayload = payload && typeof payload === "object" ? payload : {};
+  res.write(`event: ${safeEventName}\n`);
+  res.write(`data: ${JSON.stringify(safePayload)}\n\n`);
+}
+
+function broadcastContentUpdate(kind, action, metadata = {}, options = {}) {
+  const audience = String(options.audience || "all")
+    .trim()
+    .toLowerCase();
+  const payload = {
+    kind: String(kind || "unknown")
+      .trim()
+      .toLowerCase() || "unknown",
+    action: String(action || "updated")
+      .trim()
+      .toLowerCase() || "updated",
+    at: new Date().toISOString(),
+    ...(metadata && typeof metadata === "object" ? metadata : {}),
+  };
+
+  for (const [clientId, client] of contentStreamClients.entries()) {
+    if (!client || !client.res || client.res.writableEnded) {
+      removeContentStreamClient(clientId);
+      continue;
+    }
+    if (audience !== "all" && client.role !== audience) {
+      continue;
+    }
+    try {
+      writeContentStreamEvent(client.res, "content:update", payload);
+    } catch (_err) {
+      removeContentStreamClient(clientId);
+    }
+  }
 }
 
 function deriveDisplayNameFromIdentifier(identifier) {
@@ -5254,6 +5309,50 @@ app.get("/api/me", requireAuth, async (req, res) => {
   }
 });
 
+app.get("/api/content-stream", requireAuth, (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  if (typeof res.flushHeaders === "function") {
+    res.flushHeaders();
+  }
+
+  contentStreamClientSequence += 1;
+  const clientId = `${Date.now()}-${contentStreamClientSequence}`;
+  const role = String(req.session?.user?.role || "")
+    .trim()
+    .toLowerCase();
+  const keepAliveTimer = setInterval(() => {
+    if (res.writableEnded) {
+      removeContentStreamClient(clientId);
+      return;
+    }
+    try {
+      res.write(`: keepalive ${Date.now()}\n\n`);
+    } catch (_err) {
+      removeContentStreamClient(clientId);
+    }
+  }, CONTENT_STREAM_KEEPALIVE_MS);
+
+  contentStreamClients.set(clientId, {
+    role,
+    res,
+    keepAliveTimer,
+  });
+
+  writeContentStreamEvent(res, "stream:ready", {
+    ok: true,
+    at: new Date().toISOString(),
+  });
+
+  const cleanup = () => {
+    removeContentStreamClient(clientId);
+  };
+  req.on("close", cleanup);
+  req.on("error", cleanup);
+});
+
 app.post("/api/profile", requireAuth, async (req, res) => {
   const displayName = normalizeDisplayName(req.body.displayName || "");
   if (!displayName) {
@@ -7355,6 +7454,10 @@ app.post("/api/notifications/:id/reaction", requireAuth, async (req, res) => {
         id,
         req.session.user.username,
       ]);
+      broadcastContentUpdate("notification", "reaction", {
+        id,
+        reaction: null,
+      });
       return res.json({ ok: true, reaction: null });
     }
     await run(
@@ -7367,6 +7470,10 @@ app.post("/api/notifications/:id/reaction", requireAuth, async (req, res) => {
       `,
       [id, req.session.user.username, rawReaction]
     );
+    broadcastContentUpdate("notification", "reaction", {
+      id,
+      reaction: rawReaction,
+    });
     return res.json({ ok: true, reaction: rawReaction });
   } catch (_err) {
     return res.status(500).json({ error: "Could not save reaction." });
@@ -7477,6 +7584,10 @@ app.post("/api/notifications", requireTeacher, async (req, res) => {
       req.session.user.username,
       `Created notification "${title.slice(0, 80)}"`
     );
+    broadcastContentUpdate("notification", "created", {
+      id: Number(result.lastID || 0),
+      created_by: req.session.user.username,
+    });
     return res.status(201).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not save notification." });
@@ -7526,6 +7637,9 @@ app.put("/api/notifications/:id", requireTeacher, async (req, res) => {
       access.row.created_by,
       `Edited notification "${title.slice(0, 80)}"`
     );
+    broadcastContentUpdate("notification", "updated", {
+      id,
+    });
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not update notification." });
@@ -7557,6 +7671,9 @@ app.post("/api/notifications/:id/read", requireAuth, async (req, res) => {
       [id, req.session.user.username]
     );
 
+    broadcastContentUpdate("notification", "read", {
+      id,
+    });
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not mark notification as read." });
@@ -7588,6 +7705,9 @@ app.delete("/api/notifications/:id", requireTeacher, async (req, res) => {
       access.row.created_by,
       `Deleted notification "${String(access.row.title || "").slice(0, 80)}"`
     );
+    broadcastContentUpdate("notification", "deleted", {
+      id,
+    });
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not delete notification." });
@@ -7715,6 +7835,10 @@ app.post("/api/handouts", requireTeacher, (req, res) => {
         req.session.user.username,
         `Created handout "${title.slice(0, 80)}"`
       );
+      broadcastContentUpdate("handout", "created", {
+        id: Number(result.lastID || 0),
+        created_by: req.session.user.username,
+      });
       return res.status(201).json({ ok: true });
     } catch (_err) {
       if (req.file?.path) {
@@ -7769,6 +7893,9 @@ app.put("/api/handouts/:id", requireTeacher, async (req, res) => {
       access.row.created_by,
       `Edited handout "${title.slice(0, 80)}"`
     );
+    broadcastContentUpdate("handout", "updated", {
+      id,
+    });
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not update handout." });
@@ -7801,6 +7928,9 @@ app.delete("/api/handouts/:id", requireTeacher, async (req, res) => {
       access.row.created_by,
       `Deleted handout "${String(access.row.title || "").slice(0, 80)}"`
     );
+    broadcastContentUpdate("handout", "deleted", {
+      id,
+    });
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not delete handout." });
@@ -8030,6 +8160,10 @@ app.post("/api/shared-files", requireTeacher, (req, res) => {
         req.session.user.username,
         `Created shared file "${title.slice(0, 80)}"`
       );
+      broadcastContentUpdate("shared", "created", {
+        id: Number(result.lastID || 0),
+        created_by: req.session.user.username,
+      });
       return res.status(201).json({ ok: true });
     } catch (_err) {
       if (req.file?.path) {
@@ -8084,6 +8218,9 @@ app.put("/api/shared-files/:id", requireTeacher, async (req, res) => {
       access.row.created_by,
       `Edited shared file "${title.slice(0, 80)}"`
     );
+    broadcastContentUpdate("shared", "updated", {
+      id,
+    });
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not update shared file." });
@@ -8116,6 +8253,9 @@ app.delete("/api/shared-files/:id", requireTeacher, async (req, res) => {
       access.row.created_by,
       `Deleted shared file "${String(access.row.title || "").slice(0, 80)}"`
     );
+    broadcastContentUpdate("shared", "deleted", {
+      id,
+    });
     return res.status(200).json({ ok: true });
   } catch (_err) {
     return res.status(500).json({ error: "Could not delete shared file." });

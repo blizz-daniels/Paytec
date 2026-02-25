@@ -18,12 +18,12 @@ const DEFAULT_EMAIL_BODY = [
   "Accounts Office",
 ].join("\n");
 
-const A4_WIDTH_POINTS = 595.28;
-const A4_HEIGHT_POINTS = 841.89;
+const A4_WIDTH_POINTS = 841.89;
+const A4_HEIGHT_POINTS = 595.28;
 const TARGET_RENDER_DPI = 300;
 const RECEIPT_RENDER_SCALE = 2;
-const A4_WIDTH_INCHES = 210 / 25.4;
-const A4_HEIGHT_INCHES = 297 / 25.4;
+const A4_WIDTH_INCHES = 297 / 25.4;
+const A4_HEIGHT_INCHES = 210 / 25.4;
 const RECEIPT_SNAPSHOT_WIDTH = Math.round((A4_WIDTH_INCHES * TARGET_RENDER_DPI) / RECEIPT_RENDER_SCALE);
 const RECEIPT_SNAPSHOT_HEIGHT = Math.round((A4_HEIGHT_INCHES * TARGET_RENDER_DPI) / RECEIPT_RENDER_SCALE);
 const LOG_COMPONENT = "approved-receipts";
@@ -83,7 +83,7 @@ const DEFAULT_FALLBACK_TEMPLATE_HTML = `
 
 const DEFAULT_FALLBACK_TEMPLATE_CSS = `
 html, body { margin: 0; padding: 0; font-family: Arial, sans-serif; background: #ffffff; color: #111827; }
-.receipt-page { width: 794px; min-height: 1123px; margin: 0 auto; padding: 48px; box-sizing: border-box; }
+.receipt-page { width: 1123px; min-height: 794px; margin: 0 auto; padding: 40px; box-sizing: border-box; }
 h1 { margin: 0 0 24px; font-size: 28px; }
 p { margin: 0 0 12px; font-size: 15px; }
 `.trim();
@@ -579,7 +579,7 @@ function buildSimpleReceiptPdfBuffer(lines) {
     safeLines.push("Approved Payment Receipt");
   }
 
-  const content = ["BT", "/F1 14 Tf", "50 790 Td"];
+  const content = ["BT", "/F1 14 Tf", "50 545 Td"];
   safeLines.forEach((line, index) => {
     const escaped = escapePdfText(line);
     if (index === 0) {
@@ -595,7 +595,7 @@ function buildSimpleReceiptPdfBuffer(lines) {
   const objects = [
     "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
     "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
     `4 0 obj\n<< /Length ${streamLength} >>\nstream\n${stream}\nendstream\nendobj\n`,
     "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
   ];
@@ -1122,8 +1122,9 @@ async function renderHtmlToImagePdf({ html, outputPdfPath, row, placeholders }) 
     try {
       await page.pdf({
         path: outputPdfPath,
-        width: "210mm",
-        height: "297mm",
+        width: "297mm",
+        height: "210mm",
+        landscape: true,
         printBackground: true,
         preferCSSPageSize: true,
         margin: {

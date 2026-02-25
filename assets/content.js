@@ -40,6 +40,16 @@ const contentState = {
   },
 };
 
+const realtimeState = {
+  started: false,
+  stream: null,
+  refreshTimer: null,
+  pollTimer: null,
+};
+const realtimePages = new Set(["home", "notifications", "handouts"]);
+const realtimeRefreshDelayMs = 250;
+const realtimePollIntervalMs = 45000;
+
 const notificationReactionOptions = [
   { key: "like", emoji: "&#128077;", label: "Like" },
   { key: "love", emoji: "&#10084;&#65039;", label: "Love" },
@@ -759,6 +769,96 @@ function bindFilterBar() {
   }
 }
 
+function scheduleRealtimeRefresh(delayMs = realtimeRefreshDelayMs) {
+  if (realtimeState.refreshTimer) {
+    return;
+  }
+  const safeDelay = Number.isFinite(delayMs) ? Math.max(0, delayMs) : realtimeRefreshDelayMs;
+  realtimeState.refreshTimer = window.setTimeout(async () => {
+    realtimeState.refreshTimer = null;
+    await loadContent();
+  }, safeDelay);
+}
+
+function startRealtimePollingFallback() {
+  if (realtimeState.pollTimer) {
+    return;
+  }
+  realtimeState.pollTimer = window.setInterval(() => {
+    loadContent();
+  }, realtimePollIntervalMs);
+}
+
+function handleRealtimeUpdate(rawPayload) {
+  let payload = {};
+  try {
+    payload = JSON.parse(String(rawPayload || "{}"));
+  } catch (_err) {
+    payload = {};
+  }
+  const kind = String(payload.kind || "").trim().toLowerCase();
+  const action = String(payload.action || "").trim().toLowerCase();
+  if (contentState.user && contentState.user.role === "student" && kind === "notification" && action === "created") {
+    if (window.showToast) {
+      window.showToast("New notification posted.", { type: "info" });
+    }
+  }
+  scheduleRealtimeRefresh();
+}
+
+function startRealtimeContentSync() {
+  if (realtimeState.started) {
+    return;
+  }
+  const page = String(document.body?.dataset?.page || "")
+    .trim()
+    .toLowerCase();
+  if (!realtimePages.has(page)) {
+    return;
+  }
+  realtimeState.started = true;
+  if (typeof window.EventSource !== "function") {
+    startRealtimePollingFallback();
+    return;
+  }
+  try {
+    const stream = new EventSource("/api/content-stream");
+    realtimeState.stream = stream;
+    stream.onopen = () => {
+      if (realtimeState.pollTimer) {
+        clearInterval(realtimeState.pollTimer);
+        realtimeState.pollTimer = null;
+      }
+    };
+    stream.addEventListener("content:update", (event) => {
+      handleRealtimeUpdate(event.data);
+    });
+    stream.onerror = () => {
+      // EventSource reconnects automatically; polling fallback keeps content fresh.
+      startRealtimePollingFallback();
+    };
+  } catch (_err) {
+    // Fall back to interval polling only.
+    startRealtimePollingFallback();
+  }
+
+  window.addEventListener(
+    "beforeunload",
+    () => {
+      if (realtimeState.stream) {
+        realtimeState.stream.close();
+      }
+      if (realtimeState.refreshTimer) {
+        clearTimeout(realtimeState.refreshTimer);
+      }
+      if (realtimeState.pollTimer) {
+        clearInterval(realtimeState.pollTimer);
+      }
+    },
+    { once: true }
+  );
+}
+
 async function loadContent() {
   const page = document.body.dataset.page;
   if (!page) {
@@ -827,4 +927,5 @@ async function loadContent() {
 
 bindFilterBar();
 bindNotificationReadActions();
+startRealtimeContentSync();
 loadContent();
