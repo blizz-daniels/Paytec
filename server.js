@@ -11,8 +11,6 @@ const sqlite3 = require("sqlite3").verbose();
 const SQLiteStore = require("connect-sqlite3")(session);
 const { createPaystackClient } = require("./services/paystack");
 const {
-  DEFAULT_EMAIL_BODY,
-  DEFAULT_EMAIL_SUBJECT,
   generateApprovedStudentReceipts,
 } = require("./services/approved-receipt-generator");
 let xlsx = null;
@@ -1518,65 +1516,6 @@ function parseBooleanEnv(rawValue, defaultValue = false) {
   return ["1", "true", "yes", "y", "on"].includes(normalized);
 }
 
-function parseOptionalPositiveIntEnv(rawValue, fallback) {
-  const parsed = Number.parseInt(String(rawValue || ""), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function createApprovedReceiptEmailSender() {
-  const nodemailer = (() => {
-    try {
-      // eslint-disable-next-line global-require
-      return require("nodemailer");
-    } catch (err) {
-      if (err && err.code === "MODULE_NOT_FOUND") {
-        throw new Error('Missing dependency "nodemailer". Install it with: npm install nodemailer');
-      }
-      throw err;
-    }
-  })();
-
-  const smtpFrom = String(process.env.SMTP_FROM || process.env.RECEIPT_EMAIL_FROM || "").trim();
-  if (!smtpFrom) {
-    throw new Error("SMTP_FROM (or RECEIPT_EMAIL_FROM) is required.");
-  }
-
-  let transport;
-  const smtpUrl = String(process.env.SMTP_URL || "").trim();
-  if (smtpUrl) {
-    transport = nodemailer.createTransport(smtpUrl);
-  } else {
-    const host = String(process.env.SMTP_HOST || "").trim();
-    const port = Number.parseInt(String(process.env.SMTP_PORT || "587"), 10);
-    const user = String(process.env.SMTP_USER || "").trim();
-    const pass = String(process.env.SMTP_PASS || "").trim();
-    if (!host || !port || !user || !pass) {
-      throw new Error("Set SMTP_URL or SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS in your environment.");
-    }
-    const secure = parseBooleanEnv(process.env.SMTP_SECURE, port === 465);
-    transport = nodemailer.createTransport({
-      host,
-      port,
-      secure,
-      auth: { user, pass },
-    });
-  }
-
-  return {
-    async sendEmail(payload) {
-      await transport.sendMail({
-        from: smtpFrom,
-        ...payload,
-      });
-    },
-    async close() {
-      if (typeof transport.close === "function") {
-        transport.close();
-      }
-    },
-  };
-}
-
 async function triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, options = {}) {
   const receiptId = parseResourceId(paymentReceiptId);
   if (!receiptId) {
@@ -1594,7 +1533,7 @@ async function triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, option
       sent: false,
       failed: false,
       skipped: true,
-      reason: "Immediate approved-receipt dispatch is disabled.",
+      reason: "Immediate approved-receipt generation is disabled.",
     };
   }
 
@@ -1604,14 +1543,11 @@ async function triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, option
   const templateCssPath = path.resolve(
     process.env.RECEIPT_TEMPLATE_CSS || path.join(__dirname, "templates", "approved-student-receipt.css")
   );
-  const retryCount = parseOptionalPositiveIntEnv(process.env.RECEIPT_EMAIL_RETRY_COUNT, 3);
-  const retryDelayMs = parseOptionalPositiveIntEnv(process.env.RECEIPT_EMAIL_RETRY_DELAY_MS, 1500);
 
-  let mailer = null;
   try {
-    mailer = createApprovedReceiptEmailSender();
     const summary = await generateApprovedStudentReceipts({
       db: { run, get, all },
+      deliveryMode: "download",
       force: false,
       paymentReceiptId: receiptId,
       limit: 1,
@@ -1619,15 +1555,11 @@ async function triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, option
       outputDir: approvedReceiptsDir,
       templateHtmlPath,
       templateCssPath,
-      emailSubject: process.env.RECEIPT_EMAIL_SUBJECT || DEFAULT_EMAIL_SUBJECT,
-      emailBody: process.env.RECEIPT_EMAIL_BODY || DEFAULT_EMAIL_BODY,
-      retryCount,
-      retryDelayMs,
-      sendEmail: mailer.sendEmail,
       logger: console,
     });
     return {
       attempted: true,
+      mode: "download",
       eligible: Number(summary.eligible || 0),
       sent: Number(summary.sent || 0),
       failed: Number(summary.failed || 0),
@@ -1635,21 +1567,18 @@ async function triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, option
   } catch (err) {
     const reason = String(err && err.message ? err.message : err || "Unknown error");
     console.error(
-      `[approved-receipts] immediate dispatch failed payment_receipt_id=${receiptId} actor=${String(
+      `[approved-receipts] immediate generation failed payment_receipt_id=${receiptId} actor=${String(
         options.actorUsername || "system"
       )} reason=${reason}`
     );
     return {
       attempted: true,
+      mode: "download",
       eligible: 0,
       sent: 0,
       failed: 1,
       error: reason,
     };
-  } finally {
-    if (mailer) {
-      await mailer.close();
-    }
   }
 }
 
@@ -6632,7 +6561,7 @@ app.get("/api/my/payment-receipts", requireAuth, async (req, res) => {
           ard.receipt_generated_at AS approved_receipt_generated_at,
           ard.receipt_sent_at AS approved_receipt_sent_at,
           CASE
-            WHEN COALESCE(ard.receipt_sent, 0) = 1 AND COALESCE(ard.receipt_file_path, '') != '' THEN 1
+            WHEN COALESCE(ard.receipt_file_path, '') != '' THEN 1
             ELSE 0
           END AS approved_receipt_available,
           pi.title AS payment_item_title,
@@ -6709,7 +6638,18 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
               AND ps.student_id = ?
             ORDER BY ps.updated_at DESC, ps.id DESC
             LIMIT 1
-          ) AS paystack_reference
+          ) AS paystack_reference,
+          (
+            SELECT pr2.id
+            FROM payment_receipts pr2
+            JOIN approved_receipt_dispatches ard2 ON ard2.payment_receipt_id = pr2.id
+            WHERE pr2.payment_item_id = pi.id
+              AND pr2.student_username = ?
+              AND pr2.status = 'approved'
+              AND COALESCE(ard2.receipt_file_path, '') != ''
+            ORDER BY COALESCE(pr2.reviewed_at, pr2.submitted_at) DESC, pr2.id DESC
+            LIMIT 1
+          ) AS approved_receipt_id
         FROM payment_items pi
         LEFT JOIN payment_obligations po
           ON po.payment_item_id = pi.id
@@ -6721,6 +6661,7 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
           pi.id ASC
       `,
       [
+        req.session.user.username,
         req.session.user.username,
         req.session.user.username,
         req.session.user.username,
@@ -6740,6 +6681,7 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
         expected_amount: expectedAmount,
         approved_paid: approvedPaid,
         pending_paid: pendingPaid,
+        approved_receipt_id: parseResourceId(row.approved_receipt_id),
         outstanding,
         days_until_due: daysUntilDue,
         reminder_level: reminder.level,
@@ -7104,20 +7046,20 @@ async function transitionPaymentReceiptStatus(req, res, nextStatus, actionName, 
         actorUsername: req.session?.user?.username,
       });
       try {
-        let deliveryAction = "approved_receipt_dispatch_sent";
-        let deliveryMessage = `Immediate dispatch summary sent=${approvedReceiptDelivery.sent || 0} failed=${
+        let deliveryAction = "approved_receipt_generation_ready";
+        let deliveryMessage = `Immediate generation summary ready=${approvedReceiptDelivery.sent || 0} failed=${
           approvedReceiptDelivery.failed || 0
         } eligible=${approvedReceiptDelivery.eligible || 0}`;
         if (approvedReceiptDelivery.skipped) {
-          deliveryAction = "approved_receipt_dispatch_skipped";
-          deliveryMessage = `Immediate dispatch skipped: ${approvedReceiptDelivery.reason || "No reason provided."}`;
+          deliveryAction = "approved_receipt_generation_skipped";
+          deliveryMessage = `Immediate generation skipped: ${approvedReceiptDelivery.reason || "No reason provided."}`;
         } else if (approvedReceiptDelivery.error || approvedReceiptDelivery.failed > 0) {
-          deliveryAction = "approved_receipt_dispatch_failed";
-          deliveryMessage = `Immediate dispatch failed: ${approvedReceiptDelivery.error || "Unknown failure."}`;
+          deliveryAction = "approved_receipt_generation_failed";
+          deliveryMessage = `Immediate generation failed: ${approvedReceiptDelivery.error || "Unknown failure."}`;
         }
         await logReceiptEvent(id, req, deliveryAction, null, null, deliveryMessage);
       } catch (_logErr) {
-        // Do not fail receipt approval because dispatch-audit logging failed.
+        // Do not fail receipt approval because generation-audit logging failed.
       }
     }
     return res.json({
@@ -7321,7 +7263,6 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
           pr.id,
           pr.student_username,
           pr.receipt_file_path,
-          COALESCE(ard.receipt_sent, 0) AS approved_receipt_sent,
           ard.receipt_file_path AS approved_receipt_file_path
         FROM payment_receipts pr
         LEFT JOIN approved_receipt_dispatches ard ON ard.payment_receipt_id = pr.id
@@ -7340,7 +7281,7 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
     if (!canAccess) {
       return res.status(403).json({ error: "You do not have permission to view this receipt file." });
     }
-    if (wantsApprovedVariant && Number(row.approved_receipt_sent || 0) !== 1) {
+    if (wantsApprovedVariant && !String(row.approved_receipt_file_path || "").trim()) {
       return res.status(404).json({ error: "Approved receipt is not available yet." });
     }
 

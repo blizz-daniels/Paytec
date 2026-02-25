@@ -476,8 +476,15 @@ async function generateApprovedStudentReceipts(options = {}) {
   if (!db || typeof db.run !== "function" || typeof db.all !== "function") {
     throw new Error("A database client with run/get/all methods is required.");
   }
-  if (typeof options.sendEmail !== "function") {
-    throw new Error("options.sendEmail is required.");
+
+  const deliveryModeRaw = String(options.deliveryMode || "").trim().toLowerCase();
+  const hasEmailSender = typeof options.sendEmail === "function";
+  const deliveryMode = deliveryModeRaw || (hasEmailSender ? "email" : "download");
+  if (deliveryMode !== "email" && deliveryMode !== "download") {
+    throw new Error("options.deliveryMode must be either 'email' or 'download'.");
+  }
+  if (deliveryMode === "email" && !hasEmailSender) {
+    throw new Error("options.sendEmail is required when deliveryMode='email'.");
   }
 
   const logger = ensureLogger(options.logger);
@@ -506,6 +513,7 @@ async function generateApprovedStudentReceipts(options = {}) {
   emitLog(logger, "info", "start", {
     force,
     eligible: eligibleRows.length,
+    delivery_mode: deliveryMode,
     template_html: path.basename(htmlPath),
     template_css: path.basename(cssPath),
     output_dir: outputDir,
@@ -525,7 +533,7 @@ async function generateApprovedStudentReceipts(options = {}) {
     const preserveSentStateOnFail = force && Number(row.receipt_sent) === 1;
     await incrementDispatchAttempt(db, row);
 
-    if (!row.email) {
+    if (deliveryMode === "email" && !row.email) {
       summary.failed += 1;
       await markFailed(db, row.payment_receipt_id, "Student email is missing.", {
         preserveSentState: preserveSentStateOnFail,
@@ -572,6 +580,28 @@ async function generateApprovedStudentReceipts(options = {}) {
         ...logContext,
         reason: message,
       });
+      continue;
+    }
+
+    if (deliveryMode === "download") {
+      try {
+        await markSent(db, row.payment_receipt_id, toIsoDateTime(nowProvider()));
+        summary.sent += 1;
+        emitLog(logger, "info", "ready_success", {
+          ...logContext,
+          output_pdf_path: outputPdfPath,
+        });
+      } catch (err) {
+        summary.failed += 1;
+        const message = trimErrorMessage(err);
+        await markFailed(db, row.payment_receipt_id, message, {
+          preserveSentState: preserveSentStateOnFail,
+        });
+        emitLog(logger, "error", "ready_fail", {
+          ...logContext,
+          reason: message,
+        });
+      }
       continue;
     }
 

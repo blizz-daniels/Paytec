@@ -546,6 +546,25 @@ function renderLedger(ledger) {
   }
 }
 
+function getLatestApprovedReceiptIdForPaymentItem(paymentItemId) {
+  const itemId = Number.parseInt(String(paymentItemId || ""), 10);
+  if (!Number.isFinite(itemId) || itemId <= 0) {
+    return 0;
+  }
+  const rows = Array.isArray(paymentState.myReceipts) ? paymentState.myReceipts : [];
+  const match = rows.find((row) => {
+    const sameItem = Number(row.payment_item_id || 0) === itemId;
+    const approved = String(row.status || "").toLowerCase() === "approved";
+    const available = Number(row.approved_receipt_available || 0) === 1;
+    return sameItem && approved && available;
+  });
+  if (!match) {
+    return 0;
+  }
+  const receiptId = Number.parseInt(String(match.id || ""), 10);
+  return Number.isFinite(receiptId) && receiptId > 0 ? receiptId : 0;
+}
+
 function renderReminderCalendar(ledger) {
   const container = document.getElementById("paymentReminderRows");
   if (!container) {
@@ -560,12 +579,25 @@ function renderReminderCalendar(ledger) {
 
   items.forEach((item) => {
     const outstanding = Number(item.outstanding || 0);
+    const isSettled = outstanding <= 0.009;
     const canPayWithPaystack = Number(item.obligation_id || 0) > 0 && outstanding > 0.009;
-    const actionHtml = canPayWithPaystack
-      ? `<button class="btn btn-secondary" type="button" data-action="paystack-checkout" data-obligation-id="${item.obligation_id}" data-outstanding="${outstanding.toFixed(
-          2
-        )}">Pay with Paystack</button>`
-      : '<span class="status-badge status-badge--success">settled</span>';
+    const ledgerReceiptId = Number.parseInt(String(item.approved_receipt_id || ""), 10);
+    const approvedReceiptId =
+      Number.isFinite(ledgerReceiptId) && ledgerReceiptId > 0
+        ? ledgerReceiptId
+        : getLatestApprovedReceiptIdForPaymentItem(item.id);
+    let actionHtml = isSettled
+      ? '<span class="status-badge status-badge--success">settled</span>'
+      : '<span class="status-badge status-badge--warning">Awaiting payment</span>';
+    if (canPayWithPaystack) {
+      actionHtml = `<button class="btn btn-secondary" type="button" data-action="paystack-checkout" data-obligation-id="${item.obligation_id}" data-outstanding="${outstanding.toFixed(
+        2
+      )}">Pay with Paystack</button>`;
+    } else if (isSettled && approvedReceiptId > 0) {
+      actionHtml = `<a class="btn btn-secondary" href="/api/payment-receipts/${encodeURIComponent(
+        String(approvedReceiptId)
+      )}/file?variant=approved" target="_blank" rel="noopener" download>Download receipt</a>`;
+    }
     const tile = document.createElement("article");
     tile.className = "details-tile";
     tile.innerHTML = `
@@ -647,7 +679,7 @@ function renderMyReceipts(rows) {
             approvedReceiptAvailable
               ? `<a class="btn btn-secondary" href="/api/payment-receipts/${encodeURIComponent(
                   String(row.id || "")
-                )}/file?variant=approved" target="_blank" rel="noopener">Download approved receipt</a>`
+                )}/file?variant=approved" target="_blank" rel="noopener" download>Download approved receipt</a>`
               : '<span class="status-badge status-badge--warning">Pending generation</span>'
           }</p>
         </div>
@@ -893,6 +925,9 @@ async function loadPaymentItems() {
 async function loadStudentReceipts() {
   paymentState.myReceipts = await requestJson("/api/my/payment-receipts");
   renderMyReceipts(paymentState.myReceipts);
+  if (paymentState.ledger) {
+    renderReminderCalendar(paymentState.ledger);
+  }
 }
 
 async function loadStudentLedger() {

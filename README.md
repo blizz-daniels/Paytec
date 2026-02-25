@@ -142,23 +142,23 @@ SQL migration scripts:
 Automated workflow included in this repo:
 
 1. Reads approved rows from `payment_receipts` (`status='approved'`).
-2. Skips already-sent rows unless `--force`.
+2. Skips already-processed rows unless `--force`.
 3. Fills HTML/CSS template placeholders.
 4. Inserts profile picture (`user_profiles.profile_image_url`) into passport slot; falls back to a placeholder image if missing.
 5. Creates image-based PDF (300 DPI) at:
    - `outputs/receipts/{application_id}_{yyyy-mm-dd}.pdf`
-6. Emails the PDF attachment.
-7. Tracks delivery state in `approved_receipt_dispatches`:
+6. Marks the approved receipt as ready for in-app download.
+7. Tracks generation state in `approved_receipt_dispatches`:
    - `receipt_generated_at`
    - `receipt_sent_at`
    - `receipt_file_path`
    - `receipt_sent`
-8. Students can download generated approved PDFs from:
+8. Students download generated approved PDFs from:
    - `/api/payment-receipts/:id/file?variant=approved` (authorized owner/admin/lecturer)
 9. Immediate trigger on approval:
-   - `POST /api/payment-receipts/:id/approve` now attempts generation + email immediately
+   - `POST /api/payment-receipts/:id/approve` now attempts generation immediately
    - optional toggle: `RECEIPT_IMMEDIATE_ON_APPROVE=true|false`
-   - response includes `approved_receipt_delivery` with send summary or failure reason
+   - response includes `approved_receipt_delivery` with readiness/failure summary
 
 ### Manual Command
 
@@ -205,7 +205,7 @@ node scripts/generate-receipts.js --force
 
 ### Dependencies
 
-- `nodemailer` for SMTP delivery
+- `nodemailer` (optional) if you use the standalone email sender workflow
 - `puppeteer` for HTML-to-image rendering
 - `pdf-lib` to package image into PDF
 - Optional: set `RECEIPT_BROWSER_EXECUTABLE_PATH` if you want to use a system browser binary
@@ -230,7 +230,8 @@ See `.env.example`, including:
 - `PAYMENT_REFERENCE_TENANT_ID`
 - `AUTO_RECONCILE_CONFIDENCE`
 - `REVIEW_RECONCILE_CONFIDENCE`
-- `SMTP_*` and `RECEIPT_*` values for automated approved receipt delivery
+- `RECEIPT_*` values for approved receipt generation/download
+- `SMTP_*` values only if you run the standalone email sender workflow
 
 ## Running Tests
 
