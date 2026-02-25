@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Payments & Receipts &bull; Da4lions Pay-tec</title>
+    <title>Paystack Payments & Receipts &bull; Da4lions Pay-tec</title>
         <link rel="icon" type="image/png" sizes="32x32" href="/assets/lion-logo-32.png?v=2" />
     <link rel="icon" type="image/png" sizes="16x16" href="/assets/lion-logo-16.png?v=2" />
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/lion-logo-180.png?v=2" />
@@ -29,8 +29,8 @@
 
     <main class="container">
       <section class="page-title">
-        <h1>Payment Receipts</h1>
-        <p>Submit your payment receipt and track verification progress.</p>
+        <h1>Paystack Payments</h1>
+        <p>Pay with Paystack and download approved receipts after confirmation.</p>
       </section>
 
       <p id="paymentsError" class="auth-error" hidden></p>
@@ -97,33 +97,7 @@
         </article>
 
         <article class="card">
-          <h2>Submit Receipt</h2>
-          <p id="submitReceiptStatus" class="auth-subtitle"></p>
-          <form id="submitReceiptForm" class="auth-form">
-            <label for="receiptPaymentItem">Payment Item</label>
-            <select id="receiptPaymentItem" required></select>
-
-            <label for="receiptAmountPaid">Amount Paid</label>
-            <input id="receiptAmountPaid" type="number" min="0.01" step="0.01" required />
-
-            <label for="receiptPaidAt">Paid Date/Time</label>
-            <input id="receiptPaidAt" type="datetime-local" required />
-
-            <label for="receiptTransactionRef">Transaction Reference</label>
-            <input id="receiptTransactionRef" type="text" maxlength="120" required />
-
-            <label for="receiptFile">Receipt File (optional fallback: JPG, PNG, WEBP, PDF)</label>
-            <input id="receiptFile" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,application/pdf,image/jpeg,image/png,image/webp" />
-
-            <label for="receiptNote">Note (optional)</label>
-            <textarea id="receiptNote" rows="3" maxlength="300"></textarea>
-
-            <button type="submit" class="btn">Submit Receipt</button>
-          </form>
-        </article>
-
-        <article class="card">
-          <h2>My Receipt Submissions</h2>
+          <h2>My Approved Receipts</h2>
           <div id="myReceiptRows" class="details-tile-list" aria-live="polite"></div>
         </article>
       </section>
@@ -158,29 +132,6 @@
         <article class="card">
           <h2>Manage Payment Items</h2>
           <div id="paymentItemRows" class="details-tile-list" aria-live="polite"></div>
-        </article>
-
-        <article class="card statement-card">
-          <h2>Statement of Account</h2>
-          <p id="statementStatus" class="auth-subtitle statement-card__status">No statement uploaded yet.</p>
-          <form id="statementUploadForm" class="auth-form statement-card__form">
-            <div class="statement-card__field">
-              <label for="statementFile">Statement file</label>
-              <p class="statement-card__hint">Accepted: CSV, TXT, TSV, JSON, XML, PDF, image, Excel, Word, and RTF.</p>
-              <input id="statementFile" type="file" accept=".csv,.txt,.tsv,.json,.xml,.pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx,.rtf,text/csv,text/plain,text/tab-separated-values,application/json,application/xml,text/xml,application/pdf,image/jpeg,image/png,image/webp,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf" required />
-            </div>
-            <div class="statement-card__toggle">
-              <input id="statementDryRun" type="checkbox" />
-              <label for="statementDryRun">
-                <span class="statement-card__toggle-title">Dry run mode</span>
-                <span class="statement-card__toggle-copy">Preview parse and reconcile only. No database writes.</span>
-              </label>
-            </div>
-            <div class="statement-card__actions">
-              <button type="submit" class="btn">Upload Statement</button>
-              <button id="deleteStatementButton" type="button" class="btn btn-secondary">Delete Statement</button>
-            </div>
-          </form>
         </article>
 
         <article class="card">
@@ -229,10 +180,10 @@
       </section>
 
       <section id="receiptQueueSection" class="card" style="margin-top: 1rem;" hidden>
-        <h2>Reconciliation Exception Queue</h2>
+        <h2>Approved Transactions</h2>
         <div class="grid two-col" style="margin-bottom:0.8rem;">
           <article class="card">
-            <h3>Auto Approved</h3>
+            <h3>Approved Transactions</h3>
             <p id="reconAutoApproved" class="auth-subtitle">0</p>
           </article>
           <article class="card">
@@ -251,31 +202,12 @@
         <form id="queueFilterForm" class="auth-form" style="margin-bottom: 0.8rem;">
           <div class="filter-grid">
             <label>
-              Status
-              <select id="queueStatus">
-                <option value="all">All Exceptions</option>
-                <option value="needs_review">Needs Review</option>
-                <option value="unmatched">Unmatched</option>
-                <option value="duplicate">Duplicate</option>
-                <option value="needs_student_confirmation">Needs Student Confirmation</option>
-                <option value="rejected">Rejected</option>
-              </select>
+              Student Name / Username
+              <input id="queueStudent" type="text" placeholder="Search name or username" />
             </label>
             <label>
-              Reason
-              <select id="queueReason">
-                <option value="all">All</option>
-                <option value="exact_reference">Exact Reference</option>
-                <option value="amount_match">Amount Match</option>
-                <option value="payer_hint_match">Payer Hint Match</option>
-                <option value="ambiguous_candidate">Ambiguous Candidate</option>
-                <option value="no_candidate">No Candidate</option>
-                <option value="duplicate_transaction">Duplicate</option>
-              </select>
-            </label>
-            <label>
-              Student
-              <input id="queueStudent" type="text" />
+              Paystack Reference
+              <input id="queueReference" type="text" placeholder="Search reference" />
             </label>
             <label>
               Date From
@@ -301,16 +233,13 @@
           <table class="data-table">
             <thead>
               <tr>
-                <th><input id="queueSelectAll" type="checkbox" aria-label="Select all transactions" /></th>
-                <th>Txn ID</th>
-                <th>Student</th>
-                <th>Item</th>
+                <th>Student Name</th>
+                <th>Username</th>
+                <th>Payment Item</th>
                 <th>Amount</th>
-                <th>Reference</th>
-                <th>Source</th>
+                <th>Paystack Reference</th>
+                <th>Approved Date/Time</th>
                 <th>Status</th>
-                <th>Reasons</th>
-                <th>Actions</th>
               </tr>
             </thead>
             <tbody id="receiptQueueRows"></tbody>
@@ -322,35 +251,6 @@
           <span id="queuePageInfo" class="auth-subtitle">Page 1</span>
         </div>
 
-        <article class="card" style="margin-top:0.9rem;">
-          <h3>Bulk Reviewer Actions</h3>
-          <p id="bulkActionStatus" class="auth-subtitle"></p>
-          <form id="bulkActionForm" class="auth-form">
-            <label>
-              Action
-              <select id="bulkActionType" required>
-                <option value="">Choose action</option>
-                <option value="approve">Approve</option>
-                <option value="reject">Reject</option>
-                <option value="request_student_confirmation">Request student confirmation</option>
-                <option value="merge_duplicates">Merge duplicates to primary transaction</option>
-              </select>
-            </label>
-            <label>
-              Primary transaction ID (for merge duplicates)
-              <input id="bulkPrimaryTransactionId" type="number" min="1" step="1" />
-            </label>
-            <label>
-              Rejection reason (required for reject)
-              <input id="bulkRejectionReason" type="text" maxlength="300" />
-            </label>
-            <label>
-              Reviewer note (optional)
-              <textarea id="bulkReviewerNote" rows="3" maxlength="500"></textarea>
-            </label>
-            <button type="submit" class="btn">Apply to Selected Transactions</button>
-          </form>
-        </article>
       </section>
     </main>
 

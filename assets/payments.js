@@ -120,15 +120,6 @@ function sourceBadge(source) {
   if (normalized === "paystack") {
     return '<span class="status-badge status-badge--success">paystack</span>';
   }
-  if (normalized === "student_receipt") {
-    return '<span class="status-badge status-badge--warning">student receipt</span>';
-  }
-  if (normalized === "statement_upload") {
-    return '<span class="status-badge">statement upload</span>';
-  }
-  if (normalized === "gateway_webhook") {
-    return '<span class="status-badge">gateway webhook</span>';
-  }
   return `<span class="status-badge">${escapeHtml(normalized || "unknown")}</span>`;
 }
 
@@ -283,8 +274,6 @@ const paymentState = {
     total: 0,
     totalPages: 1,
   },
-  selectedQueueIds: new Set(),
-  statementInfo: null,
   reconciliationSummary: null,
   paystack: {
     pollTimer: null,
@@ -471,35 +460,15 @@ function syncPostPaystackReferenceInputFromLatest() {
   }
 }
 
-function parseVerificationNotes(row) {
-  try {
-    const raw = row && row.verification_notes ? JSON.parse(row.verification_notes) : null;
-    return raw || {};
-  } catch (_err) {
-    return {};
-  }
-}
-
-function parseFlags(row) {
-  if (row && row.verification_flags && typeof row.verification_flags === "object") {
-    return row.verification_flags;
-  }
-  const notes = parseVerificationNotes(row);
-  if (notes && notes.verification_flags) {
-    return notes.verification_flags;
-  }
-  return notes;
-}
-
 function renderPaymentItemSelects(items) {
-  const selectIds = ["receiptPaymentItem", "queuePaymentItem"];
+  const selectIds = ["queuePaymentItem"];
   selectIds.forEach((id) => {
     const select = document.getElementById(id);
     if (!select) {
       return;
     }
     const existingValue = select.value;
-    const options = [`<option value="">${id === "receiptPaymentItem" ? "Select payment item" : "All"}</option>`]
+    const options = ['<option value="">All</option>']
       .concat(
         items.map(
           (item) =>
@@ -661,30 +630,25 @@ function renderMyReceipts(rows) {
     return;
   }
   container.innerHTML = "";
-  if (!rows.length) {
-    container.innerHTML = '<p class="details-tile-list__empty">No receipts submitted yet.</p>';
+  const approvedRows = rows.filter((row) => String(row.status || "").toLowerCase() === "approved");
+  if (!approvedRows.length) {
+    container.innerHTML = '<p class="details-tile-list__empty">No approved receipts yet.</p>';
     return;
   }
-  rows.forEach((row) => {
-    const flags = parseFlags(row);
-    const reviewNotes = row.rejection_reason || flags.reviewer_note || "-";
-    const normalizedStatus = String(row.status || "").toLowerCase();
+  approvedRows.forEach((row) => {
     const approvedReceiptAvailable = Number(row.approved_receipt_available || 0) === 1;
-    const approvedReceiptField =
-      normalizedStatus === "approved"
-        ? `
-        <div class="details-tile__field details-tile__field--full">
-          <p class="details-tile__label">Approved receipt</p>
-          <p class="details-tile__value details-tile__value--normal">${
-            approvedReceiptAvailable
-              ? `<a class="btn btn-secondary" href="/api/payment-receipts/${encodeURIComponent(
-                  String(row.id || "")
-                )}/file?variant=approved" target="_blank" rel="noopener" download>Download approved receipt</a>`
-              : '<span class="status-badge status-badge--warning">Pending generation</span>'
-          }</p>
-        </div>
-      `
-        : "";
+    const approvedReceiptField = `
+      <div class="details-tile__field details-tile__field--full">
+        <p class="details-tile__label">Approved receipt</p>
+        <p class="details-tile__value details-tile__value--normal">${
+          approvedReceiptAvailable
+            ? `<a class="btn btn-secondary" href="/api/payment-receipts/${encodeURIComponent(
+                String(row.id || "")
+              )}/file?variant=approved" target="_blank" rel="noopener" download>Download approved receipt</a>`
+            : '<span class="status-badge status-badge--warning">Pending generation</span>'
+        }</p>
+      </div>
+    `;
     const tile = document.createElement("article");
     tile.className = "details-tile";
     tile.innerHTML = `
@@ -706,12 +670,8 @@ function renderMyReceipts(rows) {
           <p class="details-tile__value">${statusBadge(row.status)}</p>
         </div>
         <div class="details-tile__field">
-          <p class="details-tile__label">Submitted</p>
-          <p class="details-tile__value">${escapeHtml(formatDate(row.submitted_at))}</p>
-        </div>
-        <div class="details-tile__field details-tile__field--full">
-          <p class="details-tile__label">Review notes</p>
-          <p class="details-tile__value details-tile__value--normal">${escapeHtml(reviewNotes)}</p>
+          <p class="details-tile__label">Approved</p>
+          <p class="details-tile__value">${escapeHtml(formatDate(row.reviewed_at || row.submitted_at))}</p>
         </div>
         ${approvedReceiptField}
       </div>
@@ -844,60 +804,27 @@ function renderPaymentItemsTable(items) {
 
 function renderQueue(rows) {
   const tbody = document.getElementById("receiptQueueRows");
-  const selectAllNode = document.getElementById("queueSelectAll");
   if (!tbody) {
     return;
   }
   tbody.innerHTML = "";
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="color:#636b8a;">No reconciliation exceptions match the current filters.</td></tr>';
-    if (selectAllNode) {
-      selectAllNode.checked = false;
-    }
+    tbody.innerHTML = '<tr><td colspan="7" style="color:#636b8a;">No approved transactions match the current filters.</td></tr>';
     return;
   }
   rows.forEach((row) => {
-    const reasons = Array.isArray(row.reasons) ? row.reasons : [];
-    const reasonHtml = reasons.length
-      ? reasons.map((reason) => `<span class="status-badge">${escapeHtml(reason.replaceAll("_", " "))}</span>`).join(" ")
-      : '<span class="status-badge">none</span>';
-    const actions = [];
-    if (row.status !== "approved" && row.status !== "rejected") {
-      actions.push(`<button class="btn" type="button" data-action="approve" data-id="${row.id}">Approve</button>`);
-      actions.push(
-        `<button class="btn" type="button" data-action="reject" data-id="${row.id}" style="background:#b42318;">Reject</button>`
-      );
-      actions.push(
-        `<button class="btn btn-secondary" type="button" data-action="request-student-confirmation" data-id="${row.id}">Request Student</button>`
-      );
-      actions.push(
-        `<button class="btn btn-secondary" type="button" data-action="merge-duplicates" data-id="${row.id}">Merge Duplicate</button>`
-      );
-    }
-
-    const checkedAttr = paymentState.selectedQueueIds.has(row.id) ? "checked" : "";
-
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td><input type="checkbox" class="queue-select-row" data-id="${row.id}" ${checkedAttr} /></td>
-      <td>${escapeHtml(String(row.id || "-"))}</td>
+      <td>${escapeHtml(row.student_full_name || row.student_username || "-")}</td>
       <td>${escapeHtml(row.student_username || "-")}</td>
       <td>${escapeHtml(row.payment_item_title || "-")}</td>
       <td>${escapeHtml(formatMoney(row.amount, row.currency))}</td>
-      <td>${escapeHtml(row.txn_ref || "-")}</td>
-      <td>${sourceBadge(row.source)}</td>
+      <td>${escapeHtml(row.paystack_reference || row.txn_ref || "-")}</td>
+      <td>${escapeHtml(formatDate(row.approved_at || row.reviewed_at || row.created_at || ""))}</td>
       <td>${statusBadge(row.status)}</td>
-      <td>${reasonHtml}</td>
-      <td>${actions.join(" ")}</td>
     `;
     tbody.appendChild(tr);
   });
-
-  if (selectAllNode) {
-    const selectableRows = rows.length;
-    const selectedCount = rows.filter((row) => paymentState.selectedQueueIds.has(row.id)).length;
-    selectAllNode.checked = selectableRows > 0 && selectedCount === selectableRows;
-  }
 }
 
 function renderQueuePagination() {
@@ -1042,15 +969,13 @@ async function loadQueue() {
       ? "/api/admin/reconciliation/exceptions"
       : "/api/lecturer/reconciliation/exceptions";
   const params = new URLSearchParams();
-  const status = document.getElementById("queueStatus")?.value || "all";
-  const reason = document.getElementById("queueReason")?.value || "all";
   const student = document.getElementById("queueStudent")?.value || "";
+  const reference = document.getElementById("queueReference")?.value || "";
   const dateFrom = document.getElementById("queueDateFrom")?.value || "";
   const dateTo = document.getElementById("queueDateTo")?.value || "";
   const paymentItemId = document.getElementById("queuePaymentItem")?.value || "";
-  if (status) params.set("status", status);
-  if (reason) params.set("reason", reason);
   if (student) params.set("student", student);
+  if (reference) params.set("reference", reference);
   if (dateFrom) params.set("dateFrom", dateFrom);
   if (dateTo) params.set("dateTo", dateTo);
   if (paymentItemId) params.set("paymentItemId", paymentItemId);
@@ -1075,8 +1000,6 @@ async function loadQueue() {
       totalPages: Number(payload?.pagination?.totalPages || 1),
     };
   }
-  const validIds = new Set(paymentState.queueRows.map((row) => row.id));
-  paymentState.selectedQueueIds = new Set([...paymentState.selectedQueueIds].filter((id) => validIds.has(id)));
   renderQueue(paymentState.queueRows);
   renderQueuePagination();
 }
@@ -1104,95 +1027,6 @@ async function loadReconciliationSummary() {
       : "/api/lecturer/reconciliation/summary";
   paymentState.reconciliationSummary = await requestJson(endpoint);
   renderReconciliationSummary();
-}
-
-function renderStatementStatus() {
-  const statusNode = document.getElementById("statementStatus");
-  const deleteButton = document.getElementById("deleteStatementButton");
-  if (!statusNode) {
-    return;
-  }
-  if (!paymentState.statementInfo || !paymentState.statementInfo.hasStatement) {
-    statusNode.textContent = "No statement uploaded yet.";
-    statusNode.style.color = "var(--muted)";
-    if (deleteButton) {
-      deleteButton.disabled = true;
-    }
-    return;
-  }
-  const unparsedCount = Number(paymentState.statementInfo.unparsed_row_count || 0);
-  statusNode.textContent = `Current statement: ${paymentState.statementInfo.original_filename} (${paymentState.statementInfo.parsed_row_count} parsed row(s)${
-    unparsedCount > 0 ? `, ${unparsedCount} unparsed` : ""
-  }) uploaded ${formatDate(paymentState.statementInfo.uploaded_at)}.`;
-  statusNode.style.color = "var(--text)";
-  if (deleteButton) {
-    deleteButton.disabled = false;
-  }
-}
-
-async function loadStatementInfo() {
-  paymentState.statementInfo = await requestJson("/api/lecturer/payment-statement");
-  renderStatementStatus();
-}
-
-function bindStudentSubmit() {
-  const form = document.getElementById("submitReceiptForm");
-  if (!form) {
-    return;
-  }
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const submitButton = form.querySelector('button[type="submit"]');
-    setButtonBusy(submitButton, true, "Submitting...");
-    setPaymentStatus("submitReceiptStatus", "Submitting receipt...", false);
-    const loadingToast = window.showToast
-      ? window.showToast("Submitting receipt...", { type: "loading", sticky: true })
-      : null;
-    try {
-      const formData = new FormData();
-      const fileInput = document.getElementById("receiptFile");
-      const selectedFile = fileInput?.files?.[0];
-      formData.append("paymentItemId", document.getElementById("receiptPaymentItem").value);
-      formData.append("amountPaid", document.getElementById("receiptAmountPaid").value);
-      formData.append("paidAt", document.getElementById("receiptPaidAt").value);
-      formData.append("transactionRef", document.getElementById("receiptTransactionRef").value);
-      formData.append("note", document.getElementById("receiptNote").value);
-      if (selectedFile) {
-        formData.append("receiptFile", selectedFile);
-      }
-
-      const response = await fetch("/api/payment-receipts", {
-        method: "POST",
-        credentials: "same-origin",
-        body: formData,
-      });
-      let payload = null;
-      try {
-        payload = await response.json();
-      } catch (_err) {
-        payload = null;
-      }
-      if (!response.ok) {
-        throw new Error((payload && payload.error) || "Could not submit receipt.");
-      }
-      form.reset();
-      setPaymentStatus("submitReceiptStatus", "Receipt submitted successfully.", false);
-      if (window.showToast) {
-        window.showToast("Receipt submitted successfully.", { type: "success" });
-      }
-      await Promise.all([loadStudentReceipts(), loadStudentLedger()]);
-    } catch (err) {
-      setPaymentStatus("submitReceiptStatus", err.message, true);
-      if (window.showToast) {
-        window.showToast(err.message || "Could not submit receipt.", { type: "error" });
-      }
-    } finally {
-      setButtonBusy(submitButton, false, "");
-      if (loadingToast) {
-        loadingToast.close();
-      }
-    }
-  });
 }
 
 function bindPostPaystackReferenceForm() {
@@ -1262,98 +1096,6 @@ function bindPostPaystackReferenceForm() {
       }
     }
   });
-}
-
-function bindStatementManagement() {
-  const form = document.getElementById("statementUploadForm");
-  const deleteButton = document.getElementById("deleteStatementButton");
-  if (form) {
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const fileInput = document.getElementById("statementFile");
-      const selectedFile = fileInput?.files?.[0];
-      if (!selectedFile) {
-        setPaymentStatus("statementStatus", "Choose a statement file first.", true);
-        return;
-      }
-      const submitButton = form.querySelector('button[type="submit"]');
-      setButtonBusy(submitButton, true, "Uploading...");
-      const dryRun = !!document.getElementById("statementDryRun")?.checked;
-      const loadingToast = window.showToast
-        ? window.showToast(dryRun ? "Previewing statement (dry run)..." : "Uploading statement...", { type: "loading", sticky: true })
-        : null;
-      try {
-        const formData = new FormData();
-        formData.append("statementFile", selectedFile);
-        const response = await fetch(`/api/lecturer/payment-statement${dryRun ? "?dryRun=true" : ""}`, {
-          method: "POST",
-          credentials: "same-origin",
-          body: formData,
-        });
-        let payload = null;
-        try {
-          payload = await response.json();
-        } catch (_err) {
-          payload = null;
-        }
-        if (!response.ok) {
-          throw new Error((payload && payload.error) || "Could not upload statement.");
-        }
-        const ingestion = payload?.ingestion || {};
-        if (window.showToast) {
-          window.showToast(
-            `${dryRun ? "Dry run preview" : "Statement uploaded"} (${payload.parsed_row_count} rows). Auto-approved: ${Number(
-              ingestion.autoApproved || 0
-            )}, Exceptions: ${Number(ingestion.exceptions || 0)}, Invalid: ${Number(ingestion.invalid || 0)}.`,
-            { type: dryRun ? "warning" : "success" }
-          );
-        }
-        if (!dryRun) {
-          form.reset();
-        }
-        await Promise.all([dryRun ? Promise.resolve() : loadStatementInfo(), loadQueue(), loadReconciliationSummary()]);
-      } catch (err) {
-        setPaymentStatus("statementStatus", err.message || "Could not upload statement.", true);
-        if (window.showToast) {
-          window.showToast(err.message || "Could not upload statement.", { type: "error" });
-        }
-      } finally {
-        setButtonBusy(submitButton, false, "");
-        if (loadingToast) {
-          loadingToast.close();
-        }
-      }
-    });
-  }
-
-  if (deleteButton) {
-    deleteButton.addEventListener("click", async () => {
-      if (!window.confirm("Delete the current statement of account?")) {
-        return;
-      }
-      setButtonBusy(deleteButton, true, "Deleting...");
-      const loadingToast = window.showToast
-        ? window.showToast("Deleting statement...", { type: "loading", sticky: true })
-        : null;
-      try {
-        await requestJson("/api/lecturer/payment-statement", { method: "DELETE" });
-        if (window.showToast) {
-          window.showToast("Statement deleted.", { type: "success" });
-        }
-        await Promise.all([loadStatementInfo(), loadQueue(), loadReconciliationSummary()]);
-      } catch (err) {
-        setPaymentStatus("statementStatus", err.message || "Could not delete statement.", true);
-        if (window.showToast) {
-          window.showToast(err.message || "Could not delete statement.", { type: "error" });
-        }
-      } finally {
-        setButtonBusy(deleteButton, false, "");
-        if (loadingToast) {
-          loadingToast.close();
-        }
-      }
-    });
-  }
 }
 
 function bindPaystackReferenceVerify() {
@@ -1538,10 +1280,6 @@ function bindPaymentItemsManagement() {
   }
 }
 
-function getSelectedQueueIds() {
-  return paymentState.queueRows.filter((row) => paymentState.selectedQueueIds.has(row.id)).map((row) => row.id);
-}
-
 function getSelectedPaystackReferenceRequestIds() {
   return paymentState.paystackReferenceRequests
     .filter((row) => paymentState.selectedPaystackReferenceRequestIds.has(Number(row.id || 0)))
@@ -1659,69 +1397,8 @@ function bindPaystackReferenceRequestActions() {
   }
 }
 
-function bindBulkActions() {
-  const form = document.getElementById("bulkActionForm");
-  if (!form) {
-    return;
-  }
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const selectedIds = getSelectedQueueIds();
-    if (!selectedIds.length) {
-      setPaymentStatus("bulkActionStatus", "Select at least one transaction first.", true);
-      return;
-    }
-    const action = document.getElementById("bulkActionType")?.value || "";
-    if (!action) {
-      setPaymentStatus("bulkActionStatus", "Choose a bulk action.", true);
-      return;
-    }
-    const payload = {
-      action,
-      transactionIds: selectedIds,
-      primaryTransactionId: document.getElementById("bulkPrimaryTransactionId")?.value || "",
-      rejectionReason: document.getElementById("bulkRejectionReason")?.value.trim() || "",
-      note: document.getElementById("bulkReviewerNote")?.value.trim() || "",
-    };
-    const submitButton = form.querySelector('button[type="submit"]');
-    setButtonBusy(submitButton, true, "Applying...");
-    setPaymentStatus("bulkActionStatus", `Applying ${action} to ${selectedIds.length} transaction(s)...`, false);
-    const loadingToast = window.showToast
-      ? window.showToast("Applying bulk action...", { type: "loading", sticky: true })
-      : null;
-    try {
-      const result = await requestJson("/api/reconciliation/bulk", { method: "POST", payload });
-      setPaymentStatus(
-        "bulkActionStatus",
-        `Bulk action complete. Success: ${result.successCount}, Failed: ${result.failureCount}.`,
-        result.failureCount > 0
-      );
-      if (window.showToast) {
-        window.showToast(
-          `Bulk action complete. Success: ${result.successCount}, Failed: ${result.failureCount}.`,
-          { type: result.failureCount > 0 ? "warning" : "success" }
-        );
-      }
-      paymentState.selectedQueueIds.clear();
-      form.reset();
-      await Promise.all([loadQueue(), loadReconciliationSummary()]);
-    } catch (err) {
-      setPaymentStatus("bulkActionStatus", err.message || "Could not apply bulk action.", true);
-      if (window.showToast) {
-        window.showToast(err.message || "Could not apply bulk action.", { type: "error" });
-      }
-    } finally {
-      setButtonBusy(submitButton, false, "");
-      if (loadingToast) {
-        loadingToast.close();
-      }
-    }
-  });
-}
 function bindQueueActions() {
-  const queueRows = document.getElementById("receiptQueueRows");
   const filterForm = document.getElementById("queueFilterForm");
-  const selectAllNode = document.getElementById("queueSelectAll");
   const prevPageButton = document.getElementById("queuePrevPage");
   const nextPageButton = document.getElementById("queueNextPage");
 
@@ -1730,13 +1407,13 @@ function bindQueueActions() {
       event.preventDefault();
       paymentState.queuePagination.page = 1;
       const toast = window.showToast
-        ? window.showToast("Applying queue filters...", { type: "loading", sticky: true })
+        ? window.showToast("Applying approved transaction filters...", { type: "loading", sticky: true })
         : null;
       try {
         await Promise.all([loadQueue(), loadReconciliationSummary()]);
       } catch (err) {
         if (window.showToast) {
-          window.showToast(err.message || "Could not load queue.", { type: "error" });
+          window.showToast(err.message || "Could not load approved transactions.", { type: "error" });
         }
       } finally {
         if (toast) toast.close();
@@ -1764,98 +1441,6 @@ function bindQueueActions() {
     });
   }
 
-  if (selectAllNode) {
-    selectAllNode.addEventListener("change", () => {
-      if (selectAllNode.checked) {
-        paymentState.queueRows.forEach((row) => paymentState.selectedQueueIds.add(row.id));
-      } else {
-        paymentState.selectedQueueIds.clear();
-      }
-      renderQueue(paymentState.queueRows);
-    });
-  }
-
-  if (queueRows) {
-    queueRows.addEventListener("change", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLInputElement)) {
-        return;
-      }
-      if (!target.classList.contains("queue-select-row")) {
-        return;
-      }
-      const id = Number.parseInt(target.dataset.id || "", 10);
-      if (!Number.isFinite(id) || id <= 0) {
-        return;
-      }
-      if (target.checked) {
-        paymentState.selectedQueueIds.add(id);
-      } else {
-        paymentState.selectedQueueIds.delete(id);
-      }
-      renderQueue(paymentState.queueRows);
-    });
-
-    queueRows.addEventListener("click", async (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) {
-        return;
-      }
-      const button = target.closest("button[data-action]");
-      if (!button) {
-        return;
-      }
-      const action = button.dataset.action;
-      const id = Number.parseInt(button.dataset.id || "", 10);
-      if (!Number.isFinite(id) || id <= 0) {
-        return;
-      }
-      const endpointByAction = {
-        approve: `/api/reconciliation/${id}/approve`,
-        reject: `/api/reconciliation/${id}/reject`,
-        "request-student-confirmation": `/api/reconciliation/${id}/request-student-confirmation`,
-        "merge-duplicates": `/api/reconciliation/${id}/merge-duplicates`,
-      };
-      const endpoint = endpointByAction[action];
-      if (!endpoint) {
-        return;
-      }
-      const payload = {};
-      if (action === "reject") {
-        const reason = window.prompt("Reason for rejection (optional):", "");
-        if (reason !== null && reason.trim()) {
-          payload.note = reason.trim();
-        }
-      }
-      if (action === "merge-duplicates") {
-        const primaryId = window.prompt("Enter primary transaction ID to keep:");
-        if (primaryId === null) {
-          return;
-        }
-        payload.primaryTransactionId = primaryId.trim();
-      }
-      const loadingToast = window.showToast
-        ? window.showToast("Applying reconciliation action...", { type: "loading", sticky: true })
-        : null;
-      setButtonBusy(button, true, "Updating...");
-      try {
-        await requestJson(endpoint, { method: "POST", payload });
-        if (window.showToast) {
-          window.showToast("Reconciliation action applied.", { type: "success" });
-        }
-        await Promise.all([loadQueue(), loadReconciliationSummary()]);
-      } catch (err) {
-        if (window.showToast) {
-          window.showToast(err.message || "Could not apply reconciliation action.", { type: "error" });
-        }
-      } finally {
-        setButtonBusy(button, false, "");
-        if (loadingToast) {
-          loadingToast.close();
-        }
-      }
-    });
-  }
 }
 
 async function initPaymentsPage() {
@@ -1875,7 +1460,6 @@ async function initPaymentsPage() {
       if (studentSection) studentSection.hidden = false;
       if (reviewSection) reviewSection.remove();
       if (queueSection) queueSection.remove();
-      bindStudentSubmit();
       bindPaystackCheckoutActions();
       bindPostPaystackReferenceForm();
       await Promise.all([loadStudentReceipts(), loadStudentLedger(), loadStudentPaystackReferenceRequests()]);
@@ -1895,13 +1479,11 @@ async function initPaymentsPage() {
     if (studentSection) studentSection.remove();
     if (reviewSection) reviewSection.hidden = false;
     if (queueSection) queueSection.hidden = false;
-    bindStatementManagement();
     bindPaystackReferenceVerify();
     bindPaystackReferenceRequestActions();
     bindPaymentItemsManagement();
     bindQueueActions();
-    bindBulkActions();
-    await Promise.all([loadQueue(), loadStatementInfo(), loadReconciliationSummary(), loadPaystackReferenceRequests()]);
+    await Promise.all([loadQueue(), loadReconciliationSummary(), loadPaystackReferenceRequests()]);
   } catch (err) {
     const errorNode = document.getElementById("paymentsError");
     if (errorNode) {

@@ -2,21 +2,22 @@
 
 CampusPay Hub is a role-based school portal for student communication, class resources, and payment tracking.
 
-## Reconciliation-First Workflow
+## Paystack-Only Workflow
 
-The payment system now runs on an exception-only reconciliation model:
+The payment system runs in strict Paystack mode:
 
 1. Lecturers create payment items.
 2. System creates per-student payment obligations with deterministic references.
-3. Transactions are ingested from statement imports and webhooks.
-4. Matching engine auto-approves high-confidence matches.
-5. Low-confidence or duplicate transactions go to an exception queue for lecturer action.
-6. Student receipt upload remains available as a fallback evidence path.
+3. Students pay through Paystack checkout.
+4. Paystack webhook/verification ingests transactions.
+5. Matching engine auto-approves high-confidence matches.
+6. Approved transactions auto-generate downloadable approved receipts.
+7. Low-confidence or duplicate transactions are handled in reconciliation exception flows.
 
 ## Roles
 
-- `student`: see payment items/obligations, submit fallback receipts, view ledger.
-- `lecturer` (stored as `teacher` role value): upload statements, review exceptions, apply reconciliation actions.
+- `student`: see payment items/obligations, pay with Paystack, view ledger, download approved receipts.
+- `lecturer` (stored as `teacher` role value): manage payment items, verify delayed Paystack references, review reconciliation exceptions.
 - `admin`: all lecturer capabilities + broader monitoring.
 
 ## Core APIs
@@ -29,30 +30,20 @@ The payment system now runs on an exception-only reconciliation model:
 - `PUT /api/payment-items/:id` (lecturer owner/admin)
 - `DELETE /api/payment-items/:id` (lecturer owner/admin)
 
-### Student Receipt (Fallback)
+### Student Payment + Receipt APIs
 
-- `POST /api/payment-receipts` (student, multipart)
-  - `receiptFile` is optional fallback proof
-  - submitted payload is also normalized into `payment_transactions`
-- `GET /api/my/payment-receipts`
-- `GET /api/payment-receipts/:id/file`
+- `GET /api/my/payment-ledger`
+- `POST /api/payments/paystack/initialize`
+- `GET /api/payments/paystack/callback`
+- `GET /api/my/payment-receipts` (approved receipts only)
+- `GET /api/payment-receipts/:id/file?variant=approved`
 
-### Statement Import + Auto Reconcile
+### Paystack Ingestion + Verification
 
-- `GET /api/lecturer/payment-statement`
-- `POST /api/lecturer/payment-statement`
-  - parses rows from CSV/XLSX/PDF/image/etc
-  - validation keeps bad rows in `ingestion.unparsedRows`
-  - supports `?dryRun=true` preview mode (no DB writes)
-  - ingests normalized transactions
-  - auto-reconciles and returns ingestion summary
-- `DELETE /api/lecturer/payment-statement`
-
-### Gateway Webhook (Idempotent)
-
-- `POST /api/payments/webhook`
-  - uses `source_event_id` idempotency key
-  - optional shared secret header via `GATEWAY_WEBHOOK_SECRET`
+- `POST /api/payments/webhook/paystack`
+- `POST /api/payments/paystack/verify`
+- `POST /api/payments/paystack/reference-requests` (student fallback for delayed webhook confirmation)
+- `POST /api/payments/paystack/reference-requests/bulk-verify` (lecturer/admin)
 
 ### Exception Queue + Actions
 
@@ -69,7 +60,23 @@ The payment system now runs on an exception-only reconciliation model:
 - `POST /api/reconciliation/:id/reject`
 - `POST /api/reconciliation/:id/request-student-confirmation`
 - `POST /api/reconciliation/:id/merge-duplicates`
+
+### Deprecated APIs (`410 Gone`)
+
+- `POST /api/payment-receipts`
+- `GET|POST|DELETE /api/lecturer/payment-statement` (`/api/teacher/payment-statement` alias)
+- `GET /api/lecturer/payment-receipts`
+- `GET /api/admin/payment-receipts`
+- `POST /api/payment-receipts/:id/assign`
+- `POST /api/payment-receipts/:id/notes`
+- `GET /api/payment-receipts/:id/notes`
+- `POST /api/payment-receipts/bulk`
+- `POST /api/payment-receipts/:id/verify`
+- `POST /api/payment-receipts/:id/under-review`
+- `POST /api/payment-receipts/:id/approve`
+- `POST /api/payment-receipts/:id/reject`
 - `POST /api/reconciliation/bulk`
+- `POST /api/payments/webhook`
 
 ## Matching + Normalization
 
@@ -93,24 +100,6 @@ Threshold behavior:
 - `REVIEW_RECONCILE_CONFIDENCE .. AUTO_RECONCILE_CONFIDENCE`: exception queue
 - `< REVIEW_RECONCILE_CONFIDENCE`: unmatched/low-confidence exception
 
-## OCR + AI Statement Parsing
-
-- OCR provider:
-  - `OCR_PROVIDER=none|ocrspace`
-- AI parser fallback:
-  - `STATEMENT_PARSER_PROVIDER=openai`
-
-Supported statement formats:
-
-- `CSV, TXT, TSV, JSON, XML, PDF, JPG, PNG, WEBP, XLS/XLSX, DOC/DOCX, RTF`
-
-Parsing order:
-
-1. structured table parse
-2. OCR/text extraction (for PDF/image)
-3. loose-text parse
-4. AI parse fallback
-
 ## Database Additions (Reconciliation)
 
 - `payment_obligations`
@@ -133,7 +122,7 @@ SQL migration scripts:
 
 ## Audit/Event Logging
 
-- `payment_receipt_events` for legacy receipt lifecycle
+- `payment_receipt_events` for approved-receipt lifecycle/audit
 - `reconciliation_events` for transaction reconciliation actions
 - `audit_logs` for actor-level accountability
 
@@ -156,8 +145,7 @@ Automated workflow included in this repo:
 8. Students download generated approved PDFs from:
    - `/api/payment-receipts/:id/file?variant=approved` (authorized owner/admin/lecturer)
 9. Immediate trigger on approval:
-   - `POST /api/payment-receipts/:id/approve` now attempts generation immediately
-   - reconciliation-approved transactions (including Paystack webhook/verify auto-approvals) also auto-generate downloadable receipts
+   - reconciliation-approved transactions (including Paystack webhook/verify auto-approvals) auto-generate downloadable receipts
    - optional toggle: `RECEIPT_IMMEDIATE_ON_APPROVE=true|false`
    - response includes `approved_receipt_delivery` with readiness/failure summary
 
@@ -228,11 +216,13 @@ Runtime notes:
 
 See `.env.example`, including:
 
-- `GATEWAY_WEBHOOK_SECRET`
 - `PAYMENT_REFERENCE_PREFIX`
 - `PAYMENT_REFERENCE_TENANT_ID`
 - `AUTO_RECONCILE_CONFIDENCE`
 - `REVIEW_RECONCILE_CONFIDENCE`
+- `PAYSTACK_SECRET_KEY`
+- `PAYSTACK_WEBHOOK_SECRET`
+- `PAYSTACK_INTERNAL_VERIFY_SECRET`
 - `RECEIPT_*` values for approved receipt generation/download
 - `SMTP_*` values only if you run the standalone email sender workflow
 
@@ -242,17 +232,8 @@ See `.env.example`, including:
 npm test
 ```
 
-## Rollout Plan (Short)
-
-1. Deploy schema + migration release.
-2. Enable statement ingestion first and monitor exception rates.
-3. Enable gateway webhook ingestion with idempotency checks.
-4. Move lecturers fully to reconciliation exception queue.
-5. Keep legacy receipt endpoints active during transition window.
-
 ## Backward Compatibility Notes
 
-- Legacy receipt endpoints remain available.
+- Legacy receipt endpoints are retained in schema for compatibility but deprecated at runtime (`410 Gone`).
 - Existing receipt history is preserved and migrated into normalized transaction records.
-- Student receipt upload is still supported as fallback proof, but reconciliation now prioritizes transaction ingestion.
 - Legacy `/teacher` and `/api/teacher/*` routes still work as aliases for `/lecturer` and `/api/lecturer/*`.

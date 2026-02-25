@@ -4695,9 +4695,8 @@ async function ingestStatementRowsAsTransactions(req, parsedRows, originalFilena
 
 function parseReconciliationFilters(query) {
   return {
-    status: sanitizeReconciliationStatus(query.status || "all"),
-    reason: sanitizeReconciliationReason(query.reason || "all"),
-    student: normalizeIdentifier(query.student || ""),
+    student: String(query.student || "").trim().slice(0, 120),
+    reference: String(query.reference || "").trim().slice(0, 160),
     paymentItemId: parseResourceId(query.paymentItemId),
     dateFrom: String(query.dateFrom || "").trim(),
     dateTo: String(query.dateTo || "").trim(),
@@ -4709,31 +4708,29 @@ function parseReconciliationFilters(query) {
 
 function buildReconciliationExceptionQuery(filters) {
   const params = [];
-  const conditions = [];
-  if (filters.status && filters.status !== "all") {
-    conditions.push("pt.status = ?");
-    params.push(filters.status);
-  } else {
-    conditions.push("pt.status IN ('needs_review', 'unmatched', 'duplicate', 'needs_student_confirmation')");
-  }
-  if (filters.reason && filters.reason !== "all") {
-    conditions.push("(re.reason = ? OR pt.reasons_json LIKE ?)");
-    params.push(filters.reason, `%\"${filters.reason}\"%`);
-  }
+  const conditions = ["pt.status = 'approved'"];
   if (filters.student) {
-    conditions.push("(po.student_username = ? OR pt.student_hint_username = ?)");
-    params.push(filters.student, filters.student);
+    const studentSearch = `%${String(filters.student || "").toLowerCase()}%`;
+    conditions.push(
+      "(LOWER(COALESCE(up.display_name, '')) LIKE ? OR LOWER(COALESCE(po.student_username, pt.student_hint_username, '')) LIKE ?)"
+    );
+    params.push(studentSearch, studentSearch);
+  }
+  if (filters.reference) {
+    const referenceSearch = `%${String(filters.reference || "").toLowerCase()}%`;
+    conditions.push("(LOWER(COALESCE(pt.txn_ref, '')) LIKE ? OR LOWER(COALESCE(ps.gateway_reference, '')) LIKE ?)");
+    params.push(referenceSearch, referenceSearch);
   }
   if (filters.paymentItemId) {
-    conditions.push("(po.payment_item_id = ? OR pt.payment_item_hint_id = ?)");
-    params.push(filters.paymentItemId, filters.paymentItemId);
+    conditions.push("COALESCE(po.payment_item_id, pt.payment_item_hint_id) = ?");
+    params.push(filters.paymentItemId);
   }
   if (filters.dateFrom && isValidIsoLikeDate(filters.dateFrom)) {
-    conditions.push("DATE(pt.paid_at) >= DATE(?)");
+    conditions.push("DATE(COALESCE(pt.reviewed_at, pt.created_at, pt.paid_at)) >= DATE(?)");
     params.push(filters.dateFrom);
   }
   if (filters.dateTo && isValidIsoLikeDate(filters.dateTo)) {
-    conditions.push("DATE(pt.paid_at) <= DATE(?)");
+    conditions.push("DATE(COALESCE(pt.reviewed_at, pt.created_at, pt.paid_at)) <= DATE(?)");
     params.push(filters.dateTo);
   }
   const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -4741,9 +4738,9 @@ function buildReconciliationExceptionQuery(filters) {
   const baseFrom = `
       FROM payment_transactions pt
       LEFT JOIN payment_obligations po ON po.id = pt.matched_obligation_id
-      LEFT JOIN payment_items pi ON pi.id = po.payment_item_id
-      LEFT JOIN payment_matches pm ON pm.transaction_id = pt.id
-      LEFT JOIN reconciliation_exceptions re ON re.match_id = pm.id
+      LEFT JOIN payment_items pi ON pi.id = COALESCE(po.payment_item_id, pt.payment_item_hint_id)
+      LEFT JOIN user_profiles up ON up.username = COALESCE(po.student_username, pt.student_hint_username)
+      LEFT JOIN paystack_sessions ps ON ps.gateway_reference = pt.txn_ref
   `;
   return {
     sql: `
@@ -4752,31 +4749,21 @@ function buildReconciliationExceptionQuery(filters) {
         pt.txn_ref,
         pt.amount,
         pt.paid_at,
-        pt.payer_name,
-        pt.source,
         pt.status,
-        pt.confidence,
+        COALESCE(po.student_username, pt.student_hint_username, '') AS student_username,
+        COALESCE(NULLIF(TRIM(up.display_name), ''), COALESCE(po.student_username, pt.student_hint_username), 'Unknown Student') AS student_full_name,
+        COALESCE(po.payment_item_id, pt.payment_item_hint_id) AS payment_item_id,
+        pi.title AS payment_item_title,
+        COALESCE(pi.currency, 'NGN') AS currency,
+        COALESCE(NULLIF(ps.gateway_reference, ''), pt.txn_ref, '') AS paystack_reference,
+        COALESCE(pt.reviewed_at, pt.created_at) AS approved_at,
         pt.reasons_json,
         pt.created_at,
         pt.reviewed_by,
-        pt.reviewed_at,
-        pt.payment_item_hint_id,
-        pt.student_hint_username,
-        po.id AS obligation_id,
-        po.student_username,
-        po.payment_item_id,
-        po.payment_reference,
-        po.expected_amount,
-        pi.title AS payment_item_title,
-        pi.currency,
-        pm.id AS payment_match_id,
-        pm.decision AS match_decision,
-        re.id AS exception_id,
-        re.reason AS exception_reason,
-        re.status AS exception_status
+        pt.reviewed_at
       ${baseFrom}
       ${whereClause}
-      ORDER BY pt.created_at DESC, pt.id DESC
+      ORDER BY datetime(COALESCE(pt.reviewed_at, pt.created_at)) DESC, pt.id DESC
       LIMIT ${filters.pageSize}
       OFFSET ${offset}
     `,
@@ -5643,153 +5630,23 @@ app.delete("/api/payment-items/:id", requireTeacher, async (req, res) => {
   }
 });
 
-app.get(["/api/lecturer/payment-statement", "/api/teacher/payment-statement"], requireTeacher, async (req, res) => {
-  try {
-    const row = await getTeacherStatement(req.session.user.username);
-    if (!row) {
-      return res.json({ hasStatement: false });
-    }
-    return res.json({
-      hasStatement: true,
-      original_filename: row.original_filename,
-      uploaded_at: row.uploaded_at,
-      parsed_row_count: row.parsed_rows.length,
-      unparsed_row_count: Array.isArray(row.unparsed_rows) ? row.unparsed_rows.length : 0,
-      parse_stages: Array.isArray(row.parse_stages) ? row.parse_stages : [],
-    });
-  } catch (_err) {
-    return res.status(500).json({ error: "Could not load lecturer statement." });
-  }
-});
-
-app.post(["/api/lecturer/payment-statement", "/api/teacher/payment-statement"], requireTeacher, (req, res) => {
-  statementUpload.single("statementFile")(req, res, async (err) => {
-    if (err) {
-      const message =
-        err &&
-        err.message ===
-          "Only CSV, TXT, TSV, JSON, XML, PDF, JPG, PNG, WEBP, XLS/XLSX, DOC/DOCX, and RTF statement files are allowed."
-          ? err.message
-          : err && err.code === "LIMIT_FILE_SIZE"
-          ? "Statement file cannot be larger than 5 MB."
-          : "Could not process statement upload.";
-      return res.status(400).json({ error: message, code: "statement_upload_invalid" });
-    }
-    if (!req.file || !req.file.path) {
-      return res.status(400).json({ error: "Statement file is required.", code: "statement_file_required" });
-    }
-    try {
-      const dryRun = String(req.query?.dryRun || req.body?.dryRun || "")
-        .trim()
-        .toLowerCase() === "true";
-      const statementPath = path.resolve(req.file.path);
-      const parsedResult = await parseStatementRowsFromUpload(statementPath, req.file.originalname || req.file.path);
-      const parsedRows = Array.isArray(parsedResult.parsedRows) ? parsedResult.parsedRows : [];
-      const extractedText = String(parsedResult.extractedText || "");
-      const parserInvalidRows = Array.isArray(parsedResult.invalidRows) ? parsedResult.invalidRows : [];
-      const parseStages = Array.isArray(parsedResult.parseStages) ? parsedResult.parseStages : [];
-      if (!parsedRows.length && !parserInvalidRows.length) {
-        fs.unlink(req.file.path, () => {});
-        return res.status(400).json({
-          code: "statement_parse_failed",
-          error:
-            "Could not parse statement rows. Use a clear statement file with name/description, amount, date, and transaction reference.",
-        });
-      }
-      const teacherUsername = normalizeIdentifier(req.session.user.username);
-      const ingestionSummary = await ingestStatementRowsAsTransactions(
-        req,
-        parsedRows,
-        String(req.file.originalname || path.basename(req.file.path)),
-        { dryRun }
-      );
-      ingestionSummary.unparsedRows = parserInvalidRows.concat(ingestionSummary.unparsedRows || []);
-      ingestionSummary.invalid = Number(ingestionSummary.invalid || 0) + parserInvalidRows.length;
-      ingestionSummary.parseStages = parseStages;
-      if (dryRun) {
-        fs.unlink(req.file.path, () => {});
-        return res.status(200).json({
-          ok: true,
-          dryRun: true,
-          parsed_row_count: parsedRows.length,
-          ingestion: ingestionSummary,
-        });
-      }
-      const existing = await get(
-        "SELECT statement_file_path FROM teacher_payment_statements WHERE teacher_username = ? LIMIT 1",
-        [teacherUsername]
-      );
-      await run(
-        `
-          INSERT INTO teacher_payment_statements (
-            teacher_username,
-            original_filename,
-          statement_file_path,
-          parsed_rows_json,
-          uploaded_at
-        )
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-          ON CONFLICT(teacher_username) DO UPDATE SET
-            original_filename = excluded.original_filename,
-            statement_file_path = excluded.statement_file_path,
-            parsed_rows_json = excluded.parsed_rows_json,
-            uploaded_at = CURRENT_TIMESTAMP
-        `,
-        [
-          teacherUsername,
-          String(req.file.originalname || "").slice(0, 255) || path.basename(req.file.path),
-          statementPath,
-          JSON.stringify({
-            parsed_rows: parsedRows,
-            extracted_text: extractedText.slice(0, 300000),
-            unparsed_rows: ingestionSummary.unparsedRows || [],
-            parse_stages: ingestionSummary.parseStages || [],
-          }),
-        ]
-      );
-      if (existing && existing.statement_file_path && existing.statement_file_path !== req.file.path) {
-        fs.unlink(existing.statement_file_path, () => {});
-      }
-      await logAuditEvent(
-        req,
-        "upload",
-        "payment_statement",
-        null,
-        teacherUsername,
-        `Uploaded statement with ${parsedRows.length} parsed row(s). Ingested ${ingestionSummary.inserted} transaction(s). Invalid rows: ${Number(
-          ingestionSummary.invalid || 0
-        )}.`
-      );
-      return res.status(201).json({
-        ok: true,
-        parsed_row_count: parsedRows.length,
-        ingestion: ingestionSummary,
-      });
-    } catch (_err) {
-      return res.status(500).json({ error: "Could not save statement of account." });
-    }
+function sendPaystackOnlyGone(res, feature) {
+  return res.status(410).json({
+    error: `${feature} is no longer available. This deployment is Paystack-only.`,
+    code: "paystack_only_deprecated_feature",
   });
+}
+
+app.get(["/api/lecturer/payment-statement", "/api/teacher/payment-statement"], requireTeacher, async (_req, res) => {
+  return sendPaystackOnlyGone(res, "Statement upload");
 });
 
-app.delete(["/api/lecturer/payment-statement", "/api/teacher/payment-statement"], requireTeacher, async (req, res) => {
-  try {
-    const teacherUsername = normalizeIdentifier(req.session.user.username);
-    const row = await get(
-      "SELECT statement_file_path FROM teacher_payment_statements WHERE teacher_username = ? LIMIT 1",
-      [teacherUsername]
-    );
-    if (!row) {
-      return res.status(404).json({ error: "No uploaded statement found." });
-    }
-    await run("DELETE FROM teacher_payment_statements WHERE teacher_username = ?", [teacherUsername]);
-    if (row.statement_file_path) {
-      fs.unlink(row.statement_file_path, () => {});
-    }
-    await logAuditEvent(req, "delete", "payment_statement", null, teacherUsername, "Deleted uploaded statement.");
-    return res.json({ ok: true });
-  } catch (_err) {
-    return res.status(500).json({ error: "Could not delete lecturer statement." });
-  }
+app.post(["/api/lecturer/payment-statement", "/api/teacher/payment-statement"], requireTeacher, async (_req, res) => {
+  return sendPaystackOnlyGone(res, "Statement upload");
+});
+
+app.delete(["/api/lecturer/payment-statement", "/api/teacher/payment-statement"], requireTeacher, async (_req, res) => {
+  return sendPaystackOnlyGone(res, "Statement upload");
 });
 
 function normalizePaystackError(err, fallbackCode = "paystack_request_failed") {
@@ -6488,75 +6345,7 @@ app.post("/api/payments/paystack/reference-requests/bulk-verify", requireTeacher
 });
 
 app.post("/api/payments/webhook", async (req, res) => {
-  try {
-    if (GATEWAY_WEBHOOK_SECRET) {
-      const providedSecret = String(req.get("x-paytec-webhook-secret") || req.get("x-webhook-secret") || "").trim();
-      if (!providedSecret || providedSecret !== GATEWAY_WEBHOOK_SECRET) {
-        return res.status(401).json({ error: "Unauthorized webhook secret.", code: "webhook_unauthorized" });
-      }
-    }
-    const payload = req.body || {};
-    const transaction = payload.transaction || payload.data || payload;
-    const eventIdRaw = payload.eventId || payload.event_id || payload.id || transaction.id || transaction.event_id || "";
-    const sourceEventId =
-      String(eventIdRaw || "").trim() ||
-      `webhook-${crypto.createHash("sha1").update(JSON.stringify(payload)).digest("hex").slice(0, 40)}`;
-    const ingest = await ingestNormalizedTransaction(
-      {
-        source: "gateway_webhook",
-        source_event_id: sourceEventId,
-        txn_ref:
-          transaction.txn_ref ||
-          transaction.reference ||
-          transaction.transaction_ref ||
-          transaction.transactionId ||
-          transaction.tx_ref ||
-          "",
-        amount: transaction.amount || transaction.amount_paid || transaction.paid_amount,
-        date: transaction.date || transaction.paid_at || transaction.paidAt || transaction.created_at,
-        payer_name: transaction.payer_name || transaction.payerName || transaction.customer_name || transaction.name || "",
-        payment_item_id: transaction.payment_item_id || transaction.paymentItemId,
-        student_username: transaction.student_username || transaction.studentUsername || transaction.student,
-        raw_payload: payload,
-      },
-      { allowAutoApprove: true }
-    );
-    if (!ingest.ok) {
-      return res.status(400).json({ error: ingest.error || "Could not process webhook transaction.", code: "webhook_invalid" });
-    }
-    await run(
-      `
-        INSERT INTO audit_logs (
-          actor_username,
-          actor_role,
-          action,
-          content_type,
-          content_id,
-          target_owner,
-          summary
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        "system-webhook",
-        "system",
-        "ingest",
-        "payment_transaction",
-        ingest.transaction?.id || null,
-        ingest.transaction?.student_hint_username || null,
-        `Webhook transaction ${ingest.idempotent ? "idempotent-hit" : "ingested"} (${sourceEventId})`,
-      ]
-    );
-    return res.status(200).json({
-      ok: true,
-      idempotent: !!ingest.idempotent,
-      inserted: !!ingest.inserted,
-      transaction_id: ingest.transaction?.id || null,
-      status: ingest.transaction?.status || null,
-    });
-  } catch (_err) {
-    return res.status(500).json({ error: "Could not process payment webhook.", code: "webhook_failed" });
-  }
+  return sendPaystackOnlyGone(res, "Generic payment webhook ingestion");
 });
 
 async function loadReconciliationExceptionsPayload(queryInput) {
@@ -6615,7 +6404,7 @@ async function handleReconciliationExceptionsList(req, res) {
     }
     return res.json(payload);
   } catch (_err) {
-    return res.status(500).json({ error: "Could not load reconciliation exceptions.", code: "reconciliation_exceptions_failed" });
+    return res.status(500).json({ error: "Could not load approved transactions.", code: "reconciliation_exceptions_failed" });
   }
 }
 
@@ -6668,171 +6457,11 @@ app.post("/api/reconciliation/:id/merge-duplicates", requireTeacher, async (req,
 });
 
 app.post("/api/reconciliation/bulk", requireTeacher, async (req, res) => {
-  const action = sanitizeReconciliationBulkAction(req.body?.action);
-  const ids = parseReceiptIdList(req.body?.transactionIds, 200);
-  if (!action) {
-    return res.status(400).json({ error: "A valid reconciliation bulk action is required.", code: "reconciliation_bulk_action_required" });
-  }
-  if (!ids.length) {
-    return res.status(400).json({ error: "At least one transaction ID is required.", code: "reconciliation_bulk_empty" });
-  }
-  const primaryTransactionId = parseResourceId(req.body?.primaryTransactionId);
-  const results = [];
-  try {
-    await withSqlTransaction(async () => {
-      for (const transactionId of ids) {
-        const row = await applyReconciliationReviewAction(req, transactionId, action, {
-          note: req.body?.note,
-          obligationId: req.body?.obligationId,
-          primaryTransactionId,
-        });
-        results.push({ id: transactionId, ok: true, transaction: row });
-      }
-    });
-  } catch (err) {
-    return res.status(err?.status || 500).json({
-      error: err?.error || "Could not apply reconciliation bulk action.",
-      code: "reconciliation_bulk_failed",
-    });
-  }
-  const successCount = results.filter((entry) => entry.ok).length;
-  return res.json({
-    ok: true,
-    action,
-    total: results.length,
-    successCount,
-    failureCount: results.length - successCount,
-    results,
-  });
+  return sendPaystackOnlyGone(res, "Bulk reconciliation reviewer actions");
 });
 
 app.post("/api/payment-receipts", requireStudent, (req, res) => {
-  receiptUpload.single("receiptFile")(req, res, async (err) => {
-    if (err) {
-      const message =
-        err && err.message === "Only JPG, PNG, WEBP, and PDF receipts are allowed."
-          ? err.message
-          : err && err.code === "LIMIT_FILE_SIZE"
-          ? "Receipt file cannot be larger than 5 MB."
-          : "Could not process receipt upload.";
-      return res.status(400).json({ error: message });
-    }
-
-    const paymentItemId = parseResourceId(req.body.paymentItemId);
-    const amountPaid = parseMoneyValue(req.body.amountPaid);
-    const paidAt = String(req.body.paidAt || "").trim();
-    const transactionRef = sanitizeTransactionRef(req.body.transactionRef || "");
-    const note = String(req.body.note || "").trim().slice(0, 300);
-
-    if (!paymentItemId) {
-      return res.status(400).json({ error: "Payment item is required." });
-    }
-    if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
-      return res.status(400).json({ error: "Amount paid must be greater than zero." });
-    }
-    if (!paidAt || !isValidIsoLikeDate(paidAt)) {
-      return res.status(400).json({ error: "Paid date is required and must be valid." });
-    }
-    if (!transactionRef || transactionRef.length < 4) {
-      return res.status(400).json({ error: "Transaction reference must be at least 4 characters." });
-    }
-
-    try {
-      const paymentItem = await get("SELECT * FROM payment_items WHERE id = ? LIMIT 1", [paymentItemId]);
-      if (!paymentItem) {
-        return res.status(400).json({ error: "Selected payment item does not exist." });
-      }
-
-      await upsertPaymentObligation(paymentItem, req.session.user.username);
-      const receiptStoredPath = req.file?.path ? path.resolve(req.file.path) : "";
-      const ocrResult = req.file?.path ? await extractReceiptText(req.file.path) : { text: "" };
-      const result = await run(
-        `
-          INSERT INTO payment_receipts (
-            payment_item_id,
-            student_username,
-            amount_paid,
-            paid_at,
-            transaction_ref,
-            receipt_file_path,
-            status,
-            verification_notes,
-            extracted_text
-          )
-          VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?)
-        `,
-        [
-          paymentItemId,
-          req.session.user.username,
-          amountPaid,
-          paidAt,
-          transactionRef,
-          receiptStoredPath,
-          JSON.stringify({ student_note: note }),
-          ocrResult && ocrResult.text ? String(ocrResult.text) : "",
-        ]
-      );
-
-      const receiptRow = await get("SELECT * FROM payment_receipts WHERE id = ?", [result.lastID]);
-      const flags = await buildVerificationFlags(receiptRow, paymentItem);
-      const notesPayload = {
-        student_note: note,
-        verification_flags: flags,
-      };
-      await run("UPDATE payment_receipts SET verification_notes = ? WHERE id = ?", [
-        JSON.stringify(notesPayload),
-        result.lastID,
-      ]);
-
-      await logReceiptEvent(result.lastID, req, "submit", null, "submitted", note || null);
-      const transactionIngest = await ingestNormalizedTransaction(
-        {
-          source: "student_receipt",
-          source_event_id: `receipt-${result.lastID}`,
-          txn_ref: transactionRef,
-          amount: amountPaid,
-          date: paidAt,
-          payer_name: req.session.user.username,
-          payment_item_id: paymentItemId,
-          student_username: req.session.user.username,
-          source_file_name: req.file?.originalname || "",
-          raw_payload: {
-            receipt_id: result.lastID,
-            note,
-            has_file: !!req.file,
-          },
-        },
-        { actorReq: req, allowAutoApprove: true }
-      );
-      await logAuditEvent(
-        req,
-        "create",
-        "payment_receipt",
-        result.lastID,
-        req.session.user.username,
-        `Submitted receipt for "${paymentItem.title}" with ref ${transactionRef}`
-      );
-
-      return res.status(201).json({
-        ok: true,
-        id: result.lastID,
-        verificationFlags: flags,
-        reconciliation: transactionIngest.ok ? transactionIngest.transaction : null,
-      });
-    } catch (submitErr) {
-      if (req.file && req.file.path) {
-        try {
-          await fs.promises.unlink(req.file.path);
-        } catch (_cleanupErr) {
-          // Ignore cleanup failure.
-        }
-      }
-      if (String(submitErr?.message || "").includes("UNIQUE constraint failed: payment_receipts.transaction_ref")) {
-        return res.status(409).json({ error: "This transaction reference has already been submitted." });
-      }
-      return res.status(500).json({ error: "Could not submit payment receipt." });
-    }
-  });
+  return sendPaystackOnlyGone(res, "Manual receipt submission");
 });
 
 app.get("/api/my/payment-receipts", requireAuth, async (req, res) => {
@@ -6868,7 +6497,8 @@ app.get("/api/my/payment-receipts", requireAuth, async (req, res) => {
         JOIN payment_items pi ON pi.id = pr.payment_item_id
         LEFT JOIN approved_receipt_dispatches ard ON ard.payment_receipt_id = pr.id
         WHERE pr.student_username = ?
-        ORDER BY pr.submitted_at DESC, pr.id DESC
+          AND pr.status = 'approved'
+        ORDER BY COALESCE(pr.reviewed_at, pr.submitted_at) DESC, pr.id DESC
       `;
     const queryRows = () => all(rowsSql, [req.session.user.username]);
     let rows = await queryRows();
@@ -6895,7 +6525,7 @@ app.get("/api/my/payment-receipts", requireAuth, async (req, res) => {
     }
     return res.json(rows);
   } catch (_err) {
-    return res.status(500).json({ error: "Could not load your receipt submissions." });
+    return res.status(500).json({ error: "Could not load your approved receipts." });
   }
 });
 
@@ -6923,17 +6553,6 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
                 FROM payment_transactions pt
                 WHERE pt.matched_obligation_id = po.id
                   AND pt.status IN ('needs_review', 'needs_student_confirmation', 'unmatched')
-              ),
-              0
-            )
-            +
-            COALESCE(
-              (
-                SELECT SUM(pr.amount_paid)
-                FROM payment_receipts pr
-                WHERE pr.payment_item_id = pi.id
-                  AND pr.student_username = ?
-                  AND pr.status IN ('submitted', 'under_review')
               ),
               0
             )
@@ -6987,7 +6606,6 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
           pi.id ASC
       `,
       [
-        req.session.user.username,
         req.session.user.username,
         req.session.user.username,
         req.session.user.username,
@@ -7129,47 +6747,11 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
 });
 
 app.get(["/api/lecturer/payment-receipts", "/api/teacher/payment-receipts"], requireTeacher, async (req, res) => {
-  try {
-    const filters = parseQueueFilters(req.query || {});
-    const query = buildReceiptQueueQuery(filters, 100, {
-      reviewerUsername: req.session.user.username,
-    });
-    const rows = await all(query.sql, query.params);
-    const enriched = await Promise.all(
-      rows.map(async (row) => {
-        const flags = await buildVerificationFlags(row, row);
-        return {
-          ...row,
-          verification_flags: flags,
-        };
-      })
-    );
-    return res.json(enriched);
-  } catch (_err) {
-    return res.status(500).json({ error: "Could not load payment receipt queue." });
-  }
+  return sendPaystackOnlyGone(res, "Manual payment receipt review queue");
 });
 
 app.get("/api/admin/payment-receipts", requireAdmin, async (req, res) => {
-  try {
-    const filters = parseQueueFilters(req.query || {});
-    const query = buildReceiptQueueQuery(filters, 250, {
-      reviewerUsername: req.session.user.username,
-    });
-    const rows = await all(query.sql, query.params);
-    const enriched = await Promise.all(
-      rows.map(async (row) => {
-        const flags = await buildVerificationFlags(row, row);
-        return {
-          ...row,
-          verification_flags: flags,
-        };
-      })
-    );
-    return res.json(enriched);
-  } catch (_err) {
-    return res.status(500).json({ error: "Could not load admin payment receipt queue." });
-  }
+  return sendPaystackOnlyGone(res, "Manual payment receipt review queue");
 });
 
 async function getReceiptQueueRowById(id) {
@@ -7457,172 +7039,35 @@ async function transitionPaymentReceiptStatus(req, res, nextStatus, actionName, 
 }
 
 app.post("/api/payment-receipts/:id/assign", requireTeacher, async (req, res) => {
-  const id = parseResourceId(req.params.id);
-  if (!id) {
-    return res.status(400).json({ error: "Invalid receipt ID." });
-  }
-  try {
-    const receipt = await assignReceiptReviewer(req, id, req.body?.assignee, req.body?.note);
-    return res.json({ ok: true, receipt });
-  } catch (err) {
-    if (err && err.status && err.error) {
-      return res.status(err.status).json({ error: err.error });
-    }
-    return res.status(500).json({ error: "Could not assign reviewer." });
-  }
+  return sendPaystackOnlyGone(res, "Manual payment receipt review");
 });
 
 app.post("/api/payment-receipts/:id/notes", requireTeacher, async (req, res) => {
-  const id = parseResourceId(req.params.id);
-  if (!id) {
-    return res.status(400).json({ error: "Invalid receipt ID." });
-  }
-  const note = String(req.body?.note || "").trim().slice(0, 500);
-  if (!note) {
-    return res.status(400).json({ error: "Note cannot be empty." });
-  }
-  try {
-    const row = await get("SELECT id FROM payment_receipts WHERE id = ? LIMIT 1", [id]);
-    if (!row) {
-      return res.status(404).json({ error: "Receipt not found." });
-    }
-    await appendReviewerNoteEvent(id, req, note);
-    return res.json({ ok: true });
-  } catch (_err) {
-    return res.status(500).json({ error: "Could not save reviewer note." });
-  }
+  return sendPaystackOnlyGone(res, "Manual payment receipt review");
 });
 
 app.get("/api/payment-receipts/:id/notes", requireTeacher, async (req, res) => {
-  const id = parseResourceId(req.params.id);
-  if (!id) {
-    return res.status(400).json({ error: "Invalid receipt ID." });
-  }
-  try {
-    const row = await get("SELECT id FROM payment_receipts WHERE id = ? LIMIT 1", [id]);
-    if (!row) {
-      return res.status(404).json({ error: "Receipt not found." });
-    }
-    const notes = await all(
-      `
-        SELECT
-          id,
-          actor_username AS reviewer_username,
-          notes AS note,
-          created_at
-        FROM payment_receipt_events
-        WHERE receipt_id = ?
-          AND action = 'review_note'
-          AND notes IS NOT NULL
-        ORDER BY created_at DESC, id DESC
-      `,
-      [id]
-    );
-    return res.json(notes);
-  } catch (_err) {
-    return res.status(500).json({ error: "Could not load reviewer notes history." });
-  }
+  return sendPaystackOnlyGone(res, "Manual payment receipt review");
 });
 
 app.post("/api/payment-receipts/bulk", requireTeacher, async (req, res) => {
-  const action = sanitizeBulkReceiptAction(req.body?.action);
-  const ids = parseReceiptIdList(req.body?.receiptIds, 100);
-  if (!action) {
-    return res.status(400).json({ error: "A valid bulk action is required." });
-  }
-  if (!ids.length) {
-    return res.status(400).json({ error: "At least one receipt ID is required." });
-  }
-
-  const results = [];
-  for (const id of ids) {
-    try {
-      if (action === "assign") {
-        const receipt = await assignReceiptReviewer(req, id, req.body?.assignee, req.body?.note);
-        results.push({ id, ok: true, receipt });
-        continue;
-      }
-      if (action === "note") {
-        const note = String(req.body?.note || "").trim().slice(0, 500);
-        if (!note) {
-          throw { status: 400, error: "Bulk note action requires a note." };
-        }
-        const row = await get("SELECT id FROM payment_receipts WHERE id = ? LIMIT 1", [id]);
-        if (!row) {
-          throw { status: 404, error: "Receipt not found." };
-        }
-        await appendReviewerNoteEvent(id, req, note);
-        results.push({ id, ok: true });
-        continue;
-      }
-      if (action === "bulk_verify") {
-        const verification = await verifyReceiptAgainstStatementById(req, id, { bulk: true });
-        results.push({ id, ok: true, receipt: verification.receipt, verification });
-        continue;
-      }
-
-      const nextStatusByAction = {
-        under_review: "under_review",
-        approve: "approved",
-        reject: "rejected",
-      };
-      const nextStatus = nextStatusByAction[action];
-      const receipt = await transitionPaymentReceiptStatusById(req, id, nextStatus, action, {
-        rejectionReason: req.body?.rejectionReason,
-        reviewerNote: req.body?.note,
-        defaultEventNote: action === "under_review" ? "Moved receipt to under review." : "",
-      });
-      results.push({ id, ok: true, receipt });
-    } catch (err) {
-      results.push({
-        id,
-        ok: false,
-        error: err && err.error ? err.error : "Could not apply action.",
-      });
-    }
-  }
-
-  const successCount = results.filter((entry) => entry.ok).length;
-  return res.json({
-    ok: true,
-    action,
-    total: results.length,
-    successCount,
-    failureCount: results.length - successCount,
-    results,
-  });
+  return sendPaystackOnlyGone(res, "Manual payment receipt review");
 });
 
 app.post("/api/payment-receipts/:id/verify", requireTeacher, async (req, res) => {
-  const id = parseResourceId(req.params.id);
-  if (!id) {
-    return res.status(400).json({ error: "Invalid receipt ID." });
-  }
-  try {
-    const verification = await verifyReceiptAgainstStatementById(req, id, { bulk: false });
-    return res.json({ ok: true, ...verification });
-  } catch (err) {
-    if (err && err.status && err.error) {
-      return res.status(err.status).json({ error: err.error });
-    }
-    return res.status(500).json({ error: "Could not verify receipt against statement." });
-  }
+  return sendPaystackOnlyGone(res, "Statement-based receipt verification");
 });
 
 app.post("/api/payment-receipts/:id/under-review", requireTeacher, async (req, res) => {
-  return transitionPaymentReceiptStatus(req, res, "under_review", "move_under_review", {
-    defaultEventNote: "Moved receipt to under review.",
-  });
+  return sendPaystackOnlyGone(res, "Manual payment receipt review");
 });
 
 app.post("/api/payment-receipts/:id/approve", requireTeacher, async (req, res) => {
-  return transitionPaymentReceiptStatus(req, res, "approved", "approve", {
-    triggerApprovedReceiptDispatch: true,
-  });
+  return sendPaystackOnlyGone(res, "Manual payment receipt review");
 });
 
 app.post("/api/payment-receipts/:id/reject", requireTeacher, async (req, res) => {
-  return transitionPaymentReceiptStatus(req, res, "rejected", "reject");
+  return sendPaystackOnlyGone(res, "Manual payment receipt review");
 });
 
 app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
@@ -7630,13 +7075,16 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
   if (!id) {
     return res.status(400).json({ error: "Invalid receipt ID." });
   }
-  const requestedVariant = String(req.query.variant || "submitted")
+  const requestedVariant = String(req.query.variant || "approved")
     .trim()
     .toLowerCase();
-  if (requestedVariant !== "submitted" && requestedVariant !== "approved") {
+  if (requestedVariant === "submitted") {
+    return sendPaystackOnlyGone(res, "Submitted receipt files");
+  }
+  if (requestedVariant !== "approved") {
     return res.status(400).json({ error: "Invalid receipt variant." });
   }
-  const wantsApprovedVariant = requestedVariant === "approved";
+  const wantsApprovedVariant = true;
   try {
     const row = await get(
       `
@@ -7682,8 +7130,8 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Approved receipt is not available yet. Please refresh and try again." });
     }
 
-    const allowedBaseDir = wantsApprovedVariant ? approvedReceiptsDir : receiptsDir;
-    let selectedPath = wantsApprovedVariant ? approvedReceiptPath : row.receipt_file_path;
+    const allowedBaseDir = approvedReceiptsDir;
+    let selectedPath = approvedReceiptPath;
     if (wantsApprovedVariant && selectedPath) {
       const absoluteApprovedPath = path.resolve(selectedPath);
       const approvedPathValid = isPathInsideDirectory(allowedBaseDir, absoluteApprovedPath) && fs.existsSync(absoluteApprovedPath);
@@ -7704,16 +7152,12 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
       }
     }
     if (!selectedPath) {
-      return res.status(404).json({
-        error: wantsApprovedVariant ? "Approved receipt file is missing." : "No receipt file attached to this submission.",
-      });
+      return res.status(404).json({ error: "Approved receipt file is missing." });
     }
 
     const absolutePath = path.resolve(selectedPath);
     if (!isPathInsideDirectory(allowedBaseDir, absolutePath) || !fs.existsSync(absolutePath)) {
-      return res.status(404).json({
-        error: wantsApprovedVariant ? "Approved receipt file is missing." : "Receipt file is missing.",
-      });
+      return res.status(404).json({ error: "Approved receipt file is missing." });
     }
     return res.sendFile(absolutePath);
   } catch (_err) {
