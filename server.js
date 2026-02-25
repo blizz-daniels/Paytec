@@ -15,6 +15,29 @@ const {
   DEFAULT_EMAIL_SUBJECT,
   generateApprovedStudentReceipts,
 } = require("./services/approved-receipt-generator");
+const {
+  normalizeIdentifier,
+  normalizeSurnamePassword,
+  isValidIdentifier,
+  isValidSurnamePassword,
+  normalizeDisplayName,
+  normalizeProfileEmail,
+  isValidProfileEmail,
+  parseCsvLine,
+  parseResourceId,
+  parseBooleanEnv,
+  parseOptionalPositiveIntEnv,
+  isValidIsoLikeDate,
+  parseMoneyValue,
+  parseCurrency,
+  sanitizeTransactionRef,
+  normalizeWhitespace,
+  normalizeStatementName,
+  normalizeReference,
+  toDateOnly,
+  parseDateToken,
+  parseAmountToken,
+} = require("./services/utils");
 let xlsx = null;
 try {
   xlsx = require("xlsx");
@@ -419,6 +442,9 @@ function parseCsvLine(line) {
     } else {
       current += char;
     }
+function ensureCsrfToken(req) {
+  if (!req.session) {
+    return "";
   }
   values.push(current.trim());
   return values;
@@ -452,6 +478,8 @@ function isValidProfileEmail(value) {
   const normalized = normalizeProfileEmail(value);
   if (!normalized || normalized.length > 254) {
     return false;
+  if (!req.session.csrfToken) {
+    req.session.csrfToken = crypto.randomBytes(32).toString("hex");
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(normalized)) {
     return false;
@@ -461,6 +489,7 @@ function isValidProfileEmail(value) {
     return false;
   }
   return true;
+  return req.session.csrfToken;
 }
 
 function resolvePaystackCheckoutEmail(username, profileEmail) {
