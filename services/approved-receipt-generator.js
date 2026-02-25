@@ -1,4 +1,5 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const DEFAULT_EMAIL_SUBJECT = "Your Approved Student Receipt";
@@ -42,6 +43,34 @@ const DEFAULT_PASSPORT_SVG = `
     Passport Photo
   </text>
 </svg>
+`.trim();
+
+const DEFAULT_FALLBACK_TEMPLATE_HTML = `
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Approved Payment Receipt</title>
+</head>
+<body>
+  <main class="receipt-page">
+    <h1>Approved Payment Receipt</h1>
+    <p><strong>Student:</strong> {{full_name}}</p>
+    <p><strong>Application ID:</strong> {{application_id}}</p>
+    <p><strong>Program:</strong> {{program}}</p>
+    <p><strong>Amount Paid:</strong> {{amount_paid}}</p>
+    <p><strong>Receipt No:</strong> {{receipt_no}}</p>
+    <p><strong>Approval Date:</strong> {{approval_date}}</p>
+  </main>
+</body>
+</html>
+`.trim();
+
+const DEFAULT_FALLBACK_TEMPLATE_CSS = `
+html, body { margin: 0; padding: 0; font-family: Arial, sans-serif; background: #ffffff; color: #111827; }
+.receipt-page { width: 794px; min-height: 1123px; margin: 0 auto; padding: 48px; box-sizing: border-box; }
+h1 { margin: 0 0 24px; font-size: 28px; }
+p { margin: 0 0 12px; font-size: 15px; }
 `.trim();
 
 function requireOptionalPackage(name, installHint) {
@@ -312,13 +341,20 @@ async function readTemplateParts(options) {
     options.templateHtmlPath || path.join(projectRoot, "templates", "approved-student-receipt.html")
   );
   const cssPath = path.resolve(options.templateCssPath || path.join(projectRoot, "templates", "approved-student-receipt.css"));
-  const html = options.templateHtml || (await fs.promises.readFile(htmlPath, "utf8"));
+  let html = options.templateHtml || "";
+  if (!html) {
+    try {
+      html = await fs.promises.readFile(htmlPath, "utf8");
+    } catch (_err) {
+      html = DEFAULT_FALLBACK_TEMPLATE_HTML;
+    }
+  }
   let css = options.templateCss || "";
   if (!css) {
     try {
       css = await fs.promises.readFile(cssPath, "utf8");
     } catch (_err) {
-      css = "";
+      css = DEFAULT_FALLBACK_TEMPLATE_CSS;
     }
   }
   return {
@@ -362,7 +398,7 @@ async function fetchEligibleApprovedRows(db, { force, limit, paymentReceiptId })
     params.push(receiptIdValue);
   }
   if (!force) {
-    sql += " AND COALESCE(ard.receipt_sent, 0) = 0";
+    sql += " AND (COALESCE(ard.receipt_sent, 0) = 0 OR COALESCE(ard.receipt_file_path, '') = '')";
   }
   sql += " ORDER BY pr.id ASC";
   if (limitValue > 0) {
@@ -434,15 +470,83 @@ async function markFailed(db, paymentReceiptId, errorMessage, options = {}) {
   );
 }
 
-async function renderHtmlToImagePdf({ html, outputPdfPath }) {
-  const puppeteer = requireOptionalPackage("puppeteer", "npm install puppeteer pdf-lib nodemailer");
-  const { PDFDocument } = requireOptionalPackage("pdf-lib", "npm install pdf-lib");
-  const browser = await puppeteer.launch({
-    headless: true,
-    executablePath: process.env.RECEIPT_BROWSER_EXECUTABLE_PATH || undefined,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+function escapePdfText(value) {
+  return String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+}
+
+function buildSimpleReceiptPdfBuffer(lines) {
+  const safeLines = (Array.isArray(lines) ? lines : [])
+    .map((line) => String(line || "").trim())
+    .filter(Boolean)
+    .slice(0, 28);
+  if (!safeLines.length) {
+    safeLines.push("Approved Payment Receipt");
+  }
+
+  const content = ["BT", "/F1 14 Tf", "50 790 Td"];
+  safeLines.forEach((line, index) => {
+    const escaped = escapePdfText(line);
+    if (index === 0) {
+      content.push(`(${escaped}) Tj`);
+    } else {
+      content.push(`0 -20 Td (${escaped}) Tj`);
+    }
   });
+  content.push("ET");
+  const stream = content.join("\n");
+  const streamLength = Buffer.byteLength(stream, "utf8");
+
+  const objects = [
+    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
+    `4 0 obj\n<< /Length ${streamLength} >>\nstream\n${stream}\nendstream\nendobj\n`,
+    "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+  ];
+
+  let output = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const objectBody of objects) {
+    offsets.push(Buffer.byteLength(output, "utf8"));
+    output += objectBody;
+  }
+
+  const xrefStart = Buffer.byteLength(output, "utf8");
+  output += "xref\n0 6\n";
+  output += "0000000000 65535 f \n";
+  for (let i = 1; i <= 5; i += 1) {
+    output += `${String(offsets[i] || 0).padStart(10, "0")} 00000 n \n`;
+  }
+  output += `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+  return Buffer.from(output, "utf8");
+}
+
+function buildFallbackReceiptLines(row, placeholders) {
+  return [
+    "Approved Payment Receipt",
+    `Student: ${placeholders?.full_name || row?.student_username || "Student"}`,
+    `Application ID: ${placeholders?.application_id || row?.payment_reference || row?.student_username || "-"}`,
+    `Program: ${placeholders?.program || row?.payment_item_title || "-"}`,
+    `Amount Paid: ${placeholders?.amount_paid || formatMoney(row?.amount_paid, row?.currency || "NGN")}`,
+    `Receipt No: ${placeholders?.receipt_no || row?.payment_receipt_id || row?.id || "-"}`,
+    `Approval Date: ${placeholders?.approval_date || formatHumanDate(row?.reviewed_at || row?.submitted_at || new Date())}`,
+    `Generated: ${formatHumanDate(new Date())}`,
+  ];
+}
+
+async function renderHtmlToImagePdf({ html, outputPdfPath, row, placeholders }) {
+  let browser = null;
   try {
+    const puppeteer = requireOptionalPackage("puppeteer", "npm install puppeteer pdf-lib nodemailer");
+    const { PDFDocument } = requireOptionalPackage("pdf-lib", "npm install pdf-lib");
+    browser = await puppeteer.launch({
+      headless: true,
+      executablePath: process.env.RECEIPT_BROWSER_EXECUTABLE_PATH || undefined,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
     const page = await browser.newPage({
       viewport: {
         width: RECEIPT_SNAPSHOT_WIDTH,
@@ -466,8 +570,21 @@ async function renderHtmlToImagePdf({ html, outputPdfPath }) {
     });
     const pdfBytes = await pdfDoc.save();
     await fs.promises.writeFile(outputPdfPath, Buffer.from(pdfBytes));
+  } catch (err) {
+    const fallbackLines = buildFallbackReceiptLines(row, placeholders);
+    const fallbackPdf = buildSimpleReceiptPdfBuffer(fallbackLines);
+    await fs.promises.writeFile(outputPdfPath, fallbackPdf);
+    console.warn(
+      `[approved-receipts] renderer fallback used for ${path.basename(outputPdfPath)}: ${trimErrorMessage(err)}`
+    );
   } finally {
-    await browser.close();
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (_err) {
+        // Ignore close failures.
+      }
+    }
   }
 }
 
@@ -489,7 +606,7 @@ async function generateApprovedStudentReceipts(options = {}) {
 
   const logger = ensureLogger(options.logger);
   const nowProvider = typeof options.nowProvider === "function" ? options.nowProvider : () => new Date();
-  const outputDir = path.resolve(options.outputDir || path.join(__dirname, "..", "outputs", "receipts"));
+  const requestedOutputDir = path.resolve(options.outputDir || path.join(__dirname, "..", "outputs", "receipts"));
   const force = Boolean(options.force);
   const retryCount = Number.parseInt(String(options.retryCount || 3), 10) || 3;
   const retryDelayMs = Number.parseInt(String(options.retryDelayMs || 1500), 10) || 1500;
@@ -508,7 +625,19 @@ async function generateApprovedStudentReceipts(options = {}) {
     limit: options.limit,
     paymentReceiptId: options.paymentReceiptId,
   });
-  await fs.promises.mkdir(outputDir, { recursive: true });
+  let outputDir = requestedOutputDir;
+  try {
+    await fs.promises.mkdir(outputDir, { recursive: true });
+  } catch (err) {
+    const fallbackOutputDir = path.resolve(path.join(os.tmpdir(), "paytec-approved-receipts"));
+    await fs.promises.mkdir(fallbackOutputDir, { recursive: true });
+    outputDir = fallbackOutputDir;
+    emitLog(logger, "warn", "output_dir_fallback", {
+      requested_output_dir: requestedOutputDir,
+      fallback_output_dir: fallbackOutputDir,
+      reason: trimErrorMessage(err),
+    });
+  }
 
   emitLog(logger, "info", "start", {
     force,

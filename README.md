@@ -211,6 +211,8 @@ node scripts/generate-receipts.js --force
 - `pdf-lib` to package image into PDF
 - Optional: set `RECEIPT_BROWSER_EXECUTABLE_PATH` if you want to use a system browser binary
 
+If browser-based rendering is unavailable in production, the generator falls back to a minimal built-in PDF so receipts do not remain pending.
+
 Install/update dependencies:
 
 ```bash

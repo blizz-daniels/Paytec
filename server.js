@@ -1828,6 +1828,35 @@ async function triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, option
   }
 }
 
+async function getApprovedReceiptDispatchByReceiptId(paymentReceiptId) {
+  const receiptId = parseResourceId(paymentReceiptId);
+  if (!receiptId) {
+    return null;
+  }
+  const row = await get(
+    `
+      SELECT
+        payment_receipt_id,
+        COALESCE(receipt_sent, 0) AS receipt_sent,
+        COALESCE(receipt_file_path, '') AS receipt_file_path,
+        last_error
+      FROM approved_receipt_dispatches
+      WHERE payment_receipt_id = ?
+      LIMIT 1
+    `,
+    [receiptId]
+  );
+  if (!row) {
+    return null;
+  }
+  return {
+    payment_receipt_id: parseResourceId(row.payment_receipt_id),
+    receipt_sent: Number(row.receipt_sent || 0),
+    receipt_file_path: String(row.receipt_file_path || "").trim(),
+    last_error: row.last_error ? String(row.last_error) : "",
+  };
+}
+
 function isValidIsoLikeDate(value) {
   if (!value) {
     return false;
@@ -6811,8 +6840,7 @@ app.get("/api/my/payment-receipts", requireAuth, async (req, res) => {
     return res.status(403).json({ error: "Only students can view this resource." });
   }
   try {
-    const rows = await all(
-      `
+    const rowsSql = `
         SELECT
           pr.id,
           pr.payment_item_id,
@@ -6841,9 +6869,30 @@ app.get("/api/my/payment-receipts", requireAuth, async (req, res) => {
         LEFT JOIN approved_receipt_dispatches ard ON ard.payment_receipt_id = pr.id
         WHERE pr.student_username = ?
         ORDER BY pr.submitted_at DESC, pr.id DESC
-      `,
-      [req.session.user.username]
-    );
+      `;
+    const queryRows = () => all(rowsSql, [req.session.user.username]);
+    let rows = await queryRows();
+    const pendingApprovedReceiptIds = rows
+      .filter((row) => String(row.status || "").toLowerCase() === "approved" && Number(row.approved_receipt_available || 0) !== 1)
+      .map((row) => parseResourceId(row.id))
+      .filter((receiptId) => !!receiptId)
+      .slice(0, 3);
+    if (pendingApprovedReceiptIds.length) {
+      for (const paymentReceiptId of pendingApprovedReceiptIds) {
+        const delivery = await triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, {
+          actorUsername: req.session.user.username || "system-student",
+          forceEnabled: true,
+        });
+        if (delivery && (delivery.error || Number(delivery.failed || 0) > 0)) {
+          console.error(
+            `[approved-receipts] student receipt list backfill failed payment_receipt_id=${paymentReceiptId} reason=${
+              delivery.error || "unknown"
+            }`
+          );
+        }
+      }
+      rows = await queryRows();
+    }
     return res.json(rows);
   } catch (_err) {
     return res.status(500).json({ error: "Could not load your receipt submissions." });
@@ -6917,7 +6966,16 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
               AND COALESCE(ard2.receipt_file_path, '') != ''
             ORDER BY COALESCE(pr2.reviewed_at, pr2.submitted_at) DESC, pr2.id DESC
             LIMIT 1
-          ) AS approved_receipt_id
+          ) AS approved_receipt_id,
+          (
+            SELECT pr3.id
+            FROM payment_receipts pr3
+            WHERE pr3.payment_item_id = pi.id
+              AND pr3.student_username = ?
+              AND pr3.status = 'approved'
+            ORDER BY COALESCE(pr3.reviewed_at, pr3.submitted_at) DESC, pr3.id DESC
+            LIMIT 1
+          ) AS approved_receipt_candidate_id
         FROM payment_items pi
         LEFT JOIN payment_obligations po
           ON po.payment_item_id = pi.id
@@ -6929,6 +6987,7 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
           pi.id ASC
       `,
       [
+        req.session.user.username,
         req.session.user.username,
         req.session.user.username,
         req.session.user.username,
@@ -6946,6 +7005,25 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
       const hasDownloadableApprovedReceipt = !!parseResourceId(row.approved_receipt_id);
       if (!paymentItemId || !obligationId || !isSettled || hasDownloadableApprovedReceipt) {
         continue;
+      }
+      const candidateReceiptId = parseResourceId(row.approved_receipt_candidate_id);
+      if (candidateReceiptId) {
+        const delivery = await triggerApprovedReceiptDispatchForReceipt(candidateReceiptId, {
+          actorUsername: "system-ledger",
+          forceEnabled: true,
+        });
+        if (delivery && (delivery.error || Number(delivery.failed || 0) > 0)) {
+          console.error(
+            `[approved-receipts] ledger candidate backfill failed payment_receipt_id=${candidateReceiptId} reason=${
+              delivery.error || "unknown"
+            }`
+          );
+        }
+        const dispatch = await getApprovedReceiptDispatchByReceiptId(candidateReceiptId);
+        if (dispatch && dispatch.receipt_file_path) {
+          row.approved_receipt_id = candidateReceiptId;
+          continue;
+        }
       }
       const latestApprovedTransaction = await get(
         `
@@ -6978,8 +7056,9 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
       const outstanding = Math.max(0, expectedAmount - approvedPaid);
       const daysUntilDue = getDaysUntilDue(row.due_date);
       const reminder = getReminderMetadata(daysUntilDue, outstanding);
+      const { approved_receipt_candidate_id: _approvedReceiptCandidateId, ...rowWithoutCandidate } = row;
       return {
-        ...row,
+        ...rowWithoutCandidate,
         expected_amount: expectedAmount,
         approved_paid: approvedPaid,
         pending_paid: pendingPaid,
@@ -7583,11 +7662,47 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
     if (!canAccess) {
       return res.status(403).json({ error: "You do not have permission to view this receipt file." });
     }
-    if (wantsApprovedVariant && !String(row.approved_receipt_file_path || "").trim()) {
-      return res.status(404).json({ error: "Approved receipt is not available yet." });
+    let approvedReceiptPath = String(row.approved_receipt_file_path || "").trim();
+    if (wantsApprovedVariant && !approvedReceiptPath) {
+      const delivery = await triggerApprovedReceiptDispatchForReceipt(id, {
+        actorUsername: req.session?.user?.username || "system-download",
+        forceEnabled: true,
+      });
+      if (delivery && (delivery.error || Number(delivery.failed || 0) > 0)) {
+        console.error(
+          `[approved-receipts] on-demand download generation failed payment_receipt_id=${id} reason=${
+            delivery.error || "unknown"
+          }`
+        );
+      }
+      const dispatch = await getApprovedReceiptDispatchByReceiptId(id);
+      approvedReceiptPath = String(dispatch?.receipt_file_path || "").trim();
+    }
+    if (wantsApprovedVariant && !approvedReceiptPath) {
+      return res.status(404).json({ error: "Approved receipt is not available yet. Please refresh and try again." });
     }
 
-    const selectedPath = wantsApprovedVariant ? row.approved_receipt_file_path : row.receipt_file_path;
+    const allowedBaseDir = wantsApprovedVariant ? approvedReceiptsDir : receiptsDir;
+    let selectedPath = wantsApprovedVariant ? approvedReceiptPath : row.receipt_file_path;
+    if (wantsApprovedVariant && selectedPath) {
+      const absoluteApprovedPath = path.resolve(selectedPath);
+      const approvedPathValid = isPathInsideDirectory(allowedBaseDir, absoluteApprovedPath) && fs.existsSync(absoluteApprovedPath);
+      if (!approvedPathValid) {
+        const delivery = await triggerApprovedReceiptDispatchForReceipt(id, {
+          actorUsername: req.session?.user?.username || "system-download",
+          forceEnabled: true,
+        });
+        if (delivery && (delivery.error || Number(delivery.failed || 0) > 0)) {
+          console.error(
+            `[approved-receipts] on-demand regeneration failed payment_receipt_id=${id} reason=${
+              delivery.error || "unknown"
+            }`
+          );
+        }
+        const dispatch = await getApprovedReceiptDispatchByReceiptId(id);
+        selectedPath = String(dispatch?.receipt_file_path || "").trim();
+      }
+    }
     if (!selectedPath) {
       return res.status(404).json({
         error: wantsApprovedVariant ? "Approved receipt file is missing." : "No receipt file attached to this submission.",
@@ -7595,7 +7710,6 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
     }
 
     const absolutePath = path.resolve(selectedPath);
-    const allowedBaseDir = wantsApprovedVariant ? approvedReceiptsDir : receiptsDir;
     if (!isPathInsideDirectory(allowedBaseDir, absolutePath) || !fs.existsSync(absolutePath)) {
       return res.status(404).json({
         error: wantsApprovedVariant ? "Approved receipt file is missing." : "Receipt file is missing.",
