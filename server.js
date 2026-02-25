@@ -15,29 +15,6 @@ const {
   DEFAULT_EMAIL_SUBJECT,
   generateApprovedStudentReceipts,
 } = require("./services/approved-receipt-generator");
-const {
-  normalizeIdentifier,
-  normalizeSurnamePassword,
-  isValidIdentifier,
-  isValidSurnamePassword,
-  normalizeDisplayName,
-  normalizeProfileEmail,
-  isValidProfileEmail,
-  parseCsvLine,
-  parseResourceId,
-  parseBooleanEnv,
-  parseOptionalPositiveIntEnv,
-  isValidIsoLikeDate,
-  parseMoneyValue,
-  parseCurrency,
-  sanitizeTransactionRef,
-  normalizeWhitespace,
-  normalizeStatementName,
-  normalizeReference,
-  toDateOnly,
-  parseDateToken,
-  parseAmountToken,
-} = require("./services/utils");
 let xlsx = null;
 try {
   xlsx = require("xlsx");
@@ -176,7 +153,11 @@ if (isProduction) {
   ];
   const missingPaystackEnv = requiredPaystackEnv.filter(([, value]) => !value).map(([key]) => key);
   if (missingPaystackEnv.length) {
-    throw new Error(`Missing required Paystack env var(s): ${missingPaystackEnv.join(", ")}`);
+    console.warn(
+      `[startup] Missing Paystack env var(s): ${missingPaystackEnv.join(
+        ", "
+      )}. Paystack endpoints will remain unavailable until configured.`
+    );
   }
 }
 
