@@ -1794,7 +1794,7 @@ async function triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, option
     const summary = await generateApprovedStudentReceipts({
       db: { run, get, all },
       deliveryMode: "download",
-      force: false,
+      force: !!options.forceRegenerate,
       paymentReceiptId: receiptId,
       limit: 1,
       dataDir,
@@ -7078,6 +7078,9 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
   const requestedVariant = String(req.query.variant || "approved")
     .trim()
     .toLowerCase();
+  const refreshRequested = ["1", "true", "yes", "on"].includes(
+    String(req.query.refresh || "").trim().toLowerCase()
+  );
   if (requestedVariant === "submitted") {
     return sendPaystackOnlyGone(res, "Submitted receipt files");
   }
@@ -7109,6 +7112,20 @@ app.get("/api/payment-receipts/:id/file", requireAuth, async (req, res) => {
       req.session.user.username === row.student_username;
     if (!canAccess) {
       return res.status(403).json({ error: "You do not have permission to view this receipt file." });
+    }
+    if (wantsApprovedVariant && refreshRequested) {
+      const forcedDelivery = await triggerApprovedReceiptDispatchForReceipt(id, {
+        actorUsername: req.session?.user?.username || "system-download",
+        forceEnabled: true,
+        forceRegenerate: true,
+      });
+      if (forcedDelivery && (forcedDelivery.error || Number(forcedDelivery.failed || 0) > 0)) {
+        console.error(
+          `[approved-receipts] forced regeneration failed payment_receipt_id=${id} reason=${
+            forcedDelivery.error || "unknown"
+          }`
+        );
+      }
     }
     let approvedReceiptPath = String(row.approved_receipt_file_path || "").trim();
     if (wantsApprovedVariant && !approvedReceiptPath) {

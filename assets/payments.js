@@ -565,7 +565,7 @@ function renderReminderCalendar(ledger) {
     } else if (isSettled && approvedReceiptId > 0) {
       actionHtml = `<a class="btn btn-secondary" href="/api/payment-receipts/${encodeURIComponent(
         String(approvedReceiptId)
-      )}/file?variant=approved" target="_blank" rel="noopener" download>Download receipt</a>`;
+      )}/file?variant=approved&refresh=1" target="_blank" rel="noopener" download>Download receipt</a>`;
     }
     const tile = document.createElement("article");
     tile.className = "details-tile";
@@ -641,11 +641,11 @@ function renderMyReceipts(rows) {
       <div class="details-tile__field details-tile__field--full">
         <p class="details-tile__label">Approved receipt</p>
         <p class="details-tile__value details-tile__value--normal">${
-          approvedReceiptAvailable
-            ? `<a class="btn btn-secondary" href="/api/payment-receipts/${encodeURIComponent(
-                String(row.id || "")
-              )}/file?variant=approved" target="_blank" rel="noopener" download>Download approved receipt</a>`
-            : '<span class="status-badge status-badge--warning">Pending generation</span>'
+            approvedReceiptAvailable
+              ? `<a class="btn btn-secondary" href="/api/payment-receipts/${encodeURIComponent(
+                  String(row.id || "")
+                )}/file?variant=approved&refresh=1" target="_blank" rel="noopener" download>Download approved receipt</a>`
+              : '<span class="status-badge status-badge--warning">Pending generation</span>'
         }</p>
       </div>
     `;

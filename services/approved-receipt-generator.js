@@ -539,9 +539,9 @@ function buildFallbackReceiptLines(row, placeholders) {
 
 async function renderHtmlToImagePdf({ html, outputPdfPath, row, placeholders }) {
   let browser = null;
+  const renderFailures = [];
   try {
-    const puppeteer = requireOptionalPackage("puppeteer", "npm install puppeteer pdf-lib nodemailer");
-    const { PDFDocument } = requireOptionalPackage("pdf-lib", "npm install pdf-lib");
+    const puppeteer = requireOptionalPackage("puppeteer", "npm install puppeteer");
     browser = await puppeteer.launch({
       headless: true,
       executablePath: process.env.RECEIPT_BROWSER_EXECUTABLE_PATH || undefined,
@@ -555,21 +555,50 @@ async function renderHtmlToImagePdf({ html, outputPdfPath, row, placeholders }) 
       },
     });
     await page.setContent(html, { waitUntil: "networkidle0" });
-    const receiptElement = await page.$(".receipt-page");
-    const pngBuffer = receiptElement
-      ? await receiptElement.screenshot({ type: "png" })
-      : await page.screenshot({ type: "png", fullPage: true });
-    const pdfDoc = await PDFDocument.create();
-    const embeddedPng = await pdfDoc.embedPng(pngBuffer);
-    const pdfPage = pdfDoc.addPage([A4_WIDTH_POINTS, A4_HEIGHT_POINTS]);
-    pdfPage.drawImage(embeddedPng, {
-      x: 0,
-      y: 0,
-      width: A4_WIDTH_POINTS,
-      height: A4_HEIGHT_POINTS,
-    });
-    const pdfBytes = await pdfDoc.save();
-    await fs.promises.writeFile(outputPdfPath, Buffer.from(pdfBytes));
+
+    // First choice: native browser PDF keeps template styles and is lighter on memory.
+    try {
+      await page.pdf({
+        path: outputPdfPath,
+        width: "210mm",
+        height: "297mm",
+        printBackground: true,
+        preferCSSPageSize: true,
+        margin: {
+          top: "0",
+          right: "0",
+          bottom: "0",
+          left: "0",
+        },
+      });
+      return { method: "puppeteer_pdf", usedFallback: false };
+    } catch (pdfErr) {
+      renderFailures.push(`page.pdf failed: ${trimErrorMessage(pdfErr)}`);
+    }
+
+    // Secondary choice: screenshot + pdf-lib wrapper.
+    try {
+      const { PDFDocument } = requireOptionalPackage("pdf-lib", "npm install pdf-lib");
+      const receiptElement = await page.$(".receipt-page");
+      const pngBuffer = receiptElement
+        ? await receiptElement.screenshot({ type: "png" })
+        : await page.screenshot({ type: "png", fullPage: true });
+      const pdfDoc = await PDFDocument.create();
+      const embeddedPng = await pdfDoc.embedPng(pngBuffer);
+      const pdfPage = pdfDoc.addPage([A4_WIDTH_POINTS, A4_HEIGHT_POINTS]);
+      pdfPage.drawImage(embeddedPng, {
+        x: 0,
+        y: 0,
+        width: A4_WIDTH_POINTS,
+        height: A4_HEIGHT_POINTS,
+      });
+      const pdfBytes = await pdfDoc.save();
+      await fs.promises.writeFile(outputPdfPath, Buffer.from(pdfBytes));
+      return { method: "screenshot_pdf_lib", usedFallback: false };
+    } catch (screenshotErr) {
+      renderFailures.push(`screenshot/pdf-lib failed: ${trimErrorMessage(screenshotErr)}`);
+      throw new Error(renderFailures.join(" | "));
+    }
   } catch (err) {
     const fallbackLines = buildFallbackReceiptLines(row, placeholders);
     const fallbackPdf = buildSimpleReceiptPdfBuffer(fallbackLines);
@@ -577,6 +606,11 @@ async function renderHtmlToImagePdf({ html, outputPdfPath, row, placeholders }) 
     console.warn(
       `[approved-receipts] renderer fallback used for ${path.basename(outputPdfPath)}: ${trimErrorMessage(err)}`
     );
+    return {
+      method: "built_in_fallback",
+      usedFallback: true,
+      warning: trimErrorMessage(err),
+    };
   } finally {
     if (browser) {
       try {
@@ -688,7 +722,7 @@ async function generateApprovedStudentReceipts(options = {}) {
       )}.pdf`;
       outputPdfPath = path.resolve(outputDir, outputFileName);
       const compiledHtml = renderTemplate(template, placeholders);
-      await renderPdf({
+      const renderResult = await renderPdf({
         html: compiledHtml,
         outputPdfPath,
         row,
@@ -698,7 +732,15 @@ async function generateApprovedStudentReceipts(options = {}) {
       emitLog(logger, "info", "generate_success", {
         ...logContext,
         output_pdf_path: outputPdfPath,
+        render_method: renderResult?.method || "unknown",
       });
+      if (renderResult && renderResult.usedFallback) {
+        emitLog(logger, "warn", "generate_fallback_used", {
+          ...logContext,
+          output_pdf_path: outputPdfPath,
+          reason: String(renderResult.warning || "Renderer fallback used."),
+        });
+      }
     } catch (err) {
       summary.failed += 1;
       const message = trimErrorMessage(err);

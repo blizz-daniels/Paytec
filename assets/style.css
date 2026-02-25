@@ -442,6 +442,32 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 }
 
+.recon-summary-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
+  align-items: stretch;
+}
+
+.recon-summary-tab {
+  padding: 0.55rem 0.6rem;
+}
+
+.recon-summary-tab h3 {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
+}
+
+.recon-summary-tab .auth-subtitle {
+  margin-top: 0.3rem;
+  margin-bottom: 0;
+  font-size: 0.92rem;
+  line-height: 1.1;
+}
+
 .stack {
   display: grid;
   gap: 1rem;
@@ -1158,6 +1184,22 @@ body.has-profile-panel {
 }
 
 @media (max-width: 760px) {
+  .recon-summary-tabs {
+    gap: 0.35rem;
+  }
+
+  .recon-summary-tab {
+    padding: 0.45rem;
+  }
+
+  .recon-summary-tab h3 {
+    font-size: 0.66rem;
+  }
+
+  .recon-summary-tab .auth-subtitle {
+    font-size: 0.84rem;
+  }
+
   .menu-btn { display: inline-flex; }
 
   .nav-links {
