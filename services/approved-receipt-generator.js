@@ -329,8 +329,9 @@ async function readTemplateParts(options) {
   };
 }
 
-async function fetchEligibleApprovedRows(db, { force, limit }) {
+async function fetchEligibleApprovedRows(db, { force, limit, paymentReceiptId }) {
   const limitValue = Number.isFinite(Number(limit)) ? Number(limit) : 0;
+  const receiptIdValue = Number.parseInt(String(paymentReceiptId || ""), 10);
   const params = [];
   let sql = `
     SELECT
@@ -356,6 +357,10 @@ async function fetchEligibleApprovedRows(db, { force, limit }) {
     LEFT JOIN approved_receipt_dispatches ard ON ard.payment_receipt_id = pr.id
     WHERE pr.status = 'approved'
   `;
+  if (Number.isFinite(receiptIdValue) && receiptIdValue > 0) {
+    sql += " AND pr.id = ?";
+    params.push(receiptIdValue);
+  }
   if (!force) {
     sql += " AND COALESCE(ard.receipt_sent, 0) = 0";
   }
@@ -494,6 +499,7 @@ async function generateApprovedStudentReceipts(options = {}) {
   const eligibleRows = await fetchEligibleApprovedRows(db, {
     force,
     limit: options.limit,
+    paymentReceiptId: options.paymentReceiptId,
   });
   await fs.promises.mkdir(outputDir, { recursive: true });
 

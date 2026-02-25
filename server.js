@@ -10,6 +10,11 @@ const session = require("express-session");
 const sqlite3 = require("sqlite3").verbose();
 const SQLiteStore = require("connect-sqlite3")(session);
 const { createPaystackClient } = require("./services/paystack");
+const {
+  DEFAULT_EMAIL_BODY,
+  DEFAULT_EMAIL_SUBJECT,
+  generateApprovedStudentReceipts,
+} = require("./services/approved-receipt-generator");
 let xlsx = null;
 try {
   xlsx = require("xlsx");
@@ -1499,6 +1504,149 @@ function parseResourceId(rawValue) {
     return null;
   }
   return value;
+}
+
+function parseBooleanEnv(rawValue, defaultValue = false) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return defaultValue;
+  }
+  const normalized = String(rawValue).trim().toLowerCase();
+  return ["1", "true", "yes", "y", "on"].includes(normalized);
+}
+
+function parseOptionalPositiveIntEnv(rawValue, fallback) {
+  const parsed = Number.parseInt(String(rawValue || ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function createApprovedReceiptEmailSender() {
+  const nodemailer = (() => {
+    try {
+      // eslint-disable-next-line global-require
+      return require("nodemailer");
+    } catch (err) {
+      if (err && err.code === "MODULE_NOT_FOUND") {
+        throw new Error('Missing dependency "nodemailer". Install it with: npm install nodemailer');
+      }
+      throw err;
+    }
+  })();
+
+  const smtpFrom = String(process.env.SMTP_FROM || process.env.RECEIPT_EMAIL_FROM || "").trim();
+  if (!smtpFrom) {
+    throw new Error("SMTP_FROM (or RECEIPT_EMAIL_FROM) is required.");
+  }
+
+  let transport;
+  const smtpUrl = String(process.env.SMTP_URL || "").trim();
+  if (smtpUrl) {
+    transport = nodemailer.createTransport(smtpUrl);
+  } else {
+    const host = String(process.env.SMTP_HOST || "").trim();
+    const port = Number.parseInt(String(process.env.SMTP_PORT || "587"), 10);
+    const user = String(process.env.SMTP_USER || "").trim();
+    const pass = String(process.env.SMTP_PASS || "").trim();
+    if (!host || !port || !user || !pass) {
+      throw new Error("Set SMTP_URL or SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS in your environment.");
+    }
+    const secure = parseBooleanEnv(process.env.SMTP_SECURE, port === 465);
+    transport = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: { user, pass },
+    });
+  }
+
+  return {
+    async sendEmail(payload) {
+      await transport.sendMail({
+        from: smtpFrom,
+        ...payload,
+      });
+    },
+    async close() {
+      if (typeof transport.close === "function") {
+        transport.close();
+      }
+    },
+  };
+}
+
+async function triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, options = {}) {
+  const receiptId = parseResourceId(paymentReceiptId);
+  if (!receiptId) {
+    return {
+      attempted: false,
+      sent: false,
+      failed: true,
+      error: "Invalid receipt ID.",
+    };
+  }
+  const immediateEnabled = parseBooleanEnv(process.env.RECEIPT_IMMEDIATE_ON_APPROVE, true);
+  if (!immediateEnabled) {
+    return {
+      attempted: false,
+      sent: false,
+      failed: false,
+      skipped: true,
+      reason: "Immediate approved-receipt dispatch is disabled.",
+    };
+  }
+
+  const templateHtmlPath = path.resolve(
+    process.env.RECEIPT_TEMPLATE_HTML || path.join(__dirname, "templates", "approved-student-receipt.html")
+  );
+  const templateCssPath = path.resolve(
+    process.env.RECEIPT_TEMPLATE_CSS || path.join(__dirname, "templates", "approved-student-receipt.css")
+  );
+  const retryCount = parseOptionalPositiveIntEnv(process.env.RECEIPT_EMAIL_RETRY_COUNT, 3);
+  const retryDelayMs = parseOptionalPositiveIntEnv(process.env.RECEIPT_EMAIL_RETRY_DELAY_MS, 1500);
+
+  let mailer = null;
+  try {
+    mailer = createApprovedReceiptEmailSender();
+    const summary = await generateApprovedStudentReceipts({
+      db: { run, get, all },
+      force: false,
+      paymentReceiptId: receiptId,
+      limit: 1,
+      dataDir,
+      outputDir: approvedReceiptsDir,
+      templateHtmlPath,
+      templateCssPath,
+      emailSubject: process.env.RECEIPT_EMAIL_SUBJECT || DEFAULT_EMAIL_SUBJECT,
+      emailBody: process.env.RECEIPT_EMAIL_BODY || DEFAULT_EMAIL_BODY,
+      retryCount,
+      retryDelayMs,
+      sendEmail: mailer.sendEmail,
+      logger: console,
+    });
+    return {
+      attempted: true,
+      eligible: Number(summary.eligible || 0),
+      sent: Number(summary.sent || 0),
+      failed: Number(summary.failed || 0),
+    };
+  } catch (err) {
+    const reason = String(err && err.message ? err.message : err || "Unknown error");
+    console.error(
+      `[approved-receipts] immediate dispatch failed payment_receipt_id=${receiptId} actor=${String(
+        options.actorUsername || "system"
+      )} reason=${reason}`
+    );
+    return {
+      attempted: true,
+      eligible: 0,
+      sent: 0,
+      failed: 1,
+      error: reason,
+    };
+  } finally {
+    if (mailer) {
+      await mailer.close();
+    }
+  }
 }
 
 function isValidIsoLikeDate(value) {
@@ -6946,7 +7094,33 @@ async function transitionPaymentReceiptStatus(req, res, nextStatus, actionName, 
       reviewerNote: req.body?.note,
       defaultEventNote: options.defaultEventNote,
     });
-    return res.json({ ok: true, receipt });
+    let approvedReceiptDelivery = null;
+    if (nextStatus === "approved" && options.triggerApprovedReceiptDispatch) {
+      approvedReceiptDelivery = await triggerApprovedReceiptDispatchForReceipt(id, {
+        actorUsername: req.session?.user?.username,
+      });
+      try {
+        let deliveryAction = "approved_receipt_dispatch_sent";
+        let deliveryMessage = `Immediate dispatch summary sent=${approvedReceiptDelivery.sent || 0} failed=${
+          approvedReceiptDelivery.failed || 0
+        } eligible=${approvedReceiptDelivery.eligible || 0}`;
+        if (approvedReceiptDelivery.skipped) {
+          deliveryAction = "approved_receipt_dispatch_skipped";
+          deliveryMessage = `Immediate dispatch skipped: ${approvedReceiptDelivery.reason || "No reason provided."}`;
+        } else if (approvedReceiptDelivery.error || approvedReceiptDelivery.failed > 0) {
+          deliveryAction = "approved_receipt_dispatch_failed";
+          deliveryMessage = `Immediate dispatch failed: ${approvedReceiptDelivery.error || "Unknown failure."}`;
+        }
+        await logReceiptEvent(id, req, deliveryAction, null, null, deliveryMessage);
+      } catch (_logErr) {
+        // Do not fail receipt approval because dispatch-audit logging failed.
+      }
+    }
+    return res.json({
+      ok: true,
+      receipt,
+      ...(approvedReceiptDelivery ? { approved_receipt_delivery: approvedReceiptDelivery } : {}),
+    });
   } catch (err) {
     if (err && err.status && err.error) {
       return res.status(err.status).json({ error: err.error });
@@ -7115,7 +7289,9 @@ app.post("/api/payment-receipts/:id/under-review", requireTeacher, async (req, r
 });
 
 app.post("/api/payment-receipts/:id/approve", requireTeacher, async (req, res) => {
-  return transitionPaymentReceiptStatus(req, res, "approved", "approve");
+  return transitionPaymentReceiptStatus(req, res, "approved", "approve", {
+    triggerApprovedReceiptDispatch: true,
+  });
 });
 
 app.post("/api/payment-receipts/:id/reject", requireTeacher, async (req, res) => {

@@ -266,6 +266,78 @@ describe("approved receipt generator", () => {
     expect(sendEmailForced).toHaveBeenCalledTimes(1);
   });
 
+  test("processes only the targeted paymentReceiptId when provided", async () => {
+    await db.run(
+      `
+        INSERT INTO payment_obligations (payment_item_id, student_username, payment_reference)
+        VALUES (1, 'std_002', 'APP-0002')
+      `
+    );
+    await db.run(
+      `
+        INSERT INTO user_profiles (username, display_name, profile_image_url, email)
+        VALUES ('std_002', 'Grace Hopper', '/users/std_001.png', 'std_002@example.com')
+      `
+    );
+    await db.run(
+      `
+        INSERT INTO payment_receipts (
+          payment_item_id,
+          student_username,
+          amount_paid,
+          paid_at,
+          transaction_ref,
+          receipt_file_path,
+          status,
+          submitted_at,
+          reviewed_at
+        )
+        VALUES (1, 'std_002', 45000, '2026-02-24T10:00:00.000Z', 'TX-002', '/tmp/source-2.pdf', 'approved', '2026-02-24T10:00:00.000Z', '2026-02-25T09:30:00.000Z')
+      `
+    );
+
+    const outputDir = path.join(tmpDir, "outputs", "receipts");
+    const sendEmail = jest.fn().mockResolvedValue({});
+    const renderPdf = jest.fn(async ({ outputPdfPath }) => {
+      fs.mkdirSync(path.dirname(outputPdfPath), { recursive: true });
+      fs.writeFileSync(outputPdfPath, Buffer.from("%PDF-1.4\n%mock\n"));
+    });
+
+    const summary = await generateApprovedStudentReceipts({
+      db,
+      paymentReceiptId: 2,
+      dataDir,
+      outputDir,
+      templateHtml: "<html><body>{{full_name}}</body></html>",
+      templateCss: "",
+      sendEmail,
+      renderPdf,
+      nowProvider: () => new Date("2026-02-25T11:00:00.000Z"),
+      logger,
+    });
+
+    expect(summary).toEqual({ eligible: 1, sent: 1, failed: 0 });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(sendEmail.mock.calls[0][0].to).toBe("std_002@example.com");
+
+    const firstDispatch = await db.get(
+      `
+        SELECT receipt_sent
+        FROM approved_receipt_dispatches
+        WHERE payment_receipt_id = 1
+      `
+    );
+    const secondDispatch = await db.get(
+      `
+        SELECT receipt_sent
+        FROM approved_receipt_dispatches
+        WHERE payment_receipt_id = 2
+      `
+    );
+    expect(firstDispatch).toBeNull();
+    expect(Number(secondDispatch.receipt_sent || 0)).toBe(1);
+  });
+
   test("preserves sent state if a force resend attempt fails", async () => {
     const outputDir = path.join(tmpDir, "outputs", "receipts");
     const renderPdf = jest.fn(async ({ outputPdfPath }) => {

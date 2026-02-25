@@ -9,6 +9,7 @@ const testDataDir = path.join(__dirname, "tmp-data");
 process.env.NODE_ENV = "test";
 process.env.DATA_DIR = testDataDir;
 process.env.RECEIPT_OUTPUT_DIR = path.join(testDataDir, "outputs", "receipts");
+process.env.RECEIPT_IMMEDIATE_ON_APPROVE = "false";
 process.env.SESSION_SECRET = "test-session-secret";
 process.env.ADMIN_USERNAME = "admin";
 process.env.ADMIN_PASSWORD = "admin-pass-123";
@@ -370,6 +371,8 @@ test("approve/reject writes events and audit logs", async () => {
   expect(underReview.status).toBe(200);
   const approve = await postJson(teacher, `/api/payment-receipts/${firstSubmitted.id}/approve`, {});
   expect(approve.status).toBe(200);
+  expect(approve.body.approved_receipt_delivery).toBeTruthy();
+  expect(approve.body.approved_receipt_delivery.skipped).toBe(true);
 
   const itemResponse = await postJson(teacher, "/api/payment-items", {
     title: "Sports Fee",

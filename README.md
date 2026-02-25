@@ -155,6 +155,10 @@ Automated workflow included in this repo:
    - `receipt_sent`
 8. Students can download generated approved PDFs from:
    - `/api/payment-receipts/:id/file?variant=approved` (authorized owner/admin/lecturer)
+9. Immediate trigger on approval:
+   - `POST /api/payment-receipts/:id/approve` now attempts generation + email immediately
+   - optional toggle: `RECEIPT_IMMEDIATE_ON_APPROVE=true|false`
+   - response includes `approved_receipt_delivery` with send summary or failure reason
 
 ### Manual Command
 
