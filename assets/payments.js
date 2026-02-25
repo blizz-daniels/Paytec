@@ -587,7 +587,7 @@ function renderReminderCalendar(ledger) {
         ? ledgerReceiptId
         : getLatestApprovedReceiptIdForPaymentItem(item.id);
     let actionHtml = isSettled
-      ? '<span class="status-badge status-badge--success">settled</span>'
+      ? '<span class="status-badge status-badge--warning">Preparing receipt...</span>'
       : '<span class="status-badge status-badge--warning">Awaiting payment</span>';
     if (canPayWithPaystack) {
       actionHtml = `<button class="btn btn-secondary" type="button" data-action="paystack-checkout" data-obligation-id="${item.obligation_id}" data-outstanding="${outstanding.toFixed(

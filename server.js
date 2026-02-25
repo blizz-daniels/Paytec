@@ -1516,6 +1516,250 @@ function parseBooleanEnv(rawValue, defaultValue = false) {
   return ["1", "true", "yes", "y", "on"].includes(normalized);
 }
 
+function createSystemActorRequest(username = "system-reconciliation", role = "system-reconciliation") {
+  const actorUsername = normalizeIdentifier(username) || "system-reconciliation";
+  const actorRole = String(role || "system-reconciliation")
+    .trim()
+    .toLowerCase()
+    .slice(0, 40) || "system-reconciliation";
+  return {
+    session: {
+      user: {
+        username: actorUsername,
+        role: actorRole,
+      },
+    },
+  };
+}
+
+function buildAutoReceiptRefBase(transactionRow) {
+  const txId = String(parseResourceId(transactionRow?.id) || "").trim();
+  const paymentItemId = String(parseResourceId(transactionRow?.payment_item_id) || "").trim();
+  const studentToken = normalizeIdentifier(transactionRow?.student_username || "").replace(/[^a-z0-9]/g, "");
+  const parts = ["AUTO", "TXN", txId, paymentItemId, studentToken.slice(0, 20)].filter(Boolean);
+  return sanitizeTransactionRef(parts.join("-")) || `AUTO-TXN-${txId || Date.now()}`;
+}
+
+async function resolveUniquePaymentReceiptReference(preferredReference, fallbackBase) {
+  const maxLen = 120;
+  const preferred = sanitizeTransactionRef(preferredReference || "").slice(0, maxLen);
+  if (preferred) {
+    const existing = await get("SELECT id FROM payment_receipts WHERE transaction_ref = ? LIMIT 1", [preferred]);
+    if (!existing) {
+      return preferred;
+    }
+  }
+
+  const base = sanitizeTransactionRef(fallbackBase || "AUTO-TXN").slice(0, 96) || "AUTO-TXN";
+  for (let i = 0; i < 100; i += 1) {
+    const suffix = i === 0 ? "" : `-${i}`;
+    const candidate = sanitizeTransactionRef(`${base}${suffix}`).slice(0, maxLen);
+    if (!candidate) {
+      continue;
+    }
+    const existing = await get("SELECT id FROM payment_receipts WHERE transaction_ref = ? LIMIT 1", [candidate]);
+    if (!existing) {
+      return candidate;
+    }
+  }
+
+  return sanitizeTransactionRef(`AUTO-${Date.now()}-${crypto.randomBytes(2).toString("hex")}`).slice(0, maxLen);
+}
+
+async function upsertApprovedReceiptFromTransaction(transactionId, options = {}) {
+  const id = parseResourceId(transactionId);
+  if (!id) {
+    return { ok: false, error: "Invalid transaction ID." };
+  }
+
+  const tx = await get(
+    `
+      SELECT
+        pt.id,
+        pt.txn_ref,
+        pt.amount,
+        pt.paid_at,
+        pt.source,
+        pt.source_event_id,
+        pt.status,
+        pt.matched_obligation_id,
+        po.student_username,
+        po.payment_item_id
+      FROM payment_transactions pt
+      LEFT JOIN payment_obligations po ON po.id = pt.matched_obligation_id
+      WHERE pt.id = ?
+      LIMIT 1
+    `,
+    [id]
+  );
+  if (!tx) {
+    return { ok: false, error: "Transaction not found." };
+  }
+  if (String(tx.status || "").toLowerCase() !== "approved") {
+    return { ok: false, skipped: true, reason: "Transaction is not approved." };
+  }
+
+  const paymentItemId = parseResourceId(tx.payment_item_id);
+  const studentUsername = normalizeIdentifier(tx.student_username || "");
+  if (!paymentItemId || !studentUsername) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "Approved transaction is not linked to a student payment item.",
+    };
+  }
+
+  const actorReq =
+    options.actorReq && options.actorReq.session && options.actorReq.session.user
+      ? options.actorReq
+      : createSystemActorRequest(options.actorUsername || "system-reconciliation", options.actorRole || "system-reconciliation");
+  const actorUsername = normalizeIdentifier(actorReq.session.user.username);
+  const sourceReason = String(options.reason || "approved_transaction").trim().slice(0, 120) || "approved_transaction";
+  const preferredRef = sanitizeTransactionRef(tx.txn_ref || "");
+
+  let existingReceipt = null;
+  if (preferredRef) {
+    const byReference = await get("SELECT * FROM payment_receipts WHERE transaction_ref = ? LIMIT 1", [preferredRef]);
+    if (
+      byReference &&
+      normalizeIdentifier(byReference.student_username) === studentUsername &&
+      Number(byReference.payment_item_id || 0) === paymentItemId
+    ) {
+      existingReceipt = byReference;
+    }
+  }
+
+  if (!existingReceipt) {
+    existingReceipt = await get(
+      `
+        SELECT *
+        FROM payment_receipts
+        WHERE payment_item_id = ?
+          AND student_username = ?
+          AND status = 'approved'
+        ORDER BY COALESCE(reviewed_at, submitted_at) DESC, id DESC
+        LIMIT 1
+      `,
+      [paymentItemId, studentUsername]
+    );
+  }
+
+  if (existingReceipt) {
+    const mergedNotes = {
+      ...parseJsonObject(existingReceipt.verification_notes || "{}", {}),
+      source_transaction_id: id,
+      auto_generated_from_transaction: true,
+      source: String(tx.source || "").trim().toLowerCase(),
+      source_reason: sourceReason,
+    };
+    await run(
+      `
+        UPDATE payment_receipts
+        SET status = 'approved',
+            reviewed_by = COALESCE(reviewed_by, ?),
+            reviewed_at = COALESCE(reviewed_at, CURRENT_TIMESTAMP),
+            rejection_reason = NULL,
+            verification_notes = ?
+        WHERE id = ?
+      `,
+      [actorUsername || "system-reconciliation", JSON.stringify(mergedNotes), existingReceipt.id]
+    );
+    return { ok: true, receiptId: Number(existingReceipt.id), created: false };
+  }
+
+  const paidAtIso = isValidIsoLikeDate(tx.paid_at) ? new Date(String(tx.paid_at)).toISOString() : new Date().toISOString();
+  const syntheticPath = path.join(receiptsDir, `auto-generated-transaction-${id}.txt`);
+  try {
+    if (!fs.existsSync(syntheticPath)) {
+      await fs.promises.writeFile(
+        syntheticPath,
+        `Auto-generated placeholder for approved transaction #${id}.\n`,
+        "utf8"
+      );
+    }
+  } catch (_err) {
+    // Keep going even if placeholder write fails.
+  }
+
+  const transactionRef = await resolveUniquePaymentReceiptReference(preferredRef, buildAutoReceiptRefBase({
+    id,
+    payment_item_id: paymentItemId,
+    student_username: studentUsername,
+  }));
+  const notes = {
+    source_transaction_id: id,
+    auto_generated_from_transaction: true,
+    source: String(tx.source || "").trim().toLowerCase(),
+    source_event_id: String(tx.source_event_id || "").trim(),
+    source_reason: sourceReason,
+  };
+  const insert = await run(
+    `
+      INSERT INTO payment_receipts (
+        payment_item_id,
+        student_username,
+        amount_paid,
+        paid_at,
+        transaction_ref,
+        receipt_file_path,
+        status,
+        submitted_at,
+        reviewed_by,
+        reviewed_at,
+        rejection_reason,
+        verification_notes,
+        extracted_text
+      )
+      VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?, CURRENT_TIMESTAMP, NULL, ?, '')
+    `,
+    [
+      paymentItemId,
+      studentUsername,
+      Number(tx.amount || 0),
+      paidAtIso,
+      transactionRef,
+      syntheticPath,
+      paidAtIso,
+      actorUsername || "system-reconciliation",
+      JSON.stringify(notes),
+    ]
+  );
+  await logReceiptEvent(
+    insert.lastID,
+    actorReq,
+    "auto_generate_from_transaction",
+    null,
+    "approved",
+    `Auto-generated from approved transaction #${id}.`
+  );
+  return { ok: true, receiptId: Number(insert.lastID), created: true };
+}
+
+async function ensureApprovedReceiptGeneratedForTransaction(transactionId, options = {}) {
+  const receipt = await upsertApprovedReceiptFromTransaction(transactionId, options);
+  if (!receipt.ok || !receipt.receiptId) {
+    return {
+      ok: false,
+      attempted: false,
+      ...receipt,
+    };
+  }
+  const delivery = await triggerApprovedReceiptDispatchForReceipt(receipt.receiptId, {
+    actorUsername:
+      options.actorReq?.session?.user?.username ||
+      options.actorUsername ||
+      "system-reconciliation",
+    forceEnabled: true,
+  });
+  return {
+    ok: !(delivery && delivery.failed > 0),
+    attempted: true,
+    receiptId: receipt.receiptId,
+    createdReceipt: !!receipt.created,
+    delivery,
+  };
+}
+
 async function triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, options = {}) {
   const receiptId = parseResourceId(paymentReceiptId);
   if (!receiptId) {
@@ -1526,7 +1770,9 @@ async function triggerApprovedReceiptDispatchForReceipt(paymentReceiptId, option
       error: "Invalid receipt ID.",
     };
   }
-  const immediateEnabled = parseBooleanEnv(process.env.RECEIPT_IMMEDIATE_ON_APPROVE, true);
+  const immediateEnabled = options.forceEnabled
+    ? true
+    : parseBooleanEnv(process.env.RECEIPT_IMMEDIATE_ON_APPROVE, true);
   if (!immediateEnabled) {
     return {
       attempted: false,
@@ -4124,6 +4370,17 @@ async function reconcileTransactionById(transactionId, options = {}) {
         `A transaction was auto-matched to ${best.obligation.payment_item_title || "your payment item"} and approved.`
       );
     }
+    const receiptGeneration = await ensureApprovedReceiptGeneratedForTransaction(id, {
+      actorReq: options.actorReq || createSystemActorRequest("system-reconciliation", "system-reconciliation"),
+      reason: "auto_approved_transaction",
+    });
+    if (!receiptGeneration.ok && receiptGeneration.attempted) {
+      console.error(
+        `[approved-receipts] auto-approve generation failed transaction_id=${id} reason=${
+          receiptGeneration.delivery?.error || receiptGeneration.reason || receiptGeneration.error || "unknown"
+        }`
+      );
+    }
   }
   return getReconciliationTransactionById(id);
 }
@@ -4582,6 +4839,17 @@ async function applyReconciliationReviewAction(req, transactionId, action, optio
         obligation.payment_item_id,
         "Payment approved",
         "Your payment was approved by your reviewer."
+      );
+    }
+    const receiptGeneration = await ensureApprovedReceiptGeneratedForTransaction(id, {
+      actorReq: req || createSystemActorRequest("system-reconciliation", "system-reconciliation"),
+      reason: "manual_approved_transaction",
+    });
+    if (!receiptGeneration.ok && receiptGeneration.attempted) {
+      console.error(
+        `[approved-receipts] manual-approve generation failed transaction_id=${id} reason=${
+          receiptGeneration.delivery?.error || receiptGeneration.reason || receiptGeneration.error || "unknown"
+        }`
       );
     }
     return getReconciliationTransactionById(id);
@@ -6668,6 +6936,40 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
         req.session.user.username,
       ]
     );
+
+    for (const row of rows) {
+      const paymentItemId = parseResourceId(row.id);
+      const obligationId = parseResourceId(row.obligation_id);
+      const expectedAmount = Number(row.expected_amount || 0);
+      const approvedPaid = Number(row.approved_paid || 0);
+      const isSettled = Number.isFinite(expectedAmount) && approvedPaid >= expectedAmount - 0.01;
+      const hasDownloadableApprovedReceipt = !!parseResourceId(row.approved_receipt_id);
+      if (!paymentItemId || !obligationId || !isSettled || hasDownloadableApprovedReceipt) {
+        continue;
+      }
+      const latestApprovedTransaction = await get(
+        `
+          SELECT id
+          FROM payment_transactions
+          WHERE matched_obligation_id = ?
+            AND status = 'approved'
+          ORDER BY COALESCE(reviewed_at, created_at) DESC, id DESC
+          LIMIT 1
+        `,
+        [obligationId]
+      );
+      const approvedTransactionId = parseResourceId(latestApprovedTransaction?.id);
+      if (!approvedTransactionId) {
+        continue;
+      }
+      const receiptGeneration = await ensureApprovedReceiptGeneratedForTransaction(approvedTransactionId, {
+        actorReq: createSystemActorRequest("system-ledger", "system-reconciliation"),
+        reason: "student_ledger_backfill",
+      });
+      if (receiptGeneration && receiptGeneration.ok && receiptGeneration.receiptId) {
+        row.approved_receipt_id = receiptGeneration.receiptId;
+      }
+    }
 
     const items = rows.map((row) => {
       const expectedAmount = Number(row.expected_amount || 0);

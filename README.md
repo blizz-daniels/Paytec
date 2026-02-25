@@ -157,6 +157,7 @@ Automated workflow included in this repo:
    - `/api/payment-receipts/:id/file?variant=approved` (authorized owner/admin/lecturer)
 9. Immediate trigger on approval:
    - `POST /api/payment-receipts/:id/approve` now attempts generation immediately
+   - reconciliation-approved transactions (including Paystack webhook/verify auto-approvals) also auto-generate downloadable receipts
    - optional toggle: `RECEIPT_IMMEDIATE_ON_APPROVE=true|false`
    - response includes `approved_receipt_delivery` with readiness/failure summary
 
