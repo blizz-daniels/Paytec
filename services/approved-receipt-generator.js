@@ -727,11 +727,62 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
 
   const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
   const fontRegular = await doc.embedFont(StandardFonts.Helvetica);
+  const splitTokenToWidth = (token, font, size, maxWidth) => {
+    const raw = String(token || "");
+    if (!raw) {
+      return [];
+    }
+    if (font.widthOfTextAtSize(raw, size) <= maxWidth) {
+      return [raw];
+    }
+    const chunks = [];
+    let current = "";
+    for (const char of raw) {
+      const attempt = `${current}${char}`;
+      if (!current || font.widthOfTextAtSize(attempt, size) <= maxWidth) {
+        current = attempt;
+        continue;
+      }
+      chunks.push(current);
+      current = char;
+    }
+    if (current) {
+      chunks.push(current);
+    }
+    return chunks;
+  };
+  const drawContainedImage = (embeddedImage, boxX, boxY, boxWidth, boxHeight) => {
+    const targetWidth = Math.max(0, Number(boxWidth) || 0);
+    const targetHeight = Math.max(0, Number(boxHeight) || 0);
+    if (!targetWidth || !targetHeight) {
+      return;
+    }
+
+    let drawWidth = targetWidth;
+    let drawHeight = targetHeight;
+    if (typeof embeddedImage.scaleToFit === "function") {
+      const scaled = embeddedImage.scaleToFit(targetWidth, targetHeight);
+      drawWidth = scaled.width;
+      drawHeight = scaled.height;
+    } else if (embeddedImage.width && embeddedImage.height) {
+      const ratio = Math.min(targetWidth / embeddedImage.width, targetHeight / embeddedImage.height);
+      drawWidth = embeddedImage.width * ratio;
+      drawHeight = embeddedImage.height * ratio;
+    }
+
+    page.drawImage(embeddedImage, {
+      x: boxX + (targetWidth - drawWidth) / 2,
+      y: boxY + (targetHeight - drawHeight) / 2,
+      width: drawWidth,
+      height: drawHeight,
+    });
+  };
   const drawWrappedText = (text, x, yTop, maxWidth, font, size, color, lineGap = 1.2, maxLines = 3) => {
     const words = String(text || "")
       .trim()
       .split(/\s+/)
-      .filter(Boolean);
+      .filter(Boolean)
+      .flatMap((word) => splitTokenToWidth(word, font, size, maxWidth));
     if (!words.length) {
       return yTop;
     }
@@ -790,12 +841,7 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
         parsedPhoto.mime === "image/png"
           ? await doc.embedPng(parsedPhoto.bytes)
           : await doc.embedJpg(parsedPhoto.bytes);
-      page.drawImage(embedded, {
-        x: photoX + 2,
-        y: photoY + 2,
-        width: photoW - 4,
-        height: photoH - 4,
-      });
+      drawContainedImage(embedded, photoX + 2, photoY + 2, photoW - 4, photoH - 4);
     } catch (_err) {
       page.drawText("PHOTO", {
         x: photoX + 20,
@@ -930,7 +976,7 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
     11,
     colorTextBlue,
     1.35,
-    3
+    2
   );
 
   page.drawText("Payment For", {
@@ -956,7 +1002,7 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
     11.5,
     colorText,
     1.35,
-    3
+    2
   );
   page.drawText(
     `Application ID: ${clampText(placeholders?.application_id || row?.payment_reference || row?.student_username || "-", 34)}`,
@@ -1036,12 +1082,11 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
         parsedStamp.mime === "image/png"
           ? await doc.embedPng(parsedStamp.bytes)
           : await doc.embedJpg(parsedStamp.bytes);
-      page.drawImage(embedded, {
-        x: rightColumnX + 6,
-        y: receivedByBottomY + 24,
-        width: rightColumnW - 12,
-        height: amountBottomY - receivedByBottomY - 36,
-      });
+      const stampBoxX = rightColumnX + 6;
+      const stampBoxY = receivedByBottomY + 24;
+      const stampBoxW = rightColumnW - 12;
+      const stampBoxH = amountBottomY - receivedByBottomY - 36;
+      drawContainedImage(embedded, stampBoxX, stampBoxY, stampBoxW, stampBoxH);
     } catch (_err) {
       page.drawText("STAMP", {
         x: rightColumnX + 28,
@@ -1060,10 +1105,13 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
       color: colorTextBlue,
     });
   }
-  page.drawText("Sign", {
-    x: rightColumnX + 34,
-    y: receivedByBottomY + 8,
-    size: 10.5,
+  const signLabel = "Sign";
+  const signLabelSize = 10.5;
+  const signLabelWidth = fontBold.widthOfTextAtSize(signLabel, signLabelSize);
+  page.drawText(signLabel, {
+    x: rightColumnX + Math.max(6, (rightColumnW - signLabelWidth) / 2),
+    y: receivedByBottomY + 8.5,
+    size: signLabelSize,
     font: fontBold,
     color: colorText,
   });

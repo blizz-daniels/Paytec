@@ -6,6 +6,9 @@
   --muted: #255f8e;
   --amount-box: #c9daee;
   --footer: #5f93ce;
+  --label-col: 46mm;
+  --sep-col: 5mm;
+  --side-col: 70mm;
 }
 
 @page {
@@ -21,8 +24,8 @@ html,
 body {
   margin: 0;
   padding: 0;
-  width: 297mm;
-  height: 210mm;
+  width: 100%;
+  min-height: 100%;
   font-family: "Segoe UI", Tahoma, Arial, sans-serif;
   color: var(--ink);
   background: #e5eaf2;
@@ -33,7 +36,8 @@ body {
 .receipt-page {
   width: 297mm;
   min-height: 210mm;
-  padding: 8mm;
+  margin: 0 auto;
+  padding: 7mm;
   display: flex;
 }
 
@@ -53,6 +57,7 @@ body {
   align-items: flex-start;
   gap: 5mm;
   padding-bottom: 2.8mm;
+  min-height: 34mm;
 }
 
 .title-block {
@@ -80,27 +85,28 @@ body {
 }
 
 .title-block h1 {
-  margin: 5mm 0 0;
-  font-size: 11mm;
-  line-height: 1.02;
+  margin: 4.6mm 0 0;
+  font-size: 10.3mm;
+  line-height: 1.04;
   letter-spacing: 0.05em;
   font-weight: 800;
 }
 
 .meta-panel {
-  width: 90mm;
+  width: 86mm;
+  min-width: 86mm;
   display: grid;
-  gap: 2mm;
+  gap: 1.7mm;
 }
 
 .meta-panel p {
   margin: 0;
   display: grid;
-  grid-template-columns: 24mm 1fr;
+  grid-template-columns: 22mm 1fr;
   align-items: baseline;
   border-bottom: 0.7mm solid var(--line);
-  padding: 1.5mm 1mm 1.2mm;
-  font-size: 4.6mm;
+  padding: 1.3mm 1mm 1.1mm;
+  font-size: 4.3mm;
   line-height: 1.15;
   font-weight: 700;
 }
@@ -110,17 +116,18 @@ body {
   max-width: 100%;
   text-align: right;
   overflow-wrap: anywhere;
-  font-size: 4.7mm;
+  font-size: 4.3mm;
   font-weight: 800;
 }
 
 .line-row {
   display: grid;
-  grid-template-columns: 47mm 5mm 1fr;
+  grid-template-columns: var(--label-col) var(--sep-col) 1fr;
   align-items: start;
   border-top: 0.7mm solid var(--line);
-  min-height: 12mm;
-  padding: 2.6mm 1mm 2.2mm;
+  min-height: 11.5mm;
+  padding: 2.2mm 1mm 2mm;
+  column-gap: 0.8mm;
 }
 
 .line-row--tight {
@@ -130,14 +137,14 @@ body {
 
 .line-label {
   margin: 0;
-  font-size: 5.1mm;
+  font-size: 4.7mm;
   line-height: 1.15;
   font-weight: 700;
 }
 
 .line-sep {
   margin: 0;
-  font-size: 5.1mm;
+  font-size: 4.7mm;
   line-height: 1.15;
   font-weight: 700;
   text-align: center;
@@ -145,22 +152,27 @@ body {
 
 .line-value {
   margin: 0;
-  font-size: 5.1mm;
-  line-height: 1.2;
+  font-size: 4.7mm;
+  line-height: 1.24;
   font-weight: 700;
   word-break: break-word;
   overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .line-value--italic {
   color: var(--muted);
   font-style: italic;
   font-weight: 700;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .line-row--amount {
-  grid-template-columns: 47mm 5mm 1fr 68mm;
-  min-height: 30mm;
+  grid-template-columns: var(--label-col) var(--sep-col) 1fr var(--side-col);
+  min-height: 31mm;
   padding-bottom: 0;
 }
 
@@ -170,26 +182,30 @@ body {
   background: var(--amount-box);
   height: 100%;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 2mm;
-  padding: 2.4mm 2.6mm;
+  padding: 3mm 2.3mm;
+  min-width: 0;
 }
 
 .amount-box span {
-  font-size: 5.1mm;
+  font-size: 4.6mm;
   font-weight: 800;
+  line-height: 1.1;
 }
 
 .amount-box strong {
-  font-size: 6.1mm;
-  line-height: 1;
+  font-size: 5.5mm;
+  line-height: 1.05;
   font-weight: 800;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .line-row--payment-for {
-  grid-template-columns: 47mm 5mm 1fr 68mm;
-  min-height: 30mm;
+  grid-template-columns: var(--label-col) var(--sep-col) 1fr var(--side-col);
+  min-height: 35mm;
   padding-bottom: 0;
 }
 
@@ -197,19 +213,31 @@ body {
   align-self: stretch;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 1.3mm;
-  padding-right: 2.4mm;
+  justify-content: flex-start;
+  gap: 1.1mm;
+  padding: 0.4mm 2.2mm 1mm 0;
+  min-width: 0;
 }
 
 .line-value--program p {
   margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.line-value--program p:first-child {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .application-id {
-  font-size: 3.8mm;
+  font-size: 3.5mm;
   color: #2d5176;
-  font-weight: 650;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sign-box {
@@ -219,9 +247,10 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
-  padding: 2mm 1.7mm 1.3mm;
+  gap: 1.2mm;
+  padding: 2.1mm 1.7mm 1.5mm;
   overflow: hidden;
 }
 
@@ -230,17 +259,22 @@ body {
   width: 100%;
   display: grid;
   place-items: center;
+  min-height: 0;
 }
 
 .sign-stamp {
-  max-width: 96%;
-  max-height: 96%;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
+  object-position: center;
   mix-blend-mode: multiply;
 }
 
 .sign-label {
-  font-size: 4.5mm;
+  font-size: 4.1mm;
+  line-height: 1.1;
   font-weight: 700;
 }
 
@@ -255,14 +289,29 @@ body {
 .receipt-footer strong {
   display: block;
   color: #f4ec5f;
-  font-size: 8.4mm;
+  font-size: 7.9mm;
   line-height: 1.05;
   letter-spacing: 0.02em;
 }
 
 .receipt-footer p {
   margin: 1.2mm 0 0;
-  font-size: 3.7mm;
+  font-size: 3.4mm;
   line-height: 1.25;
   font-weight: 600;
+}
+
+@media print {
+  html,
+  body {
+    width: 297mm;
+    height: 210mm;
+    overflow: hidden;
+    background: #ffffff;
+  }
+
+  .receipt-page {
+    margin: 0;
+    padding: 6.4mm;
+  }
 }
