@@ -51,6 +51,7 @@ function arrangeSidebarNav() {
   const notificationPaths = new Set(["/notifications.html"]);
   const handoutPaths = new Set(["/handouts.html"]);
   const paymentPaths = new Set(["/payments.html"]);
+  const analyticsPaths = new Set(["/analytics", "/analytics.html"]);
 
   const allChildren = Array.from(nav.children);
   let profileButton = null;
@@ -76,7 +77,7 @@ function arrangeSidebarNav() {
       topSection.appendChild(node);
       return;
     }
-    if (handoutPaths.has(path) || paymentPaths.has(path)) {
+    if (handoutPaths.has(path) || paymentPaths.has(path) || analyticsPaths.has(path)) {
       middleSection.appendChild(node);
       return;
     }
@@ -96,9 +97,9 @@ function arrangeSidebarNav() {
   }
 }
 
-async function toggleLecturerLinks() {
-  const lecturerLinks = document.querySelectorAll('[data-role-link="lecturer"]');
-  if (!lecturerLinks.length) {
+async function toggleTeacherRoleLinks() {
+  const teacherLinks = document.querySelectorAll('[data-role-link="lecturer"], [data-role-link="analytics"]');
+  if (!teacherLinks.length) {
     return;
   }
 
@@ -109,20 +110,16 @@ async function toggleLecturerLinks() {
     }
 
     const user = await response.json();
-    const canSeeLecturerLink = user && (user.role === 'teacher' || user.role === 'admin');
-    if (!canSeeLecturerLink) {
-      return;
-    }
-
-    lecturerLinks.forEach((link) => {
-      link.hidden = false;
+    const canSeeTeacherLinks = user && (user.role === 'teacher' || user.role === 'admin');
+    teacherLinks.forEach((link) => {
+      link.hidden = !canSeeTeacherLinks;
     });
   } catch (_err) {
     // Keep links hidden if role lookup fails.
   }
 }
 
-toggleLecturerLinks();
+toggleTeacherRoleLinks();
 
 (function initThemeToggle() {
   const storageKey = "campuspay-theme";
