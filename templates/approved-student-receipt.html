@@ -10,59 +10,96 @@
   <main class="receipt-page">
     <section class="receipt-shell">
       <header class="receipt-header">
-        <div class="title-block">
-          <figure class="passport-frame">
-            <img src="{{passport_photo}}" alt="Passport photo" />
-          </figure>
-          <h1>PAYMENT RECEIPT</h1>
+        <div class="top-rule" aria-hidden="true"></div>
+        <div class="brand-row">
+          <div class="paytec-mark">
+            <div class="paytec-mark__title">PAY-TEC</div>
+            <div class="paytec-mark__swoosh" aria-hidden="true">
+              <span class="paytec-mark__swoosh-main"></span>
+              <span class="paytec-mark__swoosh-sub"></span>
+            </div>
+          </div>
+          <h1 class="receipt-title">RECEIPT</h1>
+          <div class="brand-banner">
+            <div class="brand-banner__logo-wrap">
+              <img src="{{brand_logo}}" alt="Da4lions logo" />
+            </div>
+            <div class="brand-banner__text">DA4LIONS</div>
+          </div>
         </div>
-        <div class="meta-panel">
-          <p><span>No</span><strong>{{receipt_no}}</strong></p>
-          <p><span>Date</span><strong>{{approval_date}}</strong></p>
+        <div class="accent-strip" aria-hidden="true">
+          <span class="accent-strip__orange"></span>
+          <span class="accent-strip__blue"></span>
         </div>
       </header>
 
-      <section class="line-row line-row--tight">
-        <div class="line-label">Received From</div>
-        <div class="line-sep">:</div>
-        <div class="line-value">{{full_name}}</div>
-      </section>
-
-      <section class="line-row line-row--amount">
-        <div class="line-label">Amount</div>
-        <div class="line-sep">:</div>
-        <div class="line-value line-value--italic">{{amount_paid_words}}</div>
-        <aside class="amount-box">
-          <span>{{currency_code}}</span>
-          <strong>{{amount_paid_numeric}}</strong>
-        </aside>
-      </section>
-
-      <section class="line-row line-row--payment-for">
-        <div class="line-label">Payment For</div>
-        <div class="line-sep">:</div>
-        <div class="line-value line-value--program">
-          <p>{{program}}</p>
-          <p class="application-id">Application ID: {{application_id}}</p>
-        </div>
-        <aside class="sign-box">
-          <div class="sign-stamp-wrap">
-            <img src="{{sign_stamp}}" alt="Official stamp" class="sign-stamp" />
+      <section class="receipt-main">
+        <div class="receipt-main__left">
+          <div class="detail-row">
+            <p class="detail-row__label">Receipt No:</p>
+            <p class="detail-row__value">{{receipt_no}}</p>
           </div>
-          <span class="sign-label">Sign</span>
+          <div class="detail-row">
+            <p class="detail-row__label">Date:</p>
+            <p class="detail-row__value">{{date_display}}</p>
+          </div>
+          <div class="detail-row">
+            <p class="detail-row__label">Client Name:</p>
+            <p class="detail-row__value">{{client_name}}</p>
+          </div>
+
+          <div class="detail-row detail-row--spaced">
+            <p class="detail-row__label">Received From:</p>
+            <p class="detail-row__value">{{received_from}}</p>
+          </div>
+          <div class="detail-row">
+            <p class="detail-row__label">Amount Received:</p>
+            <p class="detail-row__value">{{amount_paid}}</p>
+          </div>
+          <div class="detail-row">
+            <p class="detail-row__label">Payment Method:</p>
+            <p class="detail-row__value">{{payment_method}}</p>
+          </div>
+          <div class="detail-row detail-row--purpose">
+            <p class="detail-row__label">Purpose of Payment:</p>
+            <div class="detail-row__value">
+              <p>{{purpose_of_payment}}</p>
+              <p class="application-id">Application ID: {{application_id}}</p>
+            </div>
+          </div>
+        </div>
+
+        <aside class="receipt-main__right">
+          <figure class="passport-frame">
+            <img src="{{passport_photo}}" alt="Passport photo" />
+          </figure>
+          <div class="acknowledgement">
+            <p>Received with thanks the sum of</p>
+            <p class="acknowledgement__words">{{amount_paid_words}}</p>
+            <p>for {{purpose_of_payment}}.</p>
+          </div>
         </aside>
       </section>
 
-      <section class="line-row line-row--tight">
-        <div class="line-label">Received By</div>
-        <div class="line-sep">:</div>
-        <div class="line-value">{{received_by}}</div>
+      <section class="receipt-footer">
+        <div class="receipt-footer__left">
+          <p class="receipt-footer__label">Authorized By:</p>
+          <div class="receipt-footer__signature-line"></div>
+          <figure class="receipt-footer__signature-mark">
+            <img src="{{sign_stamp}}" alt="Authorized signature" />
+          </figure>
+          <div class="receipt-footer__signature-line receipt-footer__signature-line--bottom"></div>
+        </div>
+        <div class="receipt-footer__right">
+          <p class="receipt-footer__label">Date:</p>
+          <div class="receipt-footer__date-line"></div>
+        </div>
       </section>
 
-      <footer class="receipt-footer">
-        <strong>PAYTEC</strong>
-        <p>Digital payment receipt generated by the Paytec approved receipt service.</p>
-      </footer>
+      <div class="bottom-strip" aria-hidden="true">
+        <span class="bottom-strip__orange"></span>
+        <span class="bottom-strip__blue"></span>
+      </div>
     </section>
   </main>
 </body>

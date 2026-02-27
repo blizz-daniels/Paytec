@@ -1,14 +1,11 @@
 :root {
   --paper: #ffffff;
-  --frame: #0f1724;
-  --line: #6a99cb;
-  --ink: #131313;
-  --muted: #255f8e;
-  --amount-box: #c9daee;
-  --footer: #5f93ce;
-  --label-col: 46mm;
-  --sep-col: 5mm;
-  --side-col: 70mm;
+  --page: #ebeff5;
+  --ink: #0f1522;
+  --blue: #1c4d93;
+  --blue-line: #366cae;
+  --orange: #f28c1b;
+  --black: #0f1218;
 }
 
 @page {
@@ -26,9 +23,9 @@ body {
   padding: 0;
   width: 100%;
   min-height: 100%;
-  font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+  font-family: "Segoe UI", Arial, sans-serif;
   color: var(--ink);
-  background: #e5eaf2;
+  background: var(--page);
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
 }
@@ -38,280 +35,322 @@ body {
   min-height: 210mm;
   margin: 0 auto;
   padding: 7mm;
-  display: flex;
 }
 
 .receipt-shell {
   width: 100%;
   min-height: 100%;
   background: var(--paper);
-  border: 1.2mm solid var(--frame);
-  padding: 4.5mm 5mm 4mm;
+  border: 0.45mm solid #c9d1dc;
+  box-shadow: 0 1.1mm 3.2mm rgba(15, 28, 45, 0.14);
+  padding: 4.4mm 6mm 4mm;
   display: flex;
   flex-direction: column;
 }
 
-.receipt-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 5mm;
-  padding-bottom: 2.8mm;
-  min-height: 34mm;
+.top-rule {
+  height: 0.6mm;
+  background: var(--blue);
+  margin-bottom: 2.4mm;
 }
 
-.title-block {
-  display: flex;
-  align-items: flex-start;
-  gap: 4mm;
-  flex: 1;
+.brand-row {
+  display: grid;
+  grid-template-columns: 74mm 1fr 68mm;
+  align-items: center;
+  column-gap: 6mm;
+}
+
+.paytec-mark__title {
+  color: var(--blue);
+  font-size: 14mm;
+  line-height: 0.98;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.04em;
+}
+
+.paytec-mark__swoosh {
+  margin-top: 0.9mm;
+  position: relative;
+  height: 4.6mm;
+}
+
+.paytec-mark__swoosh-main,
+.paytec-mark__swoosh-sub {
+  position: absolute;
+  left: 0;
+  border-radius: 999px;
+}
+
+.paytec-mark__swoosh-main {
+  width: 58mm;
+  top: 0;
+  border-top: 0.75mm solid var(--orange);
+}
+
+.paytec-mark__swoosh-sub {
+  width: 47mm;
+  top: 1.7mm;
+  border-top: 0.65mm solid #7a889b;
+}
+
+.receipt-title {
+  margin: 0;
+  text-align: center;
+  color: var(--blue);
+  font-size: 20mm;
+  line-height: 0.96;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.brand-banner {
+  display: grid;
+  grid-template-columns: 18mm 1fr;
+  align-items: center;
+  background: var(--black);
+  color: #f8cb5b;
+  border: 0.45mm solid #2a2f38;
+  min-height: 26mm;
+  padding: 1.1mm 2.1mm;
+}
+
+.brand-banner__logo-wrap {
+  width: 16mm;
+  height: 16mm;
+  border-radius: 0.8mm;
+  overflow: hidden;
+  background: #10141b;
+}
+
+.brand-banner__logo-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.brand-banner__text {
+  margin: 0 0 0 1.7mm;
+  color: #f8cb5b;
+  font-size: 8.4mm;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.accent-strip {
+  margin-top: 2.2mm;
+  height: 4.7mm;
+  position: relative;
+}
+
+.accent-strip::before {
+  content: "";
+  position: absolute;
+  inset: 2.1mm 0 auto;
+  border-top: 0.65mm solid var(--blue-line);
+}
+
+.accent-strip__orange,
+.accent-strip__blue {
+  position: absolute;
+  top: 0;
+  height: 1.8mm;
+}
+
+.accent-strip__orange {
+  left: 95mm;
+  width: 90mm;
+  background: var(--orange);
+  clip-path: polygon(0 100%, 6% 0, 100% 0, 94% 100%);
+}
+
+.accent-strip__blue {
+  right: 0;
+  width: 95mm;
+  background: var(--blue);
+  clip-path: polygon(0 0, 100% 0, 96% 100%, 4% 100%);
+}
+
+.receipt-main {
+  margin-top: 5.4mm;
+  display: grid;
+  grid-template-columns: 1fr 88mm;
+  column-gap: 11mm;
+}
+
+.receipt-main__left {
+  display: grid;
+  align-content: start;
+  row-gap: 1.1mm;
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: 47mm 1fr;
+  align-items: baseline;
+  column-gap: 1.2mm;
+  border-bottom: 0.45mm solid #90a8c7;
+  min-height: 14mm;
+}
+
+.detail-row--spaced {
+  margin-top: 5mm;
+}
+
+.detail-row--purpose {
+  min-height: 15.5mm;
+}
+
+.detail-row__label {
+  margin: 0;
+  color: #1f4478;
+  font-size: 5.1mm;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+.detail-row__value {
+  margin: 0;
+  color: #111827;
+  font-size: 5.1mm;
+  line-height: 1.2;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.detail-row__value p {
+  margin: 0;
+}
+
+.application-id {
+  margin-top: 1mm;
+  color: #2f4f76;
+  font-size: 3.55mm;
+  font-weight: 700;
+}
+
+.receipt-main__right {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  row-gap: 5mm;
 }
 
 .passport-frame {
   margin: 0;
-  width: 26mm;
-  height: 31mm;
-  border: 0.7mm solid var(--line);
+  border: 0.45mm solid #7f95b4;
+  width: 100%;
+  aspect-ratio: 1 / 1;
   overflow: hidden;
-  background: #f4f8fd;
-  flex: 0 0 auto;
+  background: #f2f5fa;
 }
 
 .passport-frame img {
   width: 100%;
   height: 100%;
-  display: block;
   object-fit: cover;
 }
 
-.title-block h1 {
-  margin: 4.6mm 0 0;
-  font-size: 10.3mm;
-  line-height: 1.04;
-  letter-spacing: 0.05em;
-  font-weight: 800;
+.acknowledgement {
+  border-top: 0.45mm solid #c4cfde;
+  border-bottom: 0.45mm solid #7691b7;
+  padding: 4.2mm 2mm 4.1mm;
+  align-self: end;
 }
 
-.meta-panel {
-  width: 86mm;
-  min-width: 86mm;
-  display: grid;
-  gap: 1.7mm;
-}
-
-.meta-panel p {
+.acknowledgement p {
   margin: 0;
-  display: grid;
-  grid-template-columns: 22mm 1fr;
-  align-items: baseline;
-  border-bottom: 0.7mm solid var(--line);
-  padding: 1.3mm 1mm 1.1mm;
-  font-size: 4.3mm;
-  line-height: 1.15;
-  font-weight: 700;
-}
-
-.meta-panel strong {
-  justify-self: end;
-  max-width: 100%;
-  text-align: right;
-  overflow-wrap: anywhere;
-  font-size: 4.3mm;
-  font-weight: 800;
-}
-
-.line-row {
-  display: grid;
-  grid-template-columns: var(--label-col) var(--sep-col) 1fr;
-  align-items: start;
-  border-top: 0.7mm solid var(--line);
-  min-height: 11.5mm;
-  padding: 2.2mm 1mm 2mm;
-  column-gap: 0.8mm;
-}
-
-.line-row--tight {
-  min-height: 10mm;
-  align-items: center;
-}
-
-.line-label {
-  margin: 0;
-  font-size: 4.7mm;
-  line-height: 1.15;
-  font-weight: 700;
-}
-
-.line-sep {
-  margin: 0;
-  font-size: 4.7mm;
-  line-height: 1.15;
-  font-weight: 700;
-  text-align: center;
-}
-
-.line-value {
-  margin: 0;
-  font-size: 4.7mm;
-  line-height: 1.24;
-  font-weight: 700;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-  min-width: 0;
-}
-
-.line-value--italic {
-  color: var(--muted);
+  color: #17263e;
+  font-size: 6.1mm;
+  line-height: 1.34;
   font-style: italic;
-  font-weight: 700;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-}
-
-.line-row--amount {
-  grid-template-columns: var(--label-col) var(--sep-col) 1fr var(--side-col);
-  min-height: 31mm;
-  padding-bottom: 0;
-}
-
-.amount-box {
-  margin: 0;
-  border: 0.7mm solid var(--line);
-  background: var(--amount-box);
-  height: 100%;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 2mm;
-  padding: 3mm 2.3mm;
-  min-width: 0;
-}
-
-.amount-box span {
-  font-size: 4.6mm;
-  font-weight: 800;
-  line-height: 1.1;
-}
-
-.amount-box strong {
-  font-size: 5.5mm;
-  line-height: 1.05;
-  font-weight: 800;
-  text-align: right;
-  overflow-wrap: anywhere;
-}
-
-.line-row--payment-for {
-  grid-template-columns: var(--label-col) var(--sep-col) 1fr var(--side-col);
-  min-height: 35mm;
-  padding-bottom: 0;
-}
-
-.line-value--program {
-  align-self: stretch;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  gap: 1.1mm;
-  padding: 0.4mm 2.2mm 1mm 0;
-  min-width: 0;
-}
-
-.line-value--program p {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.line-value--program p:first-child {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-}
-
-.application-id {
-  font-size: 3.5mm;
-  color: #2d5176;
-  font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sign-box {
-  margin: 0;
-  border: 0.7mm solid var(--line);
-  border-top: none;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: center;
-  gap: 1.2mm;
-  padding: 2.1mm 1.7mm 1.5mm;
-  overflow: hidden;
-}
-
-.sign-stamp-wrap {
-  flex: 1;
-  width: 100%;
-  display: grid;
-  place-items: center;
-  min-height: 0;
-}
-
-.sign-stamp {
-  width: 100%;
-  height: 100%;
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  object-position: center;
-  mix-blend-mode: multiply;
-}
-
-.sign-label {
-  font-size: 4.1mm;
-  line-height: 1.1;
-  font-weight: 700;
-}
-
-.receipt-footer {
-  margin-top: auto;
-  background: var(--footer);
-  color: #ffffff;
-  text-align: center;
-  padding: 2.4mm 3mm 2.8mm;
-}
-
-.receipt-footer strong {
-  display: block;
-  color: #f4ec5f;
-  font-size: 7.9mm;
-  line-height: 1.05;
-  letter-spacing: 0.02em;
-}
-
-.receipt-footer p {
-  margin: 1.2mm 0 0;
-  font-size: 3.4mm;
-  line-height: 1.25;
   font-weight: 600;
 }
 
-@media print {
-  html,
-  body {
-    width: 297mm;
-    height: 210mm;
-    overflow: hidden;
-    background: #ffffff;
-  }
+.acknowledgement__words {
+  margin-top: 1.4mm;
+  font-weight: 800;
+}
 
-  .receipt-page {
-    margin: 0;
-    padding: 6.4mm;
-  }
+.receipt-footer {
+  margin-top: 6.5mm;
+  border-top: 0.45mm solid #8fa8c8;
+  padding-top: 4.6mm;
+  display: grid;
+  grid-template-columns: 1fr 86mm;
+  column-gap: 10mm;
+}
+
+.receipt-footer__left,
+.receipt-footer__right {
+  min-height: 34mm;
+}
+
+.receipt-footer__label {
+  margin: 0 0 3.2mm;
+  color: #1f4478;
+  font-size: 6.1mm;
+  font-style: italic;
+  font-weight: 800;
+}
+
+.receipt-footer__signature-line,
+.receipt-footer__date-line {
+  border-bottom: 0.45mm solid #8fa8c8;
+  height: 8.4mm;
+}
+
+.receipt-footer__signature-mark {
+  margin: 0;
+  height: 14.4mm;
+  display: grid;
+  justify-content: start;
+  align-content: center;
+}
+
+.receipt-footer__signature-mark img {
+  height: 13.5mm;
+  width: auto;
+  max-width: 98mm;
+  object-fit: contain;
+  mix-blend-mode: multiply;
+}
+
+.receipt-footer__signature-line--bottom {
+  height: 2.8mm;
+}
+
+.bottom-strip {
+  margin-top: auto;
+  height: 4.8mm;
+  position: relative;
+}
+
+.bottom-strip::before {
+  content: "";
+  position: absolute;
+  inset: auto 0 2.1mm;
+  border-top: 0.65mm solid var(--blue-line);
+}
+
+.bottom-strip__orange,
+.bottom-strip__blue {
+  position: absolute;
+  bottom: 0;
+  height: 1.95mm;
+}
+
+.bottom-strip__orange {
+  left: 92mm;
+  width: 100mm;
+  background: var(--orange);
+  clip-path: polygon(0 100%, 6% 0, 100% 0, 94% 100%);
+}
+
+.bottom-strip__blue {
+  right: 0;
+  width: 95mm;
+  background: var(--blue);
+  clip-path: polygon(0 0, 100% 0, 96% 100%, 4% 100%);
 }

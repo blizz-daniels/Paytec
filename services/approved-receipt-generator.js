@@ -60,32 +60,120 @@ const DEFAULT_STAMP_SVG = `
 </svg>
 `.trim();
 
+const DEFAULT_BRAND_LOGO_SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="180" viewBox="0 0 360 180">
+  <rect x="0" y="0" width="360" height="180" fill="#11141b"/>
+  <circle cx="72" cy="90" r="45" fill="#f3b33f"/>
+  <path d="M42 70c12-15 30-20 45-18-8 3-14 10-16 17 6-6 15-10 24-10-5 5-8 11-9 16 7-5 16-7 25-6-6 4-10 10-11 16 6-2 13-2 19 1-8 1-14 6-16 12 7 0 14 2 20 6-10 1-19 6-24 13 4-1 8-1 12 1-9 5-19 8-30 7-18-2-33-14-39-30-4-11-4-20 0-25z" fill="#11141b"/>
+  <text x="145" y="104" fill="#f3b33f" font-family="Arial, sans-serif" font-size="52" font-weight="700">DA4LIONS</text>
+</svg>
+`.trim();
+
 const DEFAULT_FALLBACK_TEMPLATE_HTML = `
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Approved Payment Receipt</title>
 </head>
 <body>
   <main class="receipt-page">
-    <h1>Approved Payment Receipt</h1>
-    <p><strong>Student:</strong> {{full_name}}</p>
-    <p><strong>Application ID:</strong> {{application_id}}</p>
-    <p><strong>Program:</strong> {{program}}</p>
-    <p><strong>Amount Paid:</strong> {{amount_paid}}</p>
-    <p><strong>Receipt No:</strong> {{receipt_no}}</p>
-    <p><strong>Approval Date:</strong> {{approval_date}}</p>
+    <section class="receipt-shell">
+      <header class="receipt-header">
+        <div class="top-rule"></div>
+        <div class="brand-row">
+          <div class="paytec-mark">
+            <div class="paytec">PAY-TEC</div>
+            <div class="paytec-swoosh"></div>
+          </div>
+          <h1>RECEIPT</h1>
+          <div class="brand-banner">
+            <img src="{{brand_logo}}" alt="Da4lions logo" />
+            <span>DA4LIONS</span>
+          </div>
+        </div>
+        <div class="accent-strip">
+          <span class="accent-strip-orange"></span>
+          <span class="accent-strip-blue"></span>
+        </div>
+      </header>
+      <section class="receipt-body">
+        <div class="receipt-left">
+          <p><strong>Receipt No:</strong> {{receipt_no}}</p>
+          <p><strong>Date:</strong> {{date_display}}</p>
+          <p><strong>Client Name:</strong> {{client_name}}</p>
+          <p><strong>Received From:</strong> {{received_from}}</p>
+          <p><strong>Amount Received:</strong> {{amount_paid}}</p>
+          <p><strong>Payment Method:</strong> {{payment_method}}</p>
+          <p><strong>Purpose of Payment:</strong> {{purpose_of_payment}}</p>
+          <p><strong>Application ID:</strong> {{application_id}}</p>
+        </div>
+        <aside class="receipt-right">
+          <figure class="photo-frame">
+            <img src="{{passport_photo}}" alt="Passport photo" />
+          </figure>
+          <p class="ack">Received with thanks the sum of {{amount_paid_words}} for {{purpose_of_payment}}.</p>
+        </aside>
+      </section>
+      <section class="receipt-footer">
+        <div class="authorized">
+          <p class="label">Authorized By:</p>
+          <div class="line"></div>
+          <figure class="signature-mark">
+            <img src="{{sign_stamp}}" alt="Authorized signature" />
+          </figure>
+          <div class="line line-bottom"></div>
+        </div>
+        <div class="footer-date">
+          <p class="label">Date:</p>
+          <div class="line"></div>
+        </div>
+      </section>
+      <div class="bottom-strip">
+        <span class="bottom-strip-orange"></span>
+        <span class="bottom-strip-blue"></span>
+      </div>
+    </section>
   </main>
 </body>
 </html>
 `.trim();
 
 const DEFAULT_FALLBACK_TEMPLATE_CSS = `
-html, body { margin: 0; padding: 0; font-family: Arial, sans-serif; background: #ffffff; color: #111827; }
-.receipt-page { width: 1123px; min-height: 794px; margin: 0 auto; padding: 40px; box-sizing: border-box; }
-h1 { margin: 0 0 24px; font-size: 28px; }
-p { margin: 0 0 12px; font-size: 15px; }
+html, body { margin: 0; padding: 0; font-family: "Segoe UI", Arial, sans-serif; background: #eef2f7; color: #111827; }
+.receipt-page { width: 1123px; min-height: 794px; margin: 0 auto; padding: 28px; box-sizing: border-box; }
+.receipt-shell { background: #fff; border: 1px solid #c9d1dc; box-shadow: 0 4px 14px rgba(15, 28, 45, 0.12); padding: 24px 30px; min-height: 738px; box-sizing: border-box; display: flex; flex-direction: column; }
+.top-rule { height: 2px; background: #1c4d93; margin-bottom: 10px; }
+.brand-row { display: grid; grid-template-columns: 270px 1fr 250px; align-items: center; column-gap: 16px; }
+.paytec { color: #1c4d93; font-size: 56px; line-height: 0.95; font-style: italic; font-weight: 900; letter-spacing: 0.03em; }
+.paytec-swoosh { margin-top: 6px; height: 3px; width: 190px; border-top: 3px solid #f28c1b; box-shadow: 0 4px 0 #7a889b; border-radius: 999px; }
+h1 { margin: 0; text-align: center; color: #1c4d93; font-size: 74px; letter-spacing: 0.08em; line-height: 1; }
+.brand-banner { background: #11141b; color: #f3b33f; padding: 8px 10px; display: grid; grid-template-columns: 56px 1fr; align-items: center; border: 1px solid #2a2f38; }
+.brand-banner img { width: 52px; height: 52px; object-fit: cover; }
+.brand-banner span { font-size: 34px; font-weight: 800; }
+.accent-strip { margin-top: 12px; height: 7px; position: relative; }
+.accent-strip::before { content: ""; position: absolute; left: 0; right: 0; top: 3px; border-top: 1px solid #7893b5; }
+.accent-strip-orange { position: absolute; left: 380px; top: 0; width: 300px; height: 4px; background: #f28c1b; clip-path: polygon(0 100%, 6% 0, 100% 0, 94% 100%); }
+.accent-strip-blue { position: absolute; right: 0; top: 0; width: 240px; height: 4px; background: #1c4d93; clip-path: polygon(0 0, 100% 0, 96% 100%, 4% 100%); }
+.receipt-body { margin-top: 24px; display: grid; grid-template-columns: 1fr 280px; column-gap: 26px; }
+.receipt-left p { margin: 0; padding: 12px 0; border-bottom: 1px solid #91a7c4; font-size: 29px; font-weight: 700; }
+.receipt-left strong { color: #1f4478; margin-right: 6px; }
+.receipt-left p:nth-child(4) { margin-top: 8px; }
+.receipt-right { display: grid; grid-template-rows: auto 1fr; row-gap: 20px; }
+.photo-frame { margin: 0; border: 1px solid #7f95b4; height: 260px; background: #f2f5fa; overflow: hidden; }
+.photo-frame img { width: 100%; height: 100%; object-fit: cover; }
+.ack { margin: 0; border-top: 1px solid #c4cfde; border-bottom: 1px solid #7691b7; padding: 16px 8px; font-size: 30px; line-height: 1.35; font-style: italic; font-weight: 600; color: #17263e; align-self: end; }
+.receipt-footer { margin-top: 28px; border-top: 1px solid #8fa8c8; padding-top: 18px; display: grid; grid-template-columns: 1fr 240px; column-gap: 22px; }
+.label { margin: 0 0 10px; color: #1f4478; font-size: 31px; line-height: 1; font-style: italic; font-weight: 800; }
+.line { border-bottom: 1px solid #8fa8c8; height: 36px; }
+.signature-mark { margin: 0; height: 56px; display: grid; justify-content: start; align-content: center; }
+.signature-mark img { height: 52px; width: auto; max-width: 280px; object-fit: contain; mix-blend-mode: multiply; }
+.line-bottom { height: 12px; }
+.bottom-strip { margin-top: auto; height: 10px; position: relative; }
+.bottom-strip::before { content: ""; position: absolute; left: 0; right: 0; top: 3px; border-top: 1px solid #7893b5; }
+.bottom-strip-orange { position: absolute; left: 370px; bottom: 0; width: 320px; height: 4px; background: #f28c1b; clip-path: polygon(0 100%, 6% 0, 100% 0, 94% 100%); }
+.bottom-strip-blue { position: absolute; right: 0; bottom: 0; width: 240px; height: 4px; background: #1c4d93; clip-path: polygon(0 0, 100% 0, 96% 100%, 4% 100%); }
 `.trim();
 
 function requireOptionalPackage(name, installHint) {
@@ -172,6 +260,150 @@ function formatHumanDate(input) {
   });
 }
 
+function formatDateDdMmYyyy(input) {
+  const date = input ? new Date(input) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    const [year, month, day] = toDateStamp(new Date()).split("-");
+    return `${day}/${month}/${year}`;
+  }
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const year = String(date.getFullYear());
+  return `${day}/${month}/${year}`;
+}
+
+const SMALL_NUMBER_WORDS = [
+  "Zero",
+  "One",
+  "Two",
+  "Three",
+  "Four",
+  "Five",
+  "Six",
+  "Seven",
+  "Eight",
+  "Nine",
+  "Ten",
+  "Eleven",
+  "Twelve",
+  "Thirteen",
+  "Fourteen",
+  "Fifteen",
+  "Sixteen",
+  "Seventeen",
+  "Eighteen",
+  "Nineteen",
+];
+
+const TENS_NUMBER_WORDS = [
+  "",
+  "",
+  "Twenty",
+  "Thirty",
+  "Forty",
+  "Fifty",
+  "Sixty",
+  "Seventy",
+  "Eighty",
+  "Ninety",
+];
+
+function numberUnderThousandToWords(value) {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return "";
+  }
+
+  const whole = Math.floor(amount);
+  const hundreds = Math.floor(whole / 100);
+  const remainder = whole % 100;
+  const parts = [];
+
+  if (hundreds > 0) {
+    parts.push(`${SMALL_NUMBER_WORDS[hundreds]} Hundred`);
+  }
+
+  if (remainder > 0) {
+    if (remainder < 20) {
+      parts.push(SMALL_NUMBER_WORDS[remainder]);
+    } else {
+      const tens = Math.floor(remainder / 10);
+      const units = remainder % 10;
+      const tensWord = TENS_NUMBER_WORDS[tens] || "";
+      if (units > 0) {
+        parts.push(`${tensWord}-${SMALL_NUMBER_WORDS[units]}`);
+      } else {
+        parts.push(tensWord);
+      }
+    }
+  }
+
+  return parts.join(" ").trim();
+}
+
+function integerToWords(value) {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return SMALL_NUMBER_WORDS[0];
+  }
+
+  const scales = [
+    { value: 1_000_000_000, label: "Billion" },
+    { value: 1_000_000, label: "Million" },
+    { value: 1_000, label: "Thousand" },
+    { value: 1, label: "" },
+  ];
+
+  let remainder = Math.floor(amount);
+  const parts = [];
+  scales.forEach((scale) => {
+    if (remainder < scale.value) {
+      return;
+    }
+    const chunk = Math.floor(remainder / scale.value);
+    remainder %= scale.value;
+    const chunkWords = numberUnderThousandToWords(chunk);
+    if (!chunkWords) {
+      return;
+    }
+    parts.push(scale.label ? `${chunkWords} ${scale.label}` : chunkWords);
+  });
+
+  return parts.join(" ").trim() || SMALL_NUMBER_WORDS[0];
+}
+
+function amountToWords(value, currencyCode = "NGN") {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount)) {
+    return "Zero";
+  }
+
+  const currency = String(currencyCode || "NGN")
+    .trim()
+    .toUpperCase();
+  const unitByCurrency = {
+    NGN: { major: "Naira", minor: "Kobo" },
+    USD: { major: "Dollars", minor: "Cents" },
+    GBP: { major: "Pounds", minor: "Pence" },
+    EUR: { major: "Euros", minor: "Cents" },
+  };
+  const units = unitByCurrency[currency] || {
+    major: currency || "Units",
+    minor: "Cents",
+  };
+
+  const signPrefix = amount < 0 ? "Minus " : "";
+  const absolute = Math.abs(amount);
+  const whole = Math.floor(absolute);
+  const fraction = Math.round((absolute - whole) * 100);
+
+  let words = `${integerToWords(whole)} ${units.major}`;
+  if (fraction > 0) {
+    words += ` and ${integerToWords(fraction)} ${units.minor}`;
+  }
+  return `${signPrefix}${words} Only`;
+}
+
 function formatMoney(value, currency = "NGN") {
   const amount = Number(value || 0);
   if (!Number.isFinite(amount)) {
@@ -204,23 +436,33 @@ function buildPlaceholderMap(row, overrides = {}) {
   const receiptId = Number(row.payment_receipt_id || row.id || 0);
   const applicationId = row.application_id || row.payment_reference || row.student_username || `PR-${receiptId}`;
   const approvalDateValue = row.reviewed_at || row.approved_at || row.submitted_at || new Date().toISOString();
+  const paymentMethod = String(row.payment_method || row.payment_channel || "Paystack").trim() || "Paystack";
+  const purposeOfPayment = row.program || row.payment_item_title || "N/A";
   const currencyCode = String(row.currency || "NGN")
     .trim()
     .toUpperCase() || "NGN";
   const amountFormatted = formatMoney(row.amount_paid, currencyCode);
+  const amountWords = amountToWords(row.amount_paid, currencyCode);
+  const fullName = row.full_name || row.display_name || row.student_username || "Student";
   return {
-    full_name: row.full_name || row.display_name || row.student_username || "Student",
+    full_name: fullName,
+    client_name: fullName,
+    received_from: fullName,
     application_id: applicationId,
-    program: row.program || row.payment_item_title || "N/A",
+    program: purposeOfPayment,
+    purpose_of_payment: purposeOfPayment,
+    payment_method: paymentMethod,
     amount_paid: amountFormatted,
-    amount_paid_words: amountFormatted,
+    amount_paid_words: amountWords,
     amount_paid_numeric: formatAmountNumber(row.amount_paid),
     currency_code: currencyCode,
     received_by: "Accounts Office",
     receipt_no: row.receipt_no || `RCP-${String(receiptId || "0").padStart(6, "0")}`,
     approval_date: formatHumanDate(approvalDateValue),
+    date_display: formatDateDdMmYyyy(approvalDateValue),
     passport_photo: row.passport_photo || createDefaultPassportDataUri(),
     sign_stamp: row.sign_stamp || createDefaultStampDataUri(),
+    brand_logo: row.brand_logo || createDefaultBrandLogoDataUri(),
     ...overrides,
   };
 }
@@ -235,6 +477,10 @@ function createDefaultPassportDataUri() {
 
 function createDefaultStampDataUri() {
   return encodeSvgToDataUri(DEFAULT_STAMP_SVG);
+}
+
+function createDefaultBrandLogoDataUri() {
+  return encodeSvgToDataUri(DEFAULT_BRAND_LOGO_SVG);
 }
 
 function guessImageMime(filePath) {
@@ -349,6 +595,54 @@ async function resolveSignStampValue(options = {}) {
       stamp_path: stampPath,
     });
     return createDefaultStampDataUri();
+  }
+}
+
+async function resolveBrandLogoPath(options = {}) {
+  const projectRoot = path.resolve(options.projectRoot || path.join(__dirname, ".."));
+  const explicitInput = String(options.brandLogoPath || process.env.RECEIPT_TEMPLATE_BRAND_LOGO_PATH || "").trim();
+  if (explicitInput) {
+    return path.isAbsolute(explicitInput) ? explicitInput : path.resolve(projectRoot, explicitInput);
+  }
+
+  const candidates = [
+    path.resolve(projectRoot, "assets", "da4lions-logo.jpeg"),
+    path.resolve(projectRoot, "assets", "lion-logo.png"),
+    path.resolve(projectRoot, "assets", "lion-logo-512.png"),
+    path.resolve(projectRoot, "assets", "lion-logo-192.png"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await fs.promises.access(candidate, fs.constants.R_OK);
+      return candidate;
+    } catch (_err) {
+      // Continue scanning candidates.
+    }
+  }
+  return null;
+}
+
+async function resolveBrandLogoValue(options = {}) {
+  const logger = ensureLogger(options.logger);
+  const logoPath = await resolveBrandLogoPath(options);
+  if (!logoPath) {
+    emitLog(logger, "warn", "brand_logo_fallback", {
+      reason: "brand logo file not found",
+    });
+    return createDefaultBrandLogoDataUri();
+  }
+  if (/^https?:\/\//i.test(logoPath) || /^data:/i.test(logoPath)) {
+    return logoPath;
+  }
+  try {
+    await fs.promises.access(logoPath, fs.constants.R_OK);
+    return await fileToDataUri(logoPath);
+  } catch (_err) {
+    emitLog(logger, "warn", "brand_logo_fallback", {
+      reason: "brand logo file unreadable",
+      logo_path: logoPath,
+    });
+    return createDefaultBrandLogoDataUri();
   }
 }
 
@@ -678,55 +972,32 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
   const page = doc.addPage([A4_WIDTH_POINTS, A4_HEIGHT_POINTS]);
   const width = page.getWidth();
   const height = page.getHeight();
-  const frameX = 14;
-  const frameY = 28;
-  const frameW = width - frameX * 2;
-  const frameH = height - frameY * 2;
-  const contentX = frameX + 8;
-  const contentW = frameW - 16;
-  const contentRight = contentX + contentW;
-  const rightColumnW = 106;
-  const rightColumnX = contentRight - rightColumnW;
-  const topY = frameY + frameH - 12;
-  const footerY = frameY + 18;
-  const footerH = 86;
-  const receivedByBottomY = footerY + footerH + 22;
-  const paymentBottomY = receivedByBottomY + 48;
-  const amountBottomY = paymentBottomY + 142;
-  const receivedBottomY = amountBottomY + 118;
-  const headerBottomY = receivedBottomY + 46;
+  const shellX = 18;
+  const shellY = 16;
+  const shellW = width - shellX * 2;
+  const shellH = height - shellY * 2;
+  const shellRight = shellX + shellW;
+  const shellTop = shellY + shellH;
+  const contentX = shellX + 22;
+  const contentRight = shellRight - 22;
+  const rightColX = contentRight - 214;
+  const leftColRight = rightColX - 18;
 
-  const colorPageBg = rgbFromHex("e5e5e5", rgb);
+  const colorPageBg = rgbFromHex("eceff3", rgb);
   const colorPaper = rgbFromHex("ffffff", rgb);
-  const colorFrame = rgbFromHex("111111", rgb);
-  const colorLine = rgbFromHex("6a99cb", rgb);
-  const colorAmountBg = rgbFromHex("c9daee", rgb);
-  const colorFooter = rgbFromHex("5f93ce", rgb);
-  const colorText = rgbFromHex("111111", rgb);
-  const colorTextBlue = rgbFromHex("255f8e", rgb);
-  const colorFooterTitle = rgbFromHex("f4ec5f", rgb);
-  const colorFooterText = rgbFromHex("ffffff", rgb);
-
-  page.drawRectangle({
-    x: 0,
-    y: 0,
-    width,
-    height,
-    color: colorPageBg,
-  });
-
-  page.drawRectangle({
-    x: frameX,
-    y: frameY,
-    width: frameW,
-    height: frameH,
-    color: colorPaper,
-    borderColor: colorFrame,
-    borderWidth: 2.2,
-  });
+  const colorBorder = rgbFromHex("c9d1dc", rgb);
+  const colorBlue = rgbFromHex("1c4d93", rgb);
+  const colorBlueSoft = rgbFromHex("90a8c7", rgb);
+  const colorOrange = rgbFromHex("f28c1b", rgb);
+  const colorBlack = rgbFromHex("11141b", rgb);
+  const colorYellow = rgbFromHex("f3b33f", rgb);
+  const colorText = rgbFromHex("111827", rgb);
+  const colorTextBlue = rgbFromHex("1f4478", rgb);
 
   const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
   const fontRegular = await doc.embedFont(StandardFonts.Helvetica);
+  const fontItalic = await doc.embedFont(StandardFonts.HelveticaOblique);
+
   const splitTokenToWidth = (token, font, size, maxWidth) => {
     const raw = String(token || "");
     if (!raw) {
@@ -751,47 +1022,22 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
     }
     return chunks;
   };
-  const drawContainedImage = (embeddedImage, boxX, boxY, boxWidth, boxHeight) => {
-    const targetWidth = Math.max(0, Number(boxWidth) || 0);
-    const targetHeight = Math.max(0, Number(boxHeight) || 0);
-    if (!targetWidth || !targetHeight) {
-      return;
-    }
 
-    let drawWidth = targetWidth;
-    let drawHeight = targetHeight;
-    if (typeof embeddedImage.scaleToFit === "function") {
-      const scaled = embeddedImage.scaleToFit(targetWidth, targetHeight);
-      drawWidth = scaled.width;
-      drawHeight = scaled.height;
-    } else if (embeddedImage.width && embeddedImage.height) {
-      const ratio = Math.min(targetWidth / embeddedImage.width, targetHeight / embeddedImage.height);
-      drawWidth = embeddedImage.width * ratio;
-      drawHeight = embeddedImage.height * ratio;
-    }
-
-    page.drawImage(embeddedImage, {
-      x: boxX + (targetWidth - drawWidth) / 2,
-      y: boxY + (targetHeight - drawHeight) / 2,
-      width: drawWidth,
-      height: drawHeight,
-    });
-  };
-  const drawWrappedText = (text, x, yTop, maxWidth, font, size, color, lineGap = 1.2, maxLines = 3) => {
+  const wrapTextLines = (text, font, size, maxWidth, maxLines = 2) => {
     const words = String(text || "")
       .trim()
       .split(/\s+/)
       .filter(Boolean)
       .flatMap((word) => splitTokenToWidth(word, font, size, maxWidth));
     if (!words.length) {
-      return yTop;
+      return ["-"];
     }
     const lines = [];
     let current = "";
     words.forEach((word) => {
-      const attempt = current ? `${current} ${word}` : word;
-      if (font.widthOfTextAtSize(attempt, size) <= maxWidth || !current) {
-        current = attempt;
+      const next = current ? `${current} ${word}` : word;
+      if (font.widthOfTextAtSize(next, size) <= maxWidth || !current) {
+        current = next;
         return;
       }
       lines.push(current);
@@ -800,40 +1046,190 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
     if (current) {
       lines.push(current);
     }
-    const printable = lines.slice(0, maxLines);
+    if (lines.length <= maxLines) {
+      return lines;
+    }
+    const trimmed = lines.slice(0, maxLines);
+    let last = trimmed[maxLines - 1];
+    while (last.length > 3 && font.widthOfTextAtSize(`${last}...`, size) > maxWidth) {
+      last = last.slice(0, -1);
+    }
+    trimmed[maxLines - 1] = `${last}...`;
+    return trimmed;
+  };
+
+  const drawWrappedText = (text, x, yTop, maxWidth, font, size, color, lineGap = 1.3, maxLines = 2) => {
+    const lines = wrapTextLines(text, font, size, maxWidth, maxLines);
     let y = yTop;
-    printable.forEach((line) => {
-      page.drawText(line, { x, y, size, font, color });
+    lines.forEach((line) => {
+      page.drawText(line, {
+        x,
+        y,
+        size,
+        font,
+        color,
+      });
       y -= size * lineGap;
     });
     return y;
   };
 
-  // Row guides.
-  [headerBottomY, receivedBottomY, amountBottomY, paymentBottomY, receivedByBottomY].forEach((y) => {
-    page.drawLine({
-      start: { x: contentX, y },
-      end: { x: contentRight, y },
-      thickness: 1.6,
-      color: colorLine,
+  const drawContainedImage = (embeddedImage, boxX, boxY, boxWidth, boxHeight) => {
+    const targetWidth = Math.max(0, Number(boxWidth) || 0);
+    const targetHeight = Math.max(0, Number(boxHeight) || 0);
+    if (!targetWidth || !targetHeight) {
+      return;
+    }
+    const scaled = typeof embeddedImage.scaleToFit === "function"
+      ? embeddedImage.scaleToFit(targetWidth, targetHeight)
+      : { width: targetWidth, height: targetHeight };
+    page.drawImage(embeddedImage, {
+      x: boxX + (targetWidth - scaled.width) / 2,
+      y: boxY + (targetHeight - scaled.height) / 2,
+      width: scaled.width,
+      height: scaled.height,
     });
+  };
+
+  page.drawRectangle({
+    x: 0,
+    y: 0,
+    width,
+    height,
+    color: colorPageBg,
   });
 
-  // Header with student photo top-left.
-  const photoW = 84;
-  const photoH = 104;
-  const photoX = contentX + 2;
-  const photoY = topY - photoH - 4;
+  page.drawRectangle({
+    x: shellX,
+    y: shellY,
+    width: shellW,
+    height: shellH,
+    color: colorPaper,
+    borderColor: colorBorder,
+    borderWidth: 1.1,
+  });
+
+  const topRuleY = shellTop - 14;
+  page.drawLine({
+    start: { x: contentX - 4, y: topRuleY },
+    end: { x: contentRight + 4, y: topRuleY },
+    thickness: 2.1,
+    color: colorBlue,
+  });
+
+  const headerY = shellTop - 70;
+  page.drawText("PAY-TEC", {
+    x: contentX,
+    y: headerY,
+    size: 38,
+    font: fontBold,
+    color: colorBlue,
+  });
+  page.drawLine({
+    start: { x: contentX + 8, y: headerY - 6 },
+    end: { x: contentX + 148, y: headerY + 4 },
+    thickness: 2,
+    color: colorOrange,
+  });
+  page.drawLine({
+    start: { x: contentX + 6, y: headerY - 12 },
+    end: { x: contentX + 140, y: headerY - 8 },
+    thickness: 1.5,
+    color: rgbFromHex("7a889b", rgb),
+  });
+
+  const receiptTitle = "RECEIPT";
+  const receiptTitleSize = 56;
+  const receiptTitleWidth = fontBold.widthOfTextAtSize(receiptTitle, receiptTitleSize);
+  page.drawText(receiptTitle, {
+    x: shellX + (shellW - receiptTitleWidth) / 2,
+    y: headerY + 2,
+    size: receiptTitleSize,
+    font: fontBold,
+    color: colorBlue,
+  });
+
+  const bannerW = 210;
+  const bannerH = 54;
+  const bannerX = contentRight - bannerW;
+  const bannerY = shellTop - 78;
+  page.drawRectangle({
+    x: bannerX,
+    y: bannerY,
+    width: bannerW,
+    height: bannerH,
+    color: colorBlack,
+    borderColor: rgbFromHex("2a2f38", rgb),
+    borderWidth: 1,
+  });
+
+  const parsedBrandLogo = parseDataUriImage(placeholders?.brand_logo);
+  if (parsedBrandLogo) {
+    try {
+      const embedded =
+        parsedBrandLogo.mime === "image/png"
+          ? await doc.embedPng(parsedBrandLogo.bytes)
+          : await doc.embedJpg(parsedBrandLogo.bytes);
+      drawContainedImage(embedded, bannerX + 6, bannerY + 6, 42, 42);
+    } catch (_err) {
+      page.drawCircle({
+        x: bannerX + 27,
+        y: bannerY + 27,
+        size: 15,
+        color: colorYellow,
+      });
+    }
+  } else {
+    page.drawCircle({
+      x: bannerX + 27,
+      y: bannerY + 27,
+      size: 15,
+      color: colorYellow,
+    });
+  }
+  page.drawText("DA4LIONS", {
+    x: bannerX + 54,
+    y: bannerY + 17,
+    size: 24,
+    font: fontBold,
+    color: colorYellow,
+  });
+
+  const stripY = shellTop - 98;
+  page.drawLine({
+    start: { x: contentX - 4, y: stripY },
+    end: { x: contentRight + 4, y: stripY },
+    thickness: 1.6,
+    color: rgbFromHex("7893b5", rgb),
+  });
+  page.drawRectangle({
+    x: contentX + 258,
+    y: stripY - 6,
+    width: 238,
+    height: 5,
+    color: colorOrange,
+  });
+  page.drawRectangle({
+    x: contentRight - 166,
+    y: stripY - 6,
+    width: 158,
+    height: 5,
+    color: colorBlue,
+  });
+
+  const photoW = 200;
+  const photoH = 180;
+  const photoX = rightColX + 6;
+  const photoY = shellTop - 286;
   page.drawRectangle({
     x: photoX,
     y: photoY,
     width: photoW,
     height: photoH,
-    borderColor: colorLine,
-    borderWidth: 1.5,
-    color: rgbFromHex("f4f8fd", rgb),
+    borderColor: rgbFromHex("7f95b4", rgb),
+    borderWidth: 1.3,
+    color: rgbFromHex("f2f5fa", rgb),
   });
-
   const parsedPhoto = parseDataUriImage(placeholders?.passport_photo);
   if (parsedPhoto) {
     try {
@@ -843,236 +1239,132 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
           : await doc.embedJpg(parsedPhoto.bytes);
       drawContainedImage(embedded, photoX + 2, photoY + 2, photoW - 4, photoH - 4);
     } catch (_err) {
-      page.drawText("PHOTO", {
-        x: photoX + 20,
-        y: photoY + 45,
-        size: 11,
-        font: fontBold,
-        color: colorTextBlue,
+      page.drawText("Passport Photo", {
+        x: photoX + 46,
+        y: photoY + 86,
+        size: 12,
+        font: fontRegular,
+        color: rgbFromHex("7a8797", rgb),
       });
     }
   } else {
-    page.drawText("PHOTO", {
-      x: photoX + 20,
-      y: photoY + 45,
-      size: 11,
-      font: fontBold,
-      color: colorTextBlue,
+    page.drawText("Passport Photo", {
+      x: photoX + 46,
+      y: photoY + 86,
+      size: 12,
+      font: fontRegular,
+      color: rgbFromHex("7a8797", rgb),
     });
   }
 
-  const titleX = photoX + photoW + 12;
-  page.drawText("PAYMENT RECEIPT", {
-    x: titleX,
-    y: topY - 38,
-    size: 28,
-    font: fontBold,
-    color: colorText,
-  });
-
-  const metaX = rightColumnX - 104;
-  const metaW = contentRight - metaX;
-  page.drawText("No", {
-    x: metaX + 2,
-    y: topY - 24,
-    size: 11,
-    font: fontBold,
-    color: colorText,
-  });
-  page.drawText(":", {
-    x: metaX + 84,
-    y: topY - 24,
-    size: 11,
-    font: fontBold,
-    color: colorText,
-  });
-  page.drawText(clampText(placeholders?.receipt_no, 22), {
-    x: metaX + 94,
-    y: topY - 24,
-    size: 11,
-    font: fontBold,
-    color: colorText,
-  });
-  page.drawLine({
-    start: { x: metaX, y: topY - 30 },
-    end: { x: metaX + metaW, y: topY - 30 },
-    thickness: 1.6,
-    color: colorLine,
-  });
-  page.drawText("Date", {
-    x: metaX + 2,
-    y: topY - 52,
-    size: 11,
-    font: fontBold,
-    color: colorText,
-  });
-  page.drawText(":", {
-    x: metaX + 84,
-    y: topY - 52,
-    size: 11,
-    font: fontBold,
-    color: colorText,
-  });
-  page.drawText(clampText(placeholders?.approval_date, 22), {
-    x: metaX + 94,
-    y: topY - 52,
-    size: 11,
-    font: fontBold,
-    color: colorText,
-  });
-  page.drawLine({
-    start: { x: metaX, y: topY - 58 },
-    end: { x: metaX + metaW, y: topY - 58 },
-    thickness: 1.6,
-    color: colorLine,
-  });
-
-  // Main labels and values.
   const labelX = contentX + 2;
-  const sepX = contentX + 98;
-  const valueX = contentX + 108;
-  page.drawText("Received From", {
-    x: labelX,
-    y: headerBottomY - 30,
-    size: 12.5,
-    font: fontBold,
-    color: colorText,
-  });
-  page.drawText(":", {
-    x: sepX,
-    y: headerBottomY - 30,
-    size: 12.5,
-    font: fontBold,
-    color: colorText,
-  });
-  page.drawText(clampText(placeholders?.full_name || row?.student_username || "Student", 38), {
-    x: valueX,
-    y: headerBottomY - 30,
-    size: 12.5,
-    font: fontBold,
-    color: colorText,
-  });
+  const valueX = contentX + 125;
+  const rowEndX = leftColRight - 4;
+  let rowY = shellTop - 154;
 
-  page.drawText("Amount", {
-    x: labelX,
-    y: receivedBottomY - 30,
-    size: 12.5,
-    font: fontBold,
-    color: colorText,
-  });
-  page.drawText(":", {
-    x: sepX,
-    y: receivedBottomY - 30,
-    size: 12.5,
-    font: fontBold,
-    color: colorText,
-  });
-  drawWrappedText(
-    placeholders?.amount_paid_words || placeholders?.amount_paid || formatMoney(row?.amount_paid, row?.currency || "NGN"),
-    valueX,
-    receivedBottomY - 30,
-    rightColumnX - valueX - 8,
-    fontBold,
-    11,
-    colorTextBlue,
-    1.35,
-    2
-  );
+  const drawDetailRow = (label, value, options = {}) => {
+    const maxLines = Number.isFinite(Number(options.maxLines)) ? Number(options.maxLines) : 1;
+    const gapAfter = Number.isFinite(Number(options.gapAfter)) ? Number(options.gapAfter) : 26;
+    page.drawText(String(label || ""), {
+      x: labelX,
+      y: rowY,
+      size: 12.2,
+      font: fontBold,
+      color: colorTextBlue,
+    });
+    const textEndY = drawWrappedText(
+      String(value || "-"),
+      valueX,
+      rowY,
+      rowEndX - valueX - 2,
+      fontBold,
+      12.2,
+      colorText,
+      1.28,
+      maxLines
+    );
+    const lineY = textEndY + 3;
+    page.drawLine({
+      start: { x: labelX, y: lineY },
+      end: { x: rowEndX, y: lineY },
+      thickness: 1.1,
+      color: colorBlueSoft,
+    });
+    rowY = lineY - gapAfter;
+  };
 
-  page.drawText("Payment For", {
-    x: labelX,
-    y: amountBottomY - 30,
-    size: 12.5,
-    font: fontBold,
-    color: colorText,
-  });
-  page.drawText(":", {
-    x: sepX,
-    y: amountBottomY - 30,
-    size: 12.5,
-    font: fontBold,
-    color: colorText,
-  });
-  const programY = drawWrappedText(
-    placeholders?.program || row?.payment_item_title || "N/A",
-    valueX,
-    amountBottomY - 30,
-    rightColumnX - valueX - 8,
-    fontBold,
-    11.5,
-    colorText,
-    1.35,
-    2
-  );
+  drawDetailRow("Receipt No:", placeholders?.receipt_no, { maxLines: 1 });
+  drawDetailRow("Date:", placeholders?.date_display || placeholders?.approval_date, { maxLines: 1 });
+  drawDetailRow("Client Name:", placeholders?.client_name || placeholders?.full_name, { maxLines: 1, gapAfter: 30 });
+  drawDetailRow("Received From:", placeholders?.received_from || placeholders?.full_name, { maxLines: 1 });
+  drawDetailRow("Amount Received:", placeholders?.amount_paid, { maxLines: 1 });
+  drawDetailRow("Payment Method:", placeholders?.payment_method || "Paystack", { maxLines: 1 });
+  drawDetailRow("Purpose of Payment:", placeholders?.purpose_of_payment || placeholders?.program, { maxLines: 2, gapAfter: 20 });
+
+  const appIdY = rowY + 8;
   page.drawText(
-    `Application ID: ${clampText(placeholders?.application_id || row?.payment_reference || row?.student_username || "-", 34)}`,
+    `Application ID: ${clampText(placeholders?.application_id || row?.payment_reference || row?.student_username || "-", 38)}`,
     {
       x: valueX,
-      y: Math.max(paymentBottomY + 12, programY - 8),
+      y: appIdY,
       size: 9.8,
       font: fontRegular,
-      color: colorTextBlue,
+      color: rgbFromHex("2f4f76", rgb),
     }
   );
 
-  page.drawText("Received By", {
-    x: labelX,
-    y: paymentBottomY - 30,
-    size: 12.5,
-    font: fontBold,
-    color: colorText,
+  const ackTop = photoY - 20;
+  const ackBottom = shellY + 136;
+  page.drawLine({
+    start: { x: rightColX, y: ackTop },
+    end: { x: contentRight, y: ackTop },
+    thickness: 1.1,
+    color: rgbFromHex("c4cfde", rgb),
   });
-  page.drawText(":", {
-    x: sepX,
-    y: paymentBottomY - 30,
-    size: 12.5,
-    font: fontBold,
-    color: colorText,
+  page.drawLine({
+    start: { x: rightColX, y: ackBottom },
+    end: { x: contentRight, y: ackBottom },
+    thickness: 1.1,
+    color: rgbFromHex("7691b7", rgb),
   });
-  page.drawText(clampText(placeholders?.received_by || "Accounts Office", 28), {
-    x: valueX,
-    y: paymentBottomY - 30,
-    size: 12.5,
-    font: fontBold,
-    color: colorText,
+  const ackLead = "Received with thanks the sum of";
+  const ackWords = String(placeholders?.amount_paid_words || placeholders?.amount_paid || "").trim();
+  const ackTail = `for ${clampText(placeholders?.purpose_of_payment || placeholders?.program, 64)}.`;
+  const ackTextX = rightColX + 8;
+  const ackWidth = contentRight - ackTextX - 8;
+  let ackY = ackTop - 24;
+  ackY = drawWrappedText(ackLead, ackTextX, ackY, ackWidth, fontItalic, 12.2, rgbFromHex("17263e", rgb), 1.3, 2) - 6;
+  ackY = drawWrappedText(ackWords, ackTextX, ackY, ackWidth, fontBold, 12.8, rgbFromHex("17263e", rgb), 1.32, 3) - 4;
+  drawWrappedText(ackTail, ackTextX, ackY, ackWidth, fontItalic, 12.2, rgbFromHex("17263e", rgb), 1.3, 2);
+
+  const footerLineY = shellY + 126;
+  page.drawLine({
+    start: { x: contentX - 4, y: footerLineY },
+    end: { x: contentRight + 4, y: footerLineY },
+    thickness: 1.2,
+    color: colorBlueSoft,
   });
 
-  // Amount and sign boxes.
-  page.drawRectangle({
-    x: rightColumnX,
-    y: amountBottomY,
-    width: rightColumnW,
-    height: receivedBottomY - amountBottomY,
-    borderColor: colorLine,
-    borderWidth: 1.6,
-    color: colorAmountBg,
-  });
-  page.drawText(clampText(placeholders?.currency_code || String(row?.currency || "NGN").toUpperCase(), 8), {
-    x: rightColumnX + 6,
-    y: amountBottomY + (receivedBottomY - amountBottomY) / 2 - 6,
-    size: 13,
+  page.drawText("Authorized By:", {
+    x: contentX + 8,
+    y: footerLineY - 30,
+    size: 12.8,
     font: fontBold,
-    color: colorText,
+    color: colorTextBlue,
   });
-  page.drawText(
-    clampText(placeholders?.amount_paid_numeric || formatAmountNumber(row?.amount_paid), 16),
-    {
-      x: rightColumnX + 36,
-      y: amountBottomY + (receivedBottomY - amountBottomY) / 2 - 6,
-      size: 15,
-      font: fontBold,
-      color: colorText,
-    }
-  );
-
-  page.drawRectangle({
-    x: rightColumnX,
-    y: receivedByBottomY,
-    width: rightColumnW,
-    height: amountBottomY - receivedByBottomY,
-    borderColor: colorLine,
-    borderWidth: 1.6,
-    color: colorPaper,
+  const signatureLineStart = contentX + 8;
+  const signatureLineEnd = contentX + 260;
+  page.drawLine({
+    start: { x: signatureLineStart, y: footerLineY - 62 },
+    end: { x: signatureLineEnd, y: footerLineY - 62 },
+    thickness: 1,
+    color: colorBlueSoft,
+  });
+  page.drawLine({
+    start: { x: signatureLineStart, y: footerLineY - 98 },
+    end: { x: signatureLineEnd, y: footerLineY - 98 },
+    thickness: 1,
+    color: colorBlueSoft,
   });
 
   const parsedStamp = parseDataUriImage(placeholders?.sign_stamp);
@@ -1082,65 +1374,61 @@ async function buildStyledFallbackReceiptPdfBuffer(row, placeholders) {
         parsedStamp.mime === "image/png"
           ? await doc.embedPng(parsedStamp.bytes)
           : await doc.embedJpg(parsedStamp.bytes);
-      const stampBoxX = rightColumnX + 6;
-      const stampBoxY = receivedByBottomY + 24;
-      const stampBoxW = rightColumnW - 12;
-      const stampBoxH = amountBottomY - receivedByBottomY - 36;
-      drawContainedImage(embedded, stampBoxX, stampBoxY, stampBoxW, stampBoxH);
+      drawContainedImage(embedded, signatureLineStart + 18, footerLineY - 92, 210, 36);
     } catch (_err) {
-      page.drawText("STAMP", {
-        x: rightColumnX + 28,
-        y: receivedByBottomY + 62,
-        size: 11,
-        font: fontBold,
-        color: colorTextBlue,
+      page.drawText("Signature", {
+        x: signatureLineStart + 58,
+        y: footerLineY - 83,
+        size: 20,
+        font: fontItalic,
+        color: colorBlue,
       });
     }
   } else {
-    page.drawText("STAMP", {
-      x: rightColumnX + 28,
-      y: receivedByBottomY + 62,
-      size: 11,
-      font: fontBold,
-      color: colorTextBlue,
+    page.drawText("Signature", {
+      x: signatureLineStart + 58,
+      y: footerLineY - 83,
+      size: 20,
+      font: fontItalic,
+      color: colorBlue,
     });
   }
-  const signLabel = "Sign";
-  const signLabelSize = 10.5;
-  const signLabelWidth = fontBold.widthOfTextAtSize(signLabel, signLabelSize);
-  page.drawText(signLabel, {
-    x: rightColumnX + Math.max(6, (rightColumnW - signLabelWidth) / 2),
-    y: receivedByBottomY + 8.5,
-    size: signLabelSize,
+
+  const dateLabelX = contentRight - 250;
+  page.drawText("Date:", {
+    x: dateLabelX,
+    y: footerLineY - 30,
+    size: 12.8,
     font: fontBold,
-    color: colorText,
+    color: colorTextBlue,
+  });
+  page.drawLine({
+    start: { x: dateLabelX, y: footerLineY - 62 },
+    end: { x: contentRight, y: footerLineY - 62 },
+    thickness: 1,
+    color: colorBlueSoft,
   });
 
-  // Footer.
+  const bottomStripY = shellY + 18;
+  page.drawLine({
+    start: { x: contentX - 4, y: bottomStripY + 6 },
+    end: { x: contentRight + 4, y: bottomStripY + 6 },
+    thickness: 1.4,
+    color: rgbFromHex("7893b5", rgb),
+  });
   page.drawRectangle({
-    x: contentX,
-    y: footerY,
-    width: contentW,
-    height: footerH,
-    color: colorFooter,
+    x: contentX + 248,
+    y: bottomStripY + 1,
+    width: 248,
+    height: 5,
+    color: colorOrange,
   });
-  const footerTitle = "PAYTEC";
-  const footerTitleWidth = fontBold.widthOfTextAtSize(footerTitle, 20);
-  page.drawText(footerTitle, {
-    x: contentX + (contentW - footerTitleWidth) / 2,
-    y: footerY + 52,
-    size: 20,
-    font: fontBold,
-    color: colorFooterTitle,
-  });
-  const footerText = "Digital payment receipt generated by the Paytec approved receipt service.";
-  const footerTextWidth = fontBold.widthOfTextAtSize(footerText, 9.6);
-  page.drawText(footerText, {
-    x: contentX + Math.max(8, (contentW - footerTextWidth) / 2),
-    y: footerY + 30,
-    size: 9.6,
-    font: fontBold,
-    color: colorFooterText,
+  page.drawRectangle({
+    x: contentRight - 168,
+    y: bottomStripY + 1,
+    width: 160,
+    height: 5,
+    color: colorBlue,
   });
 
   const bytes = await doc.save();
@@ -1285,6 +1573,11 @@ async function generateApprovedStudentReceipts(options = {}) {
     templateStampPath: options.templateStampPath,
     projectRoot: path.resolve(__dirname, ".."),
   });
+  const brandLogoDataUri = await resolveBrandLogoValue({
+    logger,
+    brandLogoPath: options.brandLogoPath,
+    projectRoot: path.resolve(__dirname, ".."),
+  });
   const eligibleRows = await fetchEligibleApprovedRows(db, {
     force,
     limit: options.limit,
@@ -1347,7 +1640,10 @@ async function generateApprovedStudentReceipts(options = {}) {
         dataDir: options.dataDir,
         logger,
       });
-      placeholders = buildPlaceholderMap(row, { passport_photo: passportPhoto });
+      placeholders = buildPlaceholderMap(row, {
+        passport_photo: passportPhoto,
+        brand_logo: brandLogoDataUri,
+      });
       placeholders.sign_stamp = signStampDataUri;
       const outputFileName = `${sanitizeFileSegment(placeholders.application_id, `receipt-${row.payment_receipt_id}`)}_${toDateStamp(
         nowProvider()
