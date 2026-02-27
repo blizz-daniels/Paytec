@@ -44,6 +44,7 @@ window.addEventListener("DOMContentLoaded", () => {
         <a href="/notifications.html">Notifications</a>
         <a href="/handouts.html">Handouts</a>
         <a href="/payments.html">Payments</a>
+        <a href="/messages">Messages</a>
         <form method="post" action="/logout" class="logout-form">
           <input type="hidden" name="_csrf" value="" />
           <button type="submit" class="logout-btn">Log out</button>

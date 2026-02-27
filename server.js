@@ -1026,6 +1026,41 @@ async function initDatabase() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS message_threads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subject TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS message_participants (
+      thread_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      role TEXT NOT NULL,
+      joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_read_message_id INTEGER,
+      last_read_at TEXT,
+      PRIMARY KEY (thread_id, username),
+      FOREIGN KEY (thread_id) REFERENCES message_threads(id) ON UPDATE CASCADE ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id INTEGER NOT NULL,
+      sender_username TEXT NOT NULL,
+      sender_role TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (thread_id) REFERENCES message_threads(id) ON UPDATE CASCADE ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS payment_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -1282,6 +1317,9 @@ async function initDatabase() {
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_notification_reactions_notification ON notification_reactions(notification_id)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_handout_reactions_handout ON handout_reactions(handout_id)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_shared_file_reactions_shared_file ON shared_file_reactions(shared_file_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_message_participants_user_thread ON message_participants(username, thread_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_messages_thread_created ON messages(thread_id, created_at)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_message_threads_updated_at ON message_threads(updated_at)");
 
   await run(`
     CREATE TABLE IF NOT EXISTS user_profiles (
@@ -2949,6 +2987,337 @@ async function ensureCanManageContent(req, table, id) {
     return { row };
   }
   return { error: "forbidden" };
+}
+
+function sanitizeMessageSubject(value) {
+  const text = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.slice(0, 120);
+}
+
+function sanitizeMessageBody(value) {
+  return String(value || "").replace(/\r/g, "").trim();
+}
+
+const MESSAGE_SUBJECT_MAX_LENGTH = 120;
+const MESSAGE_BODY_MAX_LENGTH = 4000;
+
+function canCreateMessageThreads(role) {
+  return role === "teacher" || role === "admin";
+}
+
+function validateMessageSubjectOrThrow(rawSubject) {
+  const normalized = String(rawSubject || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (normalized.length > MESSAGE_SUBJECT_MAX_LENGTH) {
+    throw { status: 400, error: `Subject cannot be longer than ${MESSAGE_SUBJECT_MAX_LENGTH} characters.` };
+  }
+  return sanitizeMessageSubject(normalized);
+}
+
+function validateMessageBodyOrThrow(rawBody, { allowEmpty = false } = {}) {
+  const message = sanitizeMessageBody(rawBody);
+  if (!allowEmpty && !message) {
+    throw { status: 400, error: "Message body is required." };
+  }
+  if (message.length > MESSAGE_BODY_MAX_LENGTH) {
+    throw { status: 400, error: `Message body cannot be longer than ${MESSAGE_BODY_MAX_LENGTH} characters.` };
+  }
+  return message;
+}
+
+function parseMessageParticipantsCsv(rawValue) {
+  if (!rawValue) {
+    return [];
+  }
+  return String(rawValue)
+    .split(",")
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [username, role] = entry.split("|");
+      return {
+        username: String(username || "").trim(),
+        role: String(role || "").trim().toLowerCase() || "student",
+      };
+    })
+    .filter((entry) => entry.username);
+}
+
+function normalizeMessageRecipients(rawRecipients) {
+  if (!Array.isArray(rawRecipients)) {
+    return [];
+  }
+  const unique = new Set();
+  const recipients = [];
+  rawRecipients.forEach((entry) => {
+    const username = normalizeIdentifier(entry);
+    if (!username || unique.has(username)) {
+      return;
+    }
+    unique.add(username);
+    recipients.push(username);
+  });
+  return recipients;
+}
+
+async function validateMessageRecipients(rawRecipients) {
+  const recipients = normalizeMessageRecipients(rawRecipients);
+  if (!recipients.length) {
+    throw { status: 400, error: "At least one student recipient is required." };
+  }
+  if (recipients.length > 200) {
+    throw { status: 400, error: "Too many recipients. Maximum is 200." };
+  }
+  const invalid = recipients.filter((username) => !isValidIdentifier(username));
+  if (invalid.length) {
+    throw { status: 400, error: "One or more recipient usernames are invalid." };
+  }
+  const placeholders = recipients.map(() => "?").join(",");
+  const rows = await all(
+    `SELECT auth_id FROM auth_roster WHERE role = 'student' AND auth_id IN (${placeholders})`,
+    recipients
+  );
+  const existing = new Set(rows.map((row) => normalizeIdentifier(row.auth_id)));
+  const missing = recipients.filter((username) => !existing.has(username));
+  if (missing.length) {
+    throw { status: 400, error: `Recipients must be valid student accounts: ${missing.join(", ")}` };
+  }
+  return recipients;
+}
+
+async function listMessageStudentDirectory() {
+  const rows = await all(
+    `
+      SELECT
+        ar.auth_id AS username,
+        COALESCE(NULLIF(TRIM(up.display_name), ''), ar.auth_id) AS display_name
+      FROM auth_roster ar
+      LEFT JOIN user_profiles up ON up.username = ar.auth_id
+      WHERE ar.role = 'student'
+      ORDER BY ar.auth_id ASC
+    `
+  );
+  return rows.map((row) => ({
+    username: String(row.username || ""),
+    display_name: String(row.display_name || row.username || ""),
+  }));
+}
+
+async function getMessageThreadAccess(threadId, username) {
+  const thread = await get("SELECT * FROM message_threads WHERE id = ? LIMIT 1", [threadId]);
+  if (!thread) {
+    throw { status: 404, error: "Message thread not found." };
+  }
+  const participant = await get(
+    `
+      SELECT thread_id, username, role, joined_at, last_read_message_id, last_read_at
+      FROM message_participants
+      WHERE thread_id = ? AND username = ?
+      LIMIT 1
+    `,
+    [threadId, username]
+  );
+  if (!participant) {
+    throw { status: 403, error: "You do not have access to this thread." };
+  }
+  return { thread, participant };
+}
+
+async function listMessageThreadSummariesForUser(username) {
+  const rows = await all(
+    `
+      SELECT
+        mt.id,
+        COALESCE(mt.subject, '') AS subject,
+        mt.created_by,
+        mt.created_at,
+        mt.updated_at,
+        COALESCE(last_msg.id, 0) AS last_message_id,
+        COALESCE(last_msg.body, '') AS last_message_body,
+        COALESCE(last_msg.created_at, '') AS last_message_at,
+        COALESCE(last_msg.sender_username, '') AS last_message_sender_username,
+        COALESCE(participant_rollup.participants_csv, '') AS participants_csv,
+        COALESCE(unread_rollup.unread_count, 0) AS unread_count
+      FROM message_participants mp_self
+      JOIN message_threads mt ON mt.id = mp_self.thread_id
+      LEFT JOIN messages last_msg ON last_msg.id = (
+        SELECT m2.id
+        FROM messages m2
+        WHERE m2.thread_id = mt.id
+        ORDER BY m2.id DESC
+        LIMIT 1
+      )
+      LEFT JOIN (
+        SELECT
+          mp2.thread_id,
+          GROUP_CONCAT(mp2.username || '|' || mp2.role, ',') AS participants_csv
+        FROM message_participants mp2
+        GROUP BY mp2.thread_id
+      ) participant_rollup ON participant_rollup.thread_id = mt.id
+      LEFT JOIN (
+        SELECT
+          mp3.thread_id,
+          COUNT(m3.id) AS unread_count
+        FROM message_participants mp3
+        LEFT JOIN messages m3
+          ON m3.thread_id = mp3.thread_id
+         AND m3.id > COALESCE(mp3.last_read_message_id, 0)
+         AND LOWER(COALESCE(m3.sender_username, '')) <> LOWER(mp3.username)
+        WHERE mp3.username = ?
+        GROUP BY mp3.thread_id
+      ) unread_rollup ON unread_rollup.thread_id = mt.id
+      WHERE mp_self.username = ?
+      ORDER BY datetime(COALESCE(last_msg.created_at, mt.updated_at, mt.created_at)) DESC, mt.id DESC
+    `,
+    [username, username]
+  );
+  return rows.map((row) => ({
+    id: Number(row.id || 0),
+    subject: String(row.subject || ""),
+    created_by: String(row.created_by || ""),
+    created_at: row.created_at || "",
+    updated_at: row.updated_at || "",
+    unread_count: Math.max(0, Number.parseInt(row.unread_count, 10) || 0),
+    last_message: {
+      id: Number(row.last_message_id || 0),
+      body: String(row.last_message_body || ""),
+      created_at: row.last_message_at || "",
+      sender_username: String(row.last_message_sender_username || ""),
+    },
+    participants: parseMessageParticipantsCsv(row.participants_csv || ""),
+  }));
+}
+
+async function getMessageThreadPayloadForUser(threadId, username) {
+  const access = await getMessageThreadAccess(threadId, username);
+  const [participants, messages, unreadRow] = await Promise.all([
+    all(
+      `
+        SELECT thread_id, username, role, joined_at, last_read_message_id, last_read_at
+        FROM message_participants
+        WHERE thread_id = ?
+        ORDER BY
+          CASE WHEN username = ? THEN 0 ELSE 1 END,
+          username ASC
+      `,
+      [threadId, username]
+    ),
+    all(
+      `
+        SELECT id, thread_id, sender_username, sender_role, body, created_at
+        FROM messages
+        WHERE thread_id = ?
+        ORDER BY id ASC
+      `,
+      [threadId]
+    ),
+    get(
+      `
+        SELECT COUNT(m.id) AS unread_count
+        FROM message_participants mp
+        LEFT JOIN messages m
+          ON m.thread_id = mp.thread_id
+         AND m.id > COALESCE(mp.last_read_message_id, 0)
+         AND LOWER(COALESCE(m.sender_username, '')) <> LOWER(mp.username)
+        WHERE mp.thread_id = ?
+          AND mp.username = ?
+      `,
+      [threadId, username]
+    ),
+  ]);
+  return {
+    thread: {
+      id: Number(access.thread.id || 0),
+      subject: String(access.thread.subject || ""),
+      created_by: String(access.thread.created_by || ""),
+      created_at: access.thread.created_at || "",
+      updated_at: access.thread.updated_at || "",
+    },
+    participants: participants.map((row) => ({
+      thread_id: Number(row.thread_id || 0),
+      username: String(row.username || ""),
+      role: String(row.role || "").toLowerCase(),
+      joined_at: row.joined_at || "",
+      last_read_message_id: row.last_read_message_id ? Number(row.last_read_message_id) : null,
+      last_read_at: row.last_read_at || null,
+    })),
+    messages: messages.map((row) => ({
+      id: Number(row.id || 0),
+      thread_id: Number(row.thread_id || 0),
+      sender_username: String(row.sender_username || ""),
+      sender_role: String(row.sender_role || "").toLowerCase(),
+      body: String(row.body || ""),
+      created_at: row.created_at || "",
+    })),
+    unread_count: Math.max(0, Number.parseInt(unreadRow?.unread_count, 10) || 0),
+  };
+}
+
+async function markMessageThreadReadForUser(threadId, username) {
+  const latest = await get(
+    `
+      SELECT id
+      FROM messages
+      WHERE thread_id = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `,
+    [threadId]
+  );
+  const latestMessageId = latest ? Number(latest.id || 0) : 0;
+  if (latestMessageId > 0) {
+    await run(
+      `
+        UPDATE message_participants
+        SET last_read_message_id = ?,
+            last_read_at = CURRENT_TIMESTAMP
+        WHERE thread_id = ?
+          AND username = ?
+      `,
+      [latestMessageId, threadId, username]
+    );
+  } else {
+    await run(
+      `
+        UPDATE message_participants
+        SET last_read_at = CURRENT_TIMESTAMP
+        WHERE thread_id = ?
+          AND username = ?
+      `,
+      [threadId, username]
+    );
+  }
+  return latestMessageId || null;
+}
+
+async function getMessageUnreadCounts(username) {
+  const row = await get(
+    `
+      SELECT
+        COALESCE(SUM(CASE WHEN unread_count > 0 THEN 1 ELSE 0 END), 0) AS unread_threads,
+        COALESCE(SUM(unread_count), 0) AS unread_messages
+      FROM (
+        SELECT
+          mp.thread_id,
+          COUNT(m.id) AS unread_count
+        FROM message_participants mp
+        LEFT JOIN messages m
+          ON m.thread_id = mp.thread_id
+         AND m.id > COALESCE(mp.last_read_message_id, 0)
+         AND LOWER(COALESCE(m.sender_username, '')) <> LOWER(mp.username)
+        WHERE mp.username = ?
+        GROUP BY mp.thread_id
+      ) counts
+    `,
+    [username]
+  );
+  return {
+    unread_threads: Math.max(0, Number.parseInt(row?.unread_threads, 10) || 0),
+    unread_messages: Math.max(0, Number.parseInt(row?.unread_messages, 10) || 0),
+  };
 }
 
 function regenerateSession(req) {
@@ -5948,6 +6317,7 @@ app.get("/admin-import.html", (_req, res) => res.redirect("/admin/import"));
 app.get("/teacher.html", (_req, res) => res.redirect("/lecturer"));
 app.get("/lecturer.html", (_req, res) => res.redirect("/lecturer"));
 app.get("/analytics.html", (_req, res) => res.redirect("/analytics"));
+app.get("/messages.html", (_req, res) => res.redirect("/messages"));
 
 app.post("/login", async (req, res) => {
   const rawIdentifier = String(req.body.username || "");
@@ -6168,6 +6538,259 @@ app.post("/api/profile/avatar", requireAuth, (req, res) => {
       return res.status(500).json({ error: "Could not save profile picture." });
     }
   });
+});
+
+app.get("/api/messages/threads", requireAuth, async (req, res) => {
+  const username = normalizeIdentifier(req.session?.user?.username || "");
+  if (!username) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  try {
+    const [threads, unread] = await Promise.all([
+      listMessageThreadSummariesForUser(username),
+      getMessageUnreadCounts(username),
+    ]);
+    return res.json({
+      threads,
+      unread,
+    });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load message threads." });
+  }
+});
+
+app.get("/api/messages/threads/:id", requireAuth, async (req, res) => {
+  const threadId = parseResourceId(req.params.id);
+  if (!threadId) {
+    return res.status(400).json({ error: "Invalid message thread ID." });
+  }
+  const username = normalizeIdentifier(req.session?.user?.username || "");
+  if (!username) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  try {
+    const payload = await getMessageThreadPayloadForUser(threadId, username);
+    return res.json(payload);
+  } catch (err) {
+    if (err && err.status && err.error) {
+      return res.status(err.status).json({ error: err.error });
+    }
+    return res.status(500).json({ error: "Could not load message thread." });
+  }
+});
+
+app.post("/api/messages/threads", requireAuth, async (req, res) => {
+  const actorRole = String(req.session?.user?.role || "")
+    .trim()
+    .toLowerCase();
+  if (!canCreateMessageThreads(actorRole)) {
+    return res.status(403).json({ error: "Only lecturers or admins can create message threads." });
+  }
+  const actorUsername = normalizeIdentifier(req.session?.user?.username || "");
+  if (!actorUsername || !isValidIdentifier(actorUsername)) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+
+  try {
+    const subject = validateMessageSubjectOrThrow(req.body?.subject || "");
+    const messageBody = validateMessageBodyOrThrow(req.body?.message || "");
+    const recipients = await validateMessageRecipients(req.body?.recipients);
+
+    const result = await withSqlTransaction(async () => {
+      const threadInsert = await run(
+        `
+          INSERT INTO message_threads (subject, created_by, created_at, updated_at)
+          VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        `,
+        [subject || null, actorUsername]
+      );
+      const threadId = Number(threadInsert.lastID || 0);
+
+      const participants = [{ username: actorUsername, role: actorRole }];
+      const seenParticipants = new Set([actorUsername]);
+      recipients.forEach((username) => {
+        if (seenParticipants.has(username)) {
+          return;
+        }
+        seenParticipants.add(username);
+        participants.push({
+          username,
+          role: "student",
+        });
+      });
+
+      for (const participant of participants) {
+        await run(
+          `
+            INSERT INTO message_participants (thread_id, username, role, joined_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+          `,
+          [threadId, participant.username, participant.role]
+        );
+      }
+
+      const messageInsert = await run(
+        `
+          INSERT INTO messages (thread_id, sender_username, sender_role, body, created_at)
+          VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `,
+        [threadId, actorUsername, actorRole, messageBody]
+      );
+      const messageId = Number(messageInsert.lastID || 0);
+
+      await run(
+        `
+          UPDATE message_participants
+          SET last_read_message_id = ?,
+              last_read_at = CURRENT_TIMESTAMP
+          WHERE thread_id = ?
+            AND username = ?
+        `,
+        [messageId, threadId, actorUsername]
+      );
+      await run("UPDATE message_threads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [threadId]);
+
+      return {
+        threadId,
+        messageId,
+      };
+    });
+
+    const payload = await getMessageThreadPayloadForUser(result.threadId, actorUsername);
+    return res.status(201).json({
+      ok: true,
+      threadId: result.threadId,
+      messageId: result.messageId,
+      ...payload,
+    });
+  } catch (err) {
+    if (err && err.status && err.error) {
+      return res.status(err.status).json({ error: err.error });
+    }
+    return res.status(500).json({ error: "Could not create message thread." });
+  }
+});
+
+app.post("/api/messages/threads/:id/messages", requireAuth, async (req, res) => {
+  const threadId = parseResourceId(req.params.id);
+  if (!threadId) {
+    return res.status(400).json({ error: "Invalid message thread ID." });
+  }
+  const actorUsername = normalizeIdentifier(req.session?.user?.username || "");
+  const actorRole = String(req.session?.user?.role || "")
+    .trim()
+    .toLowerCase();
+  if (!actorUsername || !isValidIdentifier(actorUsername)) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+
+  try {
+    const messageBody = validateMessageBodyOrThrow(req.body?.message || "");
+    await getMessageThreadAccess(threadId, actorUsername);
+    const inserted = await withSqlTransaction(async () => {
+      const messageInsert = await run(
+        `
+          INSERT INTO messages (thread_id, sender_username, sender_role, body, created_at)
+          VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `,
+        [threadId, actorUsername, actorRole, messageBody]
+      );
+      const messageId = Number(messageInsert.lastID || 0);
+      await run("UPDATE message_threads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [threadId]);
+      await run(
+        `
+          UPDATE message_participants
+          SET last_read_message_id = ?,
+              last_read_at = CURRENT_TIMESTAMP
+          WHERE thread_id = ?
+            AND username = ?
+        `,
+        [messageId, threadId, actorUsername]
+      );
+      return messageId;
+    });
+
+    const messageRow = await get(
+      `
+        SELECT id, thread_id, sender_username, sender_role, body, created_at
+        FROM messages
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [inserted]
+    );
+    return res.status(201).json({
+      ok: true,
+      message: {
+        id: Number(messageRow?.id || 0),
+        thread_id: Number(messageRow?.thread_id || threadId),
+        sender_username: String(messageRow?.sender_username || actorUsername),
+        sender_role: String(messageRow?.sender_role || actorRole),
+        body: String(messageRow?.body || messageBody),
+        created_at: messageRow?.created_at || "",
+      },
+    });
+  } catch (err) {
+    if (err && err.status && err.error) {
+      return res.status(err.status).json({ error: err.error });
+    }
+    return res.status(500).json({ error: "Could not send message." });
+  }
+});
+
+app.post("/api/messages/threads/:id/read", requireAuth, async (req, res) => {
+  const threadId = parseResourceId(req.params.id);
+  if (!threadId) {
+    return res.status(400).json({ error: "Invalid message thread ID." });
+  }
+  const username = normalizeIdentifier(req.session?.user?.username || "");
+  if (!username) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  try {
+    await getMessageThreadAccess(threadId, username);
+    const lastReadMessageId = await markMessageThreadReadForUser(threadId, username);
+    const unread = await getMessageUnreadCounts(username);
+    return res.json({
+      ok: true,
+      thread_id: threadId,
+      last_read_message_id: lastReadMessageId,
+      unread,
+    });
+  } catch (err) {
+    if (err && err.status && err.error) {
+      return res.status(err.status).json({ error: err.error });
+    }
+    return res.status(500).json({ error: "Could not update read state." });
+  }
+});
+
+app.get("/api/messages/unread-count", requireAuth, async (req, res) => {
+  const username = normalizeIdentifier(req.session?.user?.username || "");
+  if (!username) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  try {
+    const unread = await getMessageUnreadCounts(username);
+    return res.json(unread);
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load unread count." });
+  }
+});
+
+app.get("/api/messages/students", requireAuth, async (req, res) => {
+  const actorRole = String(req.session?.user?.role || "")
+    .trim()
+    .toLowerCase();
+  if (!canCreateMessageThreads(actorRole)) {
+    return res.status(403).json({ error: "Only lecturers or admins can list student recipients." });
+  }
+  try {
+    const students = await listMessageStudentDirectory();
+    return res.json({ students });
+  } catch (_err) {
+    return res.status(500).json({ error: "Could not load students." });
+  }
 });
 
 app.get("/admin", requireAdmin, (_req, res) => {
@@ -9177,6 +9800,10 @@ app.get("/payments", requireAuth, (req, res) => {
 
 app.get("/payments.html", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "payments.html"));
+});
+
+app.get("/messages", requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, "messages.html"));
 });
 
 app.get("/analytics", requireTeacher, (req, res) => {

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Direct Messages | Da4lions Pay-tec</title>
+    <meta name="robots" content="noindex,nofollow" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/lion-logo-32.png?v=2" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/assets/lion-logo-16.png?v=2" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/lion-logo-180.png?v=2" />
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body data-page="messages">
+    <header class="topbar">
+      <div class="brand brand-mark"><img src="/assets/da4lions-logo.jpeg" alt="Da4lions Pay-tec logo" class="brand-logo" /><span class="brand-copy">Da4lions Pay-tec Messages</span></div>
+      <button id="menuButton" class="menu-btn" aria-label="Toggle navigation">&#9776;</button>
+      <nav id="mainNav" class="nav-links">
+        <a href="/"><img class="nav-link__icon" src="/assets/icons8-home-48.png" alt="" aria-hidden="true" />Home</a>
+        <a href="/notifications.html"><img class="nav-link__icon" src="/assets/icons8-notification-48.png" alt="" aria-hidden="true" />Notifications</a>
+        <a href="/handouts.html"><img class="nav-link__icon" src="/assets/icons8-books-50.png" alt="" aria-hidden="true" />Handouts</a>
+        <a href="/payments.html"><img class="nav-link__icon" src="/assets/icons8-cash-and-credit-card-50.png" alt="" aria-hidden="true" />Payments</a>
+        <a class="active" href="/messages"><img class="nav-link__icon" src="/assets/icons8-notification-48.png" alt="" aria-hidden="true" />Messages</a>
+        <a href="/analytics" data-role-link="analytics" hidden><img class="nav-link__icon" src="/assets/icons8-cash-and-credit-card-50.png" alt="" aria-hidden="true" />Analytics</a>
+        <a href="/lecturer" data-role-link="lecturer" hidden><img class="nav-link__icon" src="/assets/icons8-lecturer-50.png" alt="" aria-hidden="true" />Lecturer</a>
+        <button id="profileToggleButton" class="profile-trigger" type="button"><img class="nav-link__icon" src="/assets/icons8-profile-24.png" alt="" aria-hidden="true" />Profile</button>
+        <form method="post" action="/logout" class="logout-form">
+          <input type="hidden" name="_csrf" value="" />
+          <button type="submit" class="logout-btn">Log out</button>
+        </form>
+      </nav>
+    </header>
+
+    <main class="container messages-layout">
+      <section class="page-title">
+        <h1>Direct Messaging</h1>
+        <p>Secure conversations between lecturers and students.</p>
+      </section>
+
+      <section id="messageComposeCard" class="card" hidden>
+        <h2>New Thread</h2>
+        <p id="messageComposeStatus" class="auth-subtitle"></p>
+        <form id="messageCreateForm" class="auth-form">
+          <label for="messageSubjectInput">Subject (optional)</label>
+          <input id="messageSubjectInput" type="text" maxlength="120" placeholder="e.g. Tuition follow-up" />
+
+          <label for="messageRecipientsInput">Recipients (students)</label>
+          <select id="messageRecipientsInput" multiple size="7" required></select>
+          <p class="auth-subtitle">Hold Ctrl (Windows) or Cmd (Mac) to select multiple students.</p>
+
+          <label for="messageInitialBodyInput">Message</label>
+          <textarea id="messageInitialBodyInput" rows="4" maxlength="4000" required></textarea>
+
+          <button id="messageCreateButton" type="submit" class="btn">Start Thread</button>
+        </form>
+      </section>
+
+      <section class="messages-grid">
+        <article class="card messages-thread-card">
+          <div class="messages-thread-card__header">
+            <h2>Threads</h2>
+            <div class="messages-thread-card__actions">
+              <span id="messagesUnreadBadge" class="status-badge">Unread: 0</span>
+              <button id="messageRefreshButton" type="button" class="btn btn-secondary">Refresh</button>
+            </div>
+          </div>
+          <p id="messagesListStatus" class="auth-subtitle"></p>
+          <div id="messageThreadList" class="messages-thread-list" aria-live="polite"></div>
+        </article>
+
+        <article class="card messages-panel-card">
+          <section id="messagePlaceholderState" class="messages-empty">
+            Select a thread to read and reply.
+          </section>
+          <section id="messageThreadPanel" hidden>
+            <header class="messages-panel-header">
+              <h2 id="messageThreadTitle">Conversation</h2>
+              <p id="messageThreadMeta" class="auth-subtitle"></p>
+              <p id="messageThreadParticipants" class="auth-subtitle"></p>
+            </header>
+            <div id="messageBodyList" class="messages-body-list"></div>
+            <form id="messageReplyForm" class="auth-form">
+              <label for="messageReplyInput">Reply</label>
+              <textarea id="messageReplyInput" rows="4" maxlength="4000" required></textarea>
+              <div class="cta-row">
+                <button id="messageReplyButton" type="submit" class="btn">Send Reply</button>
+              </div>
+            </form>
+          </section>
+        </article>
+      </section>
+    </main>
+
+    <script src="/assets/csrf.js"></script>
+    <script src="/assets/app.js"></script>
+    <script src="/assets/messages.js"></script>
+    <script src="/assets/profile.js"></script>
+  </body>
+</html>

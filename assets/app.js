@@ -51,6 +51,7 @@ function arrangeSidebarNav() {
   const notificationPaths = new Set(["/notifications.html"]);
   const handoutPaths = new Set(["/handouts.html"]);
   const paymentPaths = new Set(["/payments.html"]);
+  const messagePaths = new Set(["/messages", "/messages.html"]);
   const analyticsPaths = new Set(["/analytics", "/analytics.html"]);
 
   const allChildren = Array.from(nav.children);
@@ -77,7 +78,7 @@ function arrangeSidebarNav() {
       topSection.appendChild(node);
       return;
     }
-    if (handoutPaths.has(path) || paymentPaths.has(path) || analyticsPaths.has(path)) {
+    if (handoutPaths.has(path) || paymentPaths.has(path) || messagePaths.has(path) || analyticsPaths.has(path)) {
       middleSection.appendChild(node);
       return;
     }
