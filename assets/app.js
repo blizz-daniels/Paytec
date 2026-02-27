@@ -1,10 +1,112 @@
 const menuButton = document.getElementById('menuButton');
 const nav = document.getElementById('mainNav');
+const mobileNavQuery = window.matchMedia ? window.matchMedia("(max-width: 760px)") : null;
+let navOverlay = null;
+
+function isMobileNavLayout() {
+  if (mobileNavQuery) {
+    return mobileNavQuery.matches;
+  }
+  return window.innerWidth <= 760;
+}
+
+function setMobileNavState(isOpen) {
+  if (!menuButton || !nav) {
+    return;
+  }
+
+  const mobileLayout = isMobileNavLayout();
+  const shouldOpen = mobileLayout ? Boolean(isOpen) : false;
+
+  nav.classList.toggle("open", shouldOpen);
+  nav.setAttribute("aria-hidden", mobileLayout ? String(!shouldOpen) : "false");
+  menuButton.setAttribute("aria-expanded", String(shouldOpen));
+  document.body.classList.toggle("has-mobile-nav", shouldOpen);
+
+  if (navOverlay) {
+    navOverlay.hidden = !shouldOpen;
+    navOverlay.classList.toggle("open", shouldOpen);
+  }
+}
+
+function closeMobileNav() {
+  setMobileNavState(false);
+}
 
 if (menuButton && nav) {
-  menuButton.addEventListener('click', () => {
-    nav.classList.toggle('open');
+  menuButton.setAttribute("aria-controls", "mainNav");
+  menuButton.setAttribute("aria-expanded", "false");
+  nav.setAttribute("aria-hidden", "true");
+
+  navOverlay = document.createElement("button");
+  navOverlay.type = "button";
+  navOverlay.className = "nav-overlay";
+  navOverlay.hidden = true;
+  navOverlay.tabIndex = -1;
+  navOverlay.setAttribute("aria-label", "Close navigation");
+  navOverlay.addEventListener("click", closeMobileNav);
+  document.body.appendChild(navOverlay);
+
+  menuButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    const isOpen = nav.classList.contains("open");
+    setMobileNavState(!isOpen);
   });
+
+  nav.addEventListener("click", (event) => {
+    if (!isMobileNavLayout()) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const navLink = target.closest("a[href]");
+    const profileTrigger = target.closest(".profile-trigger");
+    if (navLink || profileTrigger) {
+      closeMobileNav();
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!isMobileNavLayout() || !nav.classList.contains("open")) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      return;
+    }
+    if (menuButton.contains(target) || nav.contains(target)) {
+      return;
+    }
+    closeMobileNav();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && nav.classList.contains("open")) {
+      closeMobileNav();
+    }
+  });
+
+  window.addEventListener("resize", () => {
+    if (!isMobileNavLayout()) {
+      closeMobileNav();
+      return;
+    }
+    setMobileNavState(nav.classList.contains("open"));
+  });
+
+  if (mobileNavQuery && typeof mobileNavQuery.addEventListener === "function") {
+    mobileNavQuery.addEventListener("change", () => {
+      if (!isMobileNavLayout()) {
+        closeMobileNav();
+        return;
+      }
+      setMobileNavState(nav.classList.contains("open"));
+    });
+  }
+
+  setMobileNavState(false);
 }
 
 function normalizePath(pathname) {
@@ -156,8 +258,8 @@ toggleTeacherRoleLinks();
     themeWrap.innerHTML = `
       <input id="themeToggleButton" type="checkbox" role="switch" />
       <span class="theme-switch__track" aria-hidden="true"></span>
-      <span class="theme-switch__icon theme-switch__sun" aria-hidden="true">☀</span>
-      <span class="theme-switch__icon theme-switch__moon" aria-hidden="true">☾</span>
+      <span class="theme-switch__icon theme-switch__sun" aria-hidden="true">Sun</span>
+      <span class="theme-switch__icon theme-switch__moon" aria-hidden="true">Moon</span>
       <span id="themeToggleLabel" class="theme-switch__label">Light</span>
     `;
     const profileButton = nav.querySelector("#profileToggleButton");
