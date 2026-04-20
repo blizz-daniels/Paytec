@@ -211,6 +211,70 @@ test("lecturer payout account response masks the bank account number", async () 
   expect(fetchResponse.body.account.account_number_encrypted).toBeUndefined();
 });
 
+test("payout account save returns Paystack validation errors instead of a generic 500", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  mockPaystackTransferClient.createTransferRecipient.mockRejectedValueOnce(
+    Object.assign(new Error("Account number is invalid for the selected bank."), {
+      status: 400,
+      code: "paystack_api_error",
+    })
+  );
+
+  const response = await postJson(teacher, "/api/lecturer/payout-account", {
+    bankName: "Bank 999",
+    bankCode: "999",
+    accountName: "Lecturer One",
+    accountNumber: "1234567890",
+    autoPayoutEnabled: false,
+    reviewRequired: false,
+  });
+
+  expect(response.status).toBe(400);
+  expect(response.body.error).toBe("Account number is invalid for the selected bank.");
+  expect(response.body.code).toBe("paystack_api_error");
+});
+
+test("initDatabase upgrades legacy lecturer payout account columns before payout details are saved", async () => {
+  await run("DROP TABLE IF EXISTS lecturer_payout_events");
+  await run("DROP TABLE IF EXISTS lecturer_payout_ledger");
+  await run("DROP TABLE IF EXISTS lecturer_payout_transfers");
+  await run("DROP TABLE IF EXISTS lecturer_payout_accounts");
+  await run(`
+    CREATE TABLE lecturer_payout_accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lecturer_username TEXT NOT NULL UNIQUE,
+      bank_name TEXT NOT NULL,
+      bank_code TEXT NOT NULL,
+      account_name TEXT NOT NULL,
+      account_last4 TEXT NOT NULL,
+      account_number_encrypted TEXT NOT NULL,
+      recipient_code TEXT NOT NULL UNIQUE
+    )
+  `);
+
+  await initDatabase();
+
+  const payoutAccountColumns = await all("PRAGMA table_info(lecturer_payout_accounts)");
+  expect(payoutAccountColumns.some((column) => column.name === "recipient_type")).toBe(true);
+  expect(payoutAccountColumns.some((column) => column.name === "recipient_status")).toBe(true);
+  expect(payoutAccountColumns.some((column) => column.name === "last_provider_response_json")).toBe(true);
+
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const response = await postJson(teacher, "/api/lecturer/payout-account", {
+    bankName: "Bank 777",
+    bankCode: "777",
+    accountName: "Lecturer One",
+    accountNumber: "1234567890",
+    autoPayoutEnabled: true,
+    reviewRequired: false,
+  });
+
+  expect(response.status).toBe(200);
+  expect(response.body.account.bank_code).toBe("777");
+});
+
 test("student cannot access lecturer payout endpoints", async () => {
   const student = request.agent(app);
   await login(student, "std_001", "doe");

@@ -2923,6 +2923,42 @@ async function initDatabase() {
     }
   }
 
+  const payoutAccountColumns = await all("PRAGMA table_info(lecturer_payout_accounts)");
+  if (payoutAccountColumns.length) {
+    if (!payoutAccountColumns.some((column) => column.name === "recipient_type")) {
+      await run("ALTER TABLE lecturer_payout_accounts ADD COLUMN recipient_type TEXT NOT NULL DEFAULT 'nuban'");
+    }
+    if (!payoutAccountColumns.some((column) => column.name === "recipient_status")) {
+      await run("ALTER TABLE lecturer_payout_accounts ADD COLUMN recipient_status TEXT NOT NULL DEFAULT 'active'");
+    }
+    if (!payoutAccountColumns.some((column) => column.name === "auto_payout_enabled")) {
+      await run("ALTER TABLE lecturer_payout_accounts ADD COLUMN auto_payout_enabled INTEGER NOT NULL DEFAULT 1");
+    }
+    if (!payoutAccountColumns.some((column) => column.name === "review_required")) {
+      await run("ALTER TABLE lecturer_payout_accounts ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!payoutAccountColumns.some((column) => column.name === "last_provider_response_json")) {
+      await run("ALTER TABLE lecturer_payout_accounts ADD COLUMN last_provider_response_json TEXT NOT NULL DEFAULT '{}'");
+    }
+    if (!payoutAccountColumns.some((column) => column.name === "verified_at")) {
+      await run("ALTER TABLE lecturer_payout_accounts ADD COLUMN verified_at TEXT");
+    }
+    if (!payoutAccountColumns.some((column) => column.name === "created_at")) {
+      await run("ALTER TABLE lecturer_payout_accounts ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+    if (!payoutAccountColumns.some((column) => column.name === "updated_at")) {
+      await run("ALTER TABLE lecturer_payout_accounts ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+    await run(`
+      UPDATE lecturer_payout_accounts
+      SET recipient_type = COALESCE(NULLIF(recipient_type, ''), 'nuban'),
+          recipient_status = COALESCE(NULLIF(recipient_status, ''), 'active'),
+          auto_payout_enabled = COALESCE(auto_payout_enabled, 1),
+          review_required = COALESCE(review_required, 0),
+          last_provider_response_json = COALESCE(NULLIF(last_provider_response_json, ''), '{}')
+    `);
+  }
+
   // Ensure at least one admin account exists.
   const adminUser = await get("SELECT username FROM users WHERE username = ?", [ADMIN_USERNAME]);
   if (!adminUser) {
@@ -9081,6 +9117,15 @@ app.delete(["/api/lecturer/payment-statement", "/api/teacher/payment-statement"]
   return sendPaystackOnlyGone(res, "Statement upload");
 });
 
+function normalizeHttpError(err, fallbackCode = "request_failed", fallbackMessage = "Could not complete request.") {
+  const status = Number(err?.status || 0);
+  return {
+    status: status >= 400 && status < 600 ? status : 500,
+    code: String(err?.code || fallbackCode),
+    message: String(err?.error || err?.message || fallbackMessage),
+  };
+}
+
 function normalizePaystackError(err, fallbackCode = "paystack_request_failed") {
   const status = Number(err?.status || 0);
   return {
@@ -9863,6 +9908,14 @@ app.post(["/api/lecturer/payout-account", "/api/teacher/payout-account"], requir
         code: "payout_account_save_failed",
       });
     }
+    if (Number(err?.status || 0) >= 400 && Number(err?.status || 0) < 600) {
+      const normalizedError = normalizeHttpError(err, "payout_account_save_failed", "Could not save payout account.");
+      return res.status(normalizedError.status).json({
+        error: normalizedError.message,
+        code: normalizedError.code,
+      });
+    }
+    console.error("[payout] could not save lecturer payout account:", err);
     return res.status(500).json({
       error: "Could not save payout account.",
       code: "payout_account_save_failed",
@@ -9884,6 +9937,14 @@ app.put(["/api/lecturer/payout-account", "/api/teacher/payout-account"], require
         code: "payout_account_update_failed",
       });
     }
+    if (Number(err?.status || 0) >= 400 && Number(err?.status || 0) < 600) {
+      const normalizedError = normalizeHttpError(err, "payout_account_update_failed", "Could not update payout account.");
+      return res.status(normalizedError.status).json({
+        error: normalizedError.message,
+        code: normalizedError.code,
+      });
+    }
+    console.error("[payout] could not update lecturer payout account:", err);
     return res.status(500).json({
       error: "Could not update payout account.",
       code: "payout_account_update_failed",
