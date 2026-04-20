@@ -235,7 +235,7 @@ test("payout account save returns Paystack validation errors instead of a generi
   expect(response.body.code).toBe("paystack_api_error");
 });
 
-test("initDatabase upgrades legacy lecturer payout account columns before payout details are saved", async () => {
+test("initDatabase upgrades legacy payout tables before payout details are saved and loaded", async () => {
   await run("DROP TABLE IF EXISTS lecturer_payout_events");
   await run("DROP TABLE IF EXISTS lecturer_payout_ledger");
   await run("DROP TABLE IF EXISTS lecturer_payout_transfers");
@@ -252,6 +252,37 @@ test("initDatabase upgrades legacy lecturer payout account columns before payout
       recipient_code TEXT NOT NULL UNIQUE
     )
   `);
+  await run(`
+    CREATE TABLE lecturer_payout_transfers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lecturer_username TEXT NOT NULL,
+      payout_account_id INTEGER NOT NULL,
+      transfer_reference TEXT NOT NULL UNIQUE,
+      total_amount REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued'
+    )
+  `);
+  await run(`
+    CREATE TABLE lecturer_payout_ledger (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lecturer_username TEXT NOT NULL,
+      payment_transaction_id INTEGER NOT NULL UNIQUE,
+      payment_item_id INTEGER NOT NULL,
+      gross_amount REAL NOT NULL,
+      payout_amount REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'available',
+      available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await run(`
+    CREATE TABLE lecturer_payout_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transfer_id INTEGER,
+      ledger_id INTEGER,
+      actor_username TEXT NOT NULL,
+      event_type TEXT NOT NULL
+    )
+  `);
 
   await initDatabase();
 
@@ -259,6 +290,15 @@ test("initDatabase upgrades legacy lecturer payout account columns before payout
   expect(payoutAccountColumns.some((column) => column.name === "recipient_type")).toBe(true);
   expect(payoutAccountColumns.some((column) => column.name === "recipient_status")).toBe(true);
   expect(payoutAccountColumns.some((column) => column.name === "last_provider_response_json")).toBe(true);
+  const payoutTransferColumns = await all("PRAGMA table_info(lecturer_payout_transfers)");
+  expect(payoutTransferColumns.some((column) => column.name === "review_state")).toBe(true);
+  expect(payoutTransferColumns.some((column) => column.name === "provider_response_json")).toBe(true);
+  const payoutLedgerColumns = await all("PRAGMA table_info(lecturer_payout_ledger)");
+  expect(payoutLedgerColumns.some((column) => column.name === "review_reason")).toBe(true);
+  expect(payoutLedgerColumns.some((column) => column.name === "updated_at")).toBe(true);
+  const payoutEventColumns = await all("PRAGMA table_info(lecturer_payout_events)");
+  expect(payoutEventColumns.some((column) => column.name === "actor_role")).toBe(true);
+  expect(payoutEventColumns.some((column) => column.name === "payload_json")).toBe(true);
 
   const teacher = request.agent(app);
   await login(teacher, "teach_001", "teach");
@@ -273,6 +313,8 @@ test("initDatabase upgrades legacy lecturer payout account columns before payout
 
   expect(response.status).toBe(200);
   expect(response.body.account.bank_code).toBe("777");
+  const historyResponse = await teacher.get("/api/lecturer/payout-history?limit=10");
+  expect(historyResponse.status).toBe(200);
 });
 
 test("student cannot access lecturer payout endpoints", async () => {

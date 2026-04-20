@@ -2959,6 +2959,119 @@ async function initDatabase() {
     `);
   }
 
+  const payoutTransferColumns = await all("PRAGMA table_info(lecturer_payout_transfers)");
+  if (payoutTransferColumns.length) {
+    if (!payoutTransferColumns.some((column) => column.name === "transfer_code")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN transfer_code TEXT");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "currency")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN currency TEXT NOT NULL DEFAULT 'NGN'");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "trigger_source")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN trigger_source TEXT NOT NULL DEFAULT 'auto'");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "review_state")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN review_state TEXT NOT NULL DEFAULT 'not_required'");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "provider_response_json")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN provider_response_json TEXT NOT NULL DEFAULT '{}'");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "failure_reason")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN failure_reason TEXT");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "attempt_count")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "ledger_count")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN ledger_count INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "requested_by")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN requested_by TEXT");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "reviewed_by")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN reviewed_by TEXT");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "reviewed_at")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN reviewed_at TEXT");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "dispatched_at")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN dispatched_at TEXT");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "completed_at")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN completed_at TEXT");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "created_at")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+    if (!payoutTransferColumns.some((column) => column.name === "updated_at")) {
+      await run("ALTER TABLE lecturer_payout_transfers ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+    await run(`
+      UPDATE lecturer_payout_transfers
+      SET currency = COALESCE(NULLIF(currency, ''), 'NGN'),
+          trigger_source = COALESCE(NULLIF(trigger_source, ''), 'auto'),
+          review_state = COALESCE(NULLIF(review_state, ''), 'not_required'),
+          provider_response_json = COALESCE(NULLIF(provider_response_json, ''), '{}'),
+          attempt_count = COALESCE(attempt_count, 0),
+          ledger_count = COALESCE(ledger_count, 0)
+    `);
+  }
+
+  const payoutLedgerColumns = await all("PRAGMA table_info(lecturer_payout_ledger)");
+  if (payoutLedgerColumns.length) {
+    if (!payoutLedgerColumns.some((column) => column.name === "obligation_id")) {
+      await run("ALTER TABLE lecturer_payout_ledger ADD COLUMN obligation_id INTEGER");
+    }
+    if (!payoutLedgerColumns.some((column) => column.name === "share_bps")) {
+      await run(`ALTER TABLE lecturer_payout_ledger ADD COLUMN share_bps INTEGER NOT NULL DEFAULT ${PAYOUT_DEFAULT_SHARE_BPS}`);
+    }
+    if (!payoutLedgerColumns.some((column) => column.name === "currency")) {
+      await run("ALTER TABLE lecturer_payout_ledger ADD COLUMN currency TEXT NOT NULL DEFAULT 'NGN'");
+    }
+    if (!payoutLedgerColumns.some((column) => column.name === "payout_transfer_id")) {
+      await run("ALTER TABLE lecturer_payout_ledger ADD COLUMN payout_transfer_id INTEGER");
+    }
+    if (!payoutLedgerColumns.some((column) => column.name === "review_reason")) {
+      await run("ALTER TABLE lecturer_payout_ledger ADD COLUMN review_reason TEXT");
+    }
+    if (!payoutLedgerColumns.some((column) => column.name === "source_status")) {
+      await run("ALTER TABLE lecturer_payout_ledger ADD COLUMN source_status TEXT NOT NULL DEFAULT 'approved'");
+    }
+    if (!payoutLedgerColumns.some((column) => column.name === "created_at")) {
+      await run("ALTER TABLE lecturer_payout_ledger ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+    if (!payoutLedgerColumns.some((column) => column.name === "updated_at")) {
+      await run("ALTER TABLE lecturer_payout_ledger ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+    await run(`
+      UPDATE lecturer_payout_ledger
+      SET share_bps = COALESCE(share_bps, ${PAYOUT_DEFAULT_SHARE_BPS}),
+          currency = COALESCE(NULLIF(currency, ''), 'NGN'),
+          source_status = COALESCE(NULLIF(source_status, ''), 'approved')
+    `);
+  }
+
+  const payoutEventColumns = await all("PRAGMA table_info(lecturer_payout_events)");
+  if (payoutEventColumns.length) {
+    if (!payoutEventColumns.some((column) => column.name === "actor_role")) {
+      await run("ALTER TABLE lecturer_payout_events ADD COLUMN actor_role TEXT NOT NULL DEFAULT 'system-payout'");
+    }
+    if (!payoutEventColumns.some((column) => column.name === "note")) {
+      await run("ALTER TABLE lecturer_payout_events ADD COLUMN note TEXT");
+    }
+    if (!payoutEventColumns.some((column) => column.name === "payload_json")) {
+      await run("ALTER TABLE lecturer_payout_events ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'");
+    }
+    if (!payoutEventColumns.some((column) => column.name === "created_at")) {
+      await run("ALTER TABLE lecturer_payout_events ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+    await run(`
+      UPDATE lecturer_payout_events
+      SET actor_role = COALESCE(NULLIF(actor_role, ''), 'system-payout'),
+          payload_json = COALESCE(NULLIF(payload_json, ''), '{}')
+    `);
+  }
+
   // Ensure at least one admin account exists.
   const adminUser = await get("SELECT username FROM users WHERE username = ?", [ADMIN_USERNAME]);
   if (!adminUser) {
@@ -9886,7 +9999,8 @@ app.get(["/api/lecturer/payout-account", "/api/teacher/payout-account"], require
     return res.json({
       account: summarizePayoutAccountRow(account),
     });
-  } catch (_err) {
+  } catch (err) {
+    console.error("[payout] could not load lecturer payout account:", err);
     return res.status(500).json({
       error: "Could not load payout account.",
       code: "payout_account_failed",
@@ -9978,7 +10092,8 @@ app.get(["/api/lecturer/payout-history", "/api/teacher/payout-history"], require
       transfers,
       ledger: ledger.map(summarizePayoutLedgerRow),
     });
-  } catch (_err) {
+  } catch (err) {
+    console.error("[payout] could not load lecturer payout history:", err);
     return res.status(500).json({
       error: "Could not load payout history.",
       code: "payout_history_failed",
