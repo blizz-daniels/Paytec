@@ -187,6 +187,7 @@ function renderPayoutAccount(root, account, summary) {
       <div><dt>Account</dt><dd>${escapeHtml(account.account_masked || `•••• ${account.account_last4 || ""}`)}</dd></div>
       <div><dt>Status</dt><dd><span class="${badge.className}">${escapeHtml(badge.text)}</span></dd></div>
       <div><dt>Auto payout</dt><dd>${account.auto_payout_enabled ? "Enabled" : "Disabled"}</dd></div>
+      <div><dt>Admin approval</dt><dd>${account.review_required ? "Pending review" : "Approved"}</dd></div>
     </dl>
   `;
 }
@@ -227,7 +228,6 @@ function updateProfilePayoutForm(account) {
   const accountName = document.getElementById("profilePayoutAccountName");
   const accountNumber = document.getElementById("profilePayoutAccountNumber");
   const autoEnabled = document.getElementById("profilePayoutAutoEnabled");
-  const reviewRequired = document.getElementById("profilePayoutReviewRequired");
   if (bankName) {
     bankName.value = "";
     bankName.placeholder = account?.bank_name || "Bank name";
@@ -246,9 +246,6 @@ function updateProfilePayoutForm(account) {
   }
   if (autoEnabled) {
     autoEnabled.checked = Number(account?.auto_payout_enabled ?? 1) === 1;
-  }
-  if (reviewRequired) {
-    reviewRequired.checked = Number(account?.review_required ?? 0) === 1;
   }
 }
 
@@ -436,7 +433,6 @@ async function loadProfilePage() {
           accountName: String(document.getElementById("profilePayoutAccountName")?.value || "").trim(),
           accountNumber: String(document.getElementById("profilePayoutAccountNumber")?.value || "").trim(),
           autoPayoutEnabled: !!document.getElementById("profilePayoutAutoEnabled")?.checked,
-          reviewRequired: !!document.getElementById("profilePayoutReviewRequired")?.checked,
         };
         const loadingToast = window.showToast
           ? window.showToast("Saving payout account...", { type: "loading", sticky: true })
@@ -451,9 +447,12 @@ async function loadProfilePage() {
             method: "POST",
             payload,
           });
-          setPayoutMessage("profilePayoutStatus", "Payout account saved successfully.");
+          const savedMessage = payload.accountNumber
+            ? "Payout account saved and sent for admin review."
+            : "Payout account preferences updated successfully.";
+          setPayoutMessage("profilePayoutStatus", savedMessage);
           if (window.showToast) {
-            window.showToast("Payout account saved.", { type: "success" });
+            window.showToast(savedMessage, { type: "success" });
           }
           await loadProfilePayoutData();
         } catch (err) {

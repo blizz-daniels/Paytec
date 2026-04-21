@@ -941,6 +941,16 @@ function normalizePayoutReviewState(value) {
   return "not_required";
 }
 
+function normalizeMarkReviewStatus(value, fallback = "pending") {
+  const status = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (["pending", "approved", "rejected"].includes(status)) {
+    return status;
+  }
+  return fallback;
+}
+
 function roundCurrencyAmount(value) {
   const amount = Number(value || 0);
   if (!Number.isFinite(amount)) {
@@ -971,6 +981,7 @@ function summarizePayoutAccountRow(row) {
   return {
     id: Number(row.id || 0),
     lecturer_username: String(row.lecturer_username || ""),
+    lecturer_department: String(row.lecturer_department || row.department || ""),
     bank_name: String(row.bank_name || ""),
     bank_code: String(row.bank_code || ""),
     account_name: String(row.account_name || ""),
@@ -2568,6 +2579,26 @@ async function initDatabase() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS lecturer_mark_submissions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lecturer_username TEXT NOT NULL,
+      student_username TEXT NOT NULL,
+      course_code TEXT NOT NULL,
+      course_title TEXT NOT NULL,
+      assessment_title TEXT NOT NULL,
+      score REAL NOT NULL,
+      max_score REAL NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      reviewer_note TEXT,
+      reviewed_by TEXT,
+      reviewed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS payment_matches (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       obligation_id INTEGER,
@@ -2670,6 +2701,9 @@ async function initDatabase() {
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_lecturer_payout_ledger_status ON lecturer_payout_ledger(status)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_lecturer_payout_ledger_item ON lecturer_payout_ledger(payment_item_id)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_lecturer_payout_events_transfer ON lecturer_payout_events(transfer_id)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_lecturer_mark_submissions_lecturer ON lecturer_mark_submissions(lecturer_username)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_lecturer_mark_submissions_student ON lecturer_mark_submissions(student_username)");
+  await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_lecturer_mark_submissions_status ON lecturer_mark_submissions(status)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_notifications_payment_item ON notifications(related_payment_item_id)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_items_created_by ON payment_items(created_by)");
   await runMigrationSql("CREATE INDEX IF NOT EXISTS idx_payment_items_target_department ON payment_items(target_department)");
@@ -5837,6 +5871,51 @@ async function getLecturerPayoutAccount(lecturerUsername) {
   return get("SELECT * FROM lecturer_payout_accounts WHERE lecturer_username = ? LIMIT 1", [username]);
 }
 
+async function getLecturerPayoutAccountById(id) {
+  const accountId = parseResourceId(id);
+  if (!accountId) {
+    return null;
+  }
+  return get("SELECT * FROM lecturer_payout_accounts WHERE id = ? LIMIT 1", [accountId]);
+}
+
+async function listLecturerPayoutAccounts(options = {}) {
+  const filters = [];
+  const params = [];
+  const lecturerUsername = normalizeIdentifier(options.lecturerUsername || "");
+  if (lecturerUsername) {
+    filters.push("lpa.lecturer_username = ?");
+    params.push(lecturerUsername);
+  }
+  const reviewStatus = String(options.reviewStatus || options.status || "all")
+    .trim()
+    .toLowerCase();
+  if (reviewStatus === "pending" || reviewStatus === "review") {
+    filters.push("COALESCE(lpa.review_required, 0) = 1");
+  } else if (reviewStatus === "approved") {
+    filters.push("COALESCE(lpa.review_required, 0) = 0");
+  }
+  const whereSql = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.min(Number(options.limit), 500)) : 100;
+  const offset = Number.isFinite(Number(options.offset)) ? Math.max(0, Number(options.offset)) : 0;
+  const rows = await all(
+    `
+      SELECT
+        lpa.*,
+        COALESCE(ar.department, '') AS lecturer_department
+      FROM lecturer_payout_accounts lpa
+      LEFT JOIN auth_roster ar
+        ON ar.auth_id = lpa.lecturer_username
+       AND ar.role = 'teacher'
+      ${whereSql}
+      ORDER BY COALESCE(lpa.review_required, 0) DESC, CAST(lpa.updated_at AS timestamp) DESC, lpa.id DESC
+      LIMIT ? OFFSET ?
+    `,
+    [...params, limit, offset]
+  );
+  return rows.map(summarizePayoutAccountRow);
+}
+
 async function getLecturerPayoutTransferById(id) {
   const transferId = parseResourceId(id);
   if (!transferId) {
@@ -5861,6 +5940,68 @@ async function getLecturerPayoutTransferByReference(reference) {
     `,
     [safeReference, safeReference]
   );
+}
+
+async function getLecturerMarkSubmissionById(id) {
+  const submissionId = parseResourceId(id);
+  if (!submissionId) {
+    return null;
+  }
+  return get(
+    `
+      SELECT
+        lms.*,
+        COALESCE(ar.department, '') AS student_department
+      FROM lecturer_mark_submissions lms
+      LEFT JOIN auth_roster ar
+        ON ar.auth_id = lms.student_username
+       AND ar.role = 'student'
+      WHERE lms.id = ?
+      LIMIT 1
+    `,
+    [submissionId]
+  );
+}
+
+async function listLecturerMarkSubmissions(options = {}) {
+  const filters = [];
+  const params = [];
+  const lecturerUsername = normalizeIdentifier(options.lecturerUsername || "");
+  if (lecturerUsername) {
+    filters.push("lms.lecturer_username = ?");
+    params.push(lecturerUsername);
+  }
+  const status = normalizeMarkReviewStatus(options.status, "all");
+  if (status !== "all") {
+    filters.push("lms.status = ?");
+    params.push(status);
+  }
+  const whereSql = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.min(Number(options.limit), 500)) : 100;
+  const offset = Number.isFinite(Number(options.offset)) ? Math.max(0, Number(options.offset)) : 0;
+  const rows = await all(
+    `
+      SELECT
+        lms.*,
+        COALESCE(ar.department, '') AS student_department
+      FROM lecturer_mark_submissions lms
+      LEFT JOIN auth_roster ar
+        ON ar.auth_id = lms.student_username
+       AND ar.role = 'student'
+      ${whereSql}
+      ORDER BY
+        CASE
+          WHEN lms.status = 'pending' THEN 0
+          WHEN lms.status = 'rejected' THEN 1
+          ELSE 2
+        END ASC,
+        CAST(lms.created_at AS timestamp) DESC,
+        lms.id DESC
+      LIMIT ? OFFSET ?
+    `,
+    [...params, limit, offset]
+  );
+  return rows.map(summarizeLecturerMarkSubmissionRow);
 }
 
 async function getLecturerPayoutLedgerRows(options = {}) {
@@ -6097,6 +6238,202 @@ async function promotePendingLedgerRowsAfterAccountSave(lecturerUsername) {
     );
   }
   return changes;
+}
+
+async function updateLecturerPayoutAccountReviewStatus(accountId, input = {}) {
+  const current = await getLecturerPayoutAccountById(accountId);
+  if (!current) {
+    throw { status: 404, error: "Payout account not found." };
+  }
+  const nextReviewRequired = Number(input.reviewRequired ?? input.review_required ?? 0) === 1 ? 1 : 0;
+  const safeNote = String(input.note || input.reason || "")
+    .trim()
+    .slice(0, 500);
+  const nextVerifiedAt = nextReviewRequired === 1 ? null : new Date().toISOString();
+
+  await run(
+    `
+      UPDATE lecturer_payout_accounts
+      SET review_required = ?,
+          verified_at = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+    [nextReviewRequired, nextVerifiedAt, current.id]
+  );
+
+  await logLecturerPayoutEvent({
+    req: input.req || createSystemActorRequest("system-payout", "system-payout"),
+    eventType: nextReviewRequired === 1 ? "payout_account_review_required" : "payout_account_approved",
+    note:
+      safeNote ||
+      (nextReviewRequired === 1
+        ? `Admin marked payout account for ${current.lecturer_username} for review.`
+        : `Admin approved payout account for ${current.lecturer_username}.`),
+    payload: {
+      lecturer_username: current.lecturer_username,
+      payout_account_id: current.id,
+      review_required: nextReviewRequired === 1,
+    },
+  });
+
+  const updated = await getLecturerPayoutAccountById(current.id);
+  return summarizePayoutAccountRow(updated);
+}
+
+async function logLecturerMarkAudit({ req = null, action = "marks_event", submission = null, summary = "" } = {}) {
+  if (!submission) {
+    return;
+  }
+  const actorUsername = req?.session?.user?.username || "system";
+  const actorRole = req?.session?.user?.role || "system";
+  const safeSummary = String(summary || action || "marks_event").slice(0, 500);
+  await run(
+    `
+      INSERT INTO audit_logs (
+        actor_username,
+        actor_role,
+        action,
+        content_type,
+        content_id,
+        target_owner,
+        summary
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      actorUsername,
+      actorRole,
+      String(action || "marks_event").slice(0, 80),
+      "lecturer_marks",
+      Number(submission.id || 0) || null,
+      submission.student_username || null,
+      safeSummary,
+    ]
+  );
+}
+
+async function createLecturerMarkSubmission(input = {}, req = null) {
+  const lecturerUsername = normalizeIdentifier(req?.session?.user?.username || input.lecturerUsername || input.lecturer_username || "");
+  if (!lecturerUsername) {
+    throw { status: 400, error: "Lecturer account is required." };
+  }
+
+  const studentUsername = normalizeIdentifier(input.studentUsername || input.student_username || "");
+  if (!studentUsername) {
+    throw { status: 400, error: "Student matric number is required." };
+  }
+
+  const courseCode = String(input.courseCode || input.course_code || "")
+    .trim()
+    .toUpperCase()
+    .slice(0, 20);
+  const courseTitle = String(input.courseTitle || input.course_title || "")
+    .trim()
+    .slice(0, 120);
+  const assessmentTitle = String(input.assessmentTitle || input.assessment_title || "")
+    .trim()
+    .slice(0, 120);
+  const note = String(input.note || "")
+    .trim()
+    .slice(0, 500);
+  const score = Number(input.score);
+  const maxScore = Number(input.maxScore ?? input.max_score);
+
+  if (!courseCode) {
+    throw { status: 400, error: "Course code is required." };
+  }
+  if (!courseTitle) {
+    throw { status: 400, error: "Course title is required." };
+  }
+  if (!assessmentTitle) {
+    throw { status: 400, error: "Assessment title is required." };
+  }
+  if (!Number.isFinite(score) || score < 0) {
+    throw { status: 400, error: "Enter a valid score." };
+  }
+  if (!Number.isFinite(maxScore) || maxScore <= 0) {
+    throw { status: 400, error: "Enter a valid maximum score." };
+  }
+  if (score > maxScore) {
+    throw { status: 400, error: "Score cannot be greater than maximum score." };
+  }
+
+  const student = await get(
+    "SELECT auth_id, department FROM auth_roster WHERE auth_id = ? AND role = 'student' LIMIT 1",
+    [studentUsername]
+  );
+  if (!student) {
+    throw { status: 404, error: "Student was not found in the roster." };
+  }
+
+  const result = await run(
+    `
+      INSERT INTO lecturer_mark_submissions (
+        lecturer_username,
+        student_username,
+        course_code,
+        course_title,
+        assessment_title,
+        score,
+        max_score,
+        note,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    `,
+    [lecturerUsername, studentUsername, courseCode, courseTitle, assessmentTitle, score, maxScore, note]
+  );
+
+  const created = await getLecturerMarkSubmissionById(result?.lastID || 0);
+  const summarized = summarizeLecturerMarkSubmissionRow(created);
+  await logLecturerMarkAudit({
+    req,
+    action: "marks_submitted",
+    submission: summarized,
+    summary: `Lecturer submitted ${courseCode} marks for ${studentUsername} for admin review.`,
+  });
+  return summarized;
+}
+
+async function reviewLecturerMarkSubmission(submissionId, input = {}, req = null) {
+  const current = await getLecturerMarkSubmissionById(submissionId);
+  if (!current) {
+    throw { status: 404, error: "Marks submission not found." };
+  }
+
+  const nextStatus = normalizeMarkReviewStatus(input.status, "");
+  if (nextStatus !== "approved" && nextStatus !== "rejected") {
+    throw { status: 400, error: "Review status must be approved or rejected." };
+  }
+  const reviewerNote = String(input.note || input.reviewerNote || input.reviewer_note || "")
+    .trim()
+    .slice(0, 500);
+
+  await run(
+    `
+      UPDATE lecturer_mark_submissions
+      SET status = ?,
+          reviewer_note = ?,
+          reviewed_by = ?,
+          reviewed_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+    [nextStatus, reviewerNote || null, req?.session?.user?.username || "admin", current.id]
+  );
+
+  const updated = await getLecturerMarkSubmissionById(current.id);
+  const summarized = summarizeLecturerMarkSubmissionRow(updated);
+  await logLecturerMarkAudit({
+    req,
+    action: nextStatus === "approved" ? "marks_approved" : "marks_rejected",
+    submission: summarized,
+    summary: `Admin ${nextStatus} ${summarized.course_code} marks for ${summarized.student_username}.`,
+  });
+  return summarized;
 }
 
 async function createLecturerPayoutLedgerForApprovedTransaction(transactionId, options = {}) {
@@ -6855,6 +7192,10 @@ async function updateLecturerPayoutAccount(lecturerUsername, input = {}, options
   const reviewRequired = input.reviewRequired ?? input.review_required;
   const existingAccount = await getLecturerPayoutAccount(username);
   const hasBankInput = !!(bankCode || bankName || accountName || accountNumber);
+  const actorRole = String(options.req?.session?.user?.role || "")
+    .trim()
+    .toLowerCase();
+  const isAdminActor = actorRole === "admin";
 
   let responseBankName = String(existingAccount?.bank_name || "").trim();
   let responseAccountName = String(existingAccount?.account_name || "").trim();
@@ -6907,7 +7248,17 @@ async function updateLecturerPayoutAccount(lecturerUsername, input = {}, options
   }
 
   const nextAutoPayoutEnabled = Number(autoPayoutEnabled ?? existingAccount?.auto_payout_enabled ?? 1) === 0 ? 0 : 1;
-  const nextReviewRequired = Number(reviewRequired ?? existingAccount?.review_required ?? 0) === 1 ? 1 : 0;
+  const requestedReviewRequired = Number(reviewRequired ?? existingAccount?.review_required ?? 0) === 1 ? 1 : 0;
+  let nextReviewRequired = Number(existingAccount?.review_required ?? 0) === 1 ? 1 : 0;
+  let nextVerifiedAt = existingAccount?.verified_at || null;
+
+  if (hasBankInput) {
+    nextReviewRequired = isAdminActor ? requestedReviewRequired : 1;
+    nextVerifiedAt = nextReviewRequired === 1 ? null : new Date().toISOString();
+  } else if (isAdminActor && reviewRequired !== undefined) {
+    nextReviewRequired = requestedReviewRequired;
+    nextVerifiedAt = nextReviewRequired === 1 ? null : new Date().toISOString();
+  }
 
   await run(
     `
@@ -6928,7 +7279,7 @@ async function updateLecturerPayoutAccount(lecturerUsername, input = {}, options
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT(lecturer_username) DO UPDATE SET
         bank_name = excluded.bank_name,
         bank_code = excluded.bank_code,
@@ -6941,7 +7292,7 @@ async function updateLecturerPayoutAccount(lecturerUsername, input = {}, options
         auto_payout_enabled = excluded.auto_payout_enabled,
         review_required = excluded.review_required,
         last_provider_response_json = excluded.last_provider_response_json,
-        verified_at = CURRENT_TIMESTAMP,
+        verified_at = excluded.verified_at,
         updated_at = CURRENT_TIMESTAMP
     `,
     [
@@ -6957,6 +7308,7 @@ async function updateLecturerPayoutAccount(lecturerUsername, input = {}, options
       nextAutoPayoutEnabled,
       nextReviewRequired,
       JSON.stringify(responseSnapshot),
+      nextVerifiedAt,
     ]
   );
 
@@ -9239,6 +9591,36 @@ function normalizeHttpError(err, fallbackCode = "request_failed", fallbackMessag
   };
 }
 
+function summarizeLecturerMarkSubmissionRow(row) {
+  if (!row) {
+    return null;
+  }
+  const score = Number(row.score || 0);
+  const maxScore = Number(row.max_score || 0);
+  const safeScore = Number.isFinite(score) ? Number(score.toFixed(2)) : 0;
+  const safeMaxScore = Number.isFinite(maxScore) ? Number(maxScore.toFixed(2)) : 0;
+  const percentage = safeMaxScore > 0 ? Number(((safeScore / safeMaxScore) * 100).toFixed(2)) : 0;
+  return {
+    id: Number(row.id || 0),
+    lecturer_username: String(row.lecturer_username || ""),
+    student_username: String(row.student_username || ""),
+    student_department: String(row.student_department || row.department || ""),
+    course_code: String(row.course_code || ""),
+    course_title: String(row.course_title || ""),
+    assessment_title: String(row.assessment_title || ""),
+    score: safeScore,
+    max_score: safeMaxScore,
+    percentage,
+    note: String(row.note || ""),
+    status: normalizeMarkReviewStatus(row.status),
+    reviewer_note: row.reviewer_note || null,
+    reviewed_by: row.reviewed_by || null,
+    reviewed_at: row.reviewed_at || null,
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+  };
+}
+
 function normalizePaystackError(err, fallbackCode = "paystack_request_failed") {
   const status = Number(err?.status || 0);
   return {
@@ -10101,6 +10483,51 @@ app.get(["/api/lecturer/payout-history", "/api/teacher/payout-history"], require
   }
 });
 
+app.get(["/api/lecturer/marks-submissions", "/api/teacher/marks-submissions"], requireTeacher, async (req, res) => {
+  try {
+    const limit = Number.isFinite(Number(req.query?.limit)) ? Number(req.query.limit) : 25;
+    const offset = Number.isFinite(Number(req.query?.offset)) ? Number(req.query.offset) : 0;
+    const status = String(req.query?.status || "all").trim().toLowerCase();
+    const lecturerUsername =
+      req.session.user.role === "admin"
+        ? normalizeIdentifier(req.query?.lecturerUsername || req.session.user.username)
+        : req.session.user.username;
+    const items = await listLecturerMarkSubmissions({
+      lecturerUsername,
+      status,
+      limit,
+      offset,
+    });
+    return res.json({ items });
+  } catch (_err) {
+    return res.status(500).json({
+      error: "Could not load mark submissions.",
+      code: "lecturer_mark_submissions_failed",
+    });
+  }
+});
+
+app.post(["/api/lecturer/marks-submissions", "/api/teacher/marks-submissions"], requireTeacher, async (req, res) => {
+  try {
+    const submission = await createLecturerMarkSubmission(req.body || {}, req);
+    return res.status(201).json({
+      ok: true,
+      submission,
+    });
+  } catch (err) {
+    if (err && err.status && err.error) {
+      return res.status(err.status).json({
+        error: err.error,
+        code: "lecturer_mark_submission_failed",
+      });
+    }
+    return res.status(500).json({
+      error: "Could not submit marks for review.",
+      code: "lecturer_mark_submission_failed",
+    });
+  }
+});
+
 app.post(["/api/lecturer/payout-request", "/api/teacher/payout-request"], requireTeacher, async (req, res) => {
   try {
     const requestedAmount = req.body?.amount;
@@ -10130,6 +10557,151 @@ app.post(["/api/lecturer/payout-request", "/api/teacher/payout-request"], requir
     return res.status(500).json({
       error: "Could not request payout.",
       code: "payout_request_failed",
+    });
+  }
+});
+
+app.get("/api/admin/lecturer/payout-accounts", requireAdmin, async (req, res) => {
+  try {
+    const lecturerUsername = normalizeIdentifier(req.query?.lecturerUsername || "");
+    const reviewStatus = String(req.query?.reviewStatus || req.query?.status || "all").trim().toLowerCase();
+    const limit = Number.isFinite(Number(req.query?.limit)) ? Number(req.query.limit) : 100;
+    const offset = Number.isFinite(Number(req.query?.offset)) ? Number(req.query.offset) : 0;
+    const accounts = await listLecturerPayoutAccounts({
+      lecturerUsername,
+      reviewStatus,
+      limit,
+      offset,
+    });
+    const pendingCount = accounts.filter((account) => account.review_required).length;
+    return res.json({
+      accounts,
+      pendingCount,
+    });
+  } catch (_err) {
+    return res.status(500).json({
+      error: "Could not load payout accounts.",
+      code: "admin_payout_accounts_failed",
+    });
+  }
+});
+
+app.post("/api/admin/lecturer/payout-accounts/:id/approve", requireAdmin, async (req, res) => {
+  const accountId = parseResourceId(req.params.id);
+  if (!accountId) {
+    return res.status(400).json({
+      error: "A payout account id is required.",
+      code: "admin_payout_account_invalid_id",
+    });
+  }
+
+  try {
+    const account = await updateLecturerPayoutAccountReviewStatus(accountId, {
+      reviewRequired: false,
+      note: req.body?.note,
+      req,
+    });
+    return res.json({
+      ok: true,
+      account,
+    });
+  } catch (err) {
+    if (err && err.status && err.error) {
+      return res.status(err.status).json({
+        error: err.error,
+        code: "admin_payout_account_approve_failed",
+      });
+    }
+    return res.status(500).json({
+      error: "Could not approve payout account.",
+      code: "admin_payout_account_approve_failed",
+    });
+  }
+});
+
+app.post("/api/admin/lecturer/payout-accounts/:id/review", requireAdmin, async (req, res) => {
+  const accountId = parseResourceId(req.params.id);
+  if (!accountId) {
+    return res.status(400).json({
+      error: "A payout account id is required.",
+      code: "admin_payout_account_invalid_id",
+    });
+  }
+
+  try {
+    const account = await updateLecturerPayoutAccountReviewStatus(accountId, {
+      reviewRequired: true,
+      note: req.body?.note,
+      req,
+    });
+    return res.json({
+      ok: true,
+      account,
+    });
+  } catch (err) {
+    if (err && err.status && err.error) {
+      return res.status(err.status).json({
+        error: err.error,
+        code: "admin_payout_account_review_failed",
+      });
+    }
+    return res.status(500).json({
+      error: "Could not mark payout account for review.",
+      code: "admin_payout_account_review_failed",
+    });
+  }
+});
+
+app.get("/api/admin/lecturer/marks-submissions", requireAdmin, async (req, res) => {
+  try {
+    const lecturerUsername = normalizeIdentifier(req.query?.lecturerUsername || "");
+    const status = String(req.query?.status || "all").trim().toLowerCase();
+    const limit = Number.isFinite(Number(req.query?.limit)) ? Number(req.query.limit) : 100;
+    const offset = Number.isFinite(Number(req.query?.offset)) ? Number(req.query.offset) : 0;
+    const items = await listLecturerMarkSubmissions({
+      lecturerUsername,
+      status,
+      limit,
+      offset,
+    });
+    const pendingCount = items.filter((item) => item.status === "pending").length;
+    return res.json({
+      items,
+      pendingCount,
+    });
+  } catch (_err) {
+    return res.status(500).json({
+      error: "Could not load mark submissions.",
+      code: "admin_mark_submissions_failed",
+    });
+  }
+});
+
+app.post("/api/admin/lecturer/marks-submissions/:id/review", requireAdmin, async (req, res) => {
+  const submissionId = parseResourceId(req.params.id);
+  if (!submissionId) {
+    return res.status(400).json({
+      error: "A mark submission id is required.",
+      code: "admin_mark_submission_invalid_id",
+    });
+  }
+
+  try {
+    const submission = await reviewLecturerMarkSubmission(submissionId, req.body || {}, req);
+    return res.json({
+      ok: true,
+      submission,
+    });
+  } catch (err) {
+    if (err && err.status && err.error) {
+      return res.status(err.status).json({
+        error: err.error,
+        code: "admin_mark_submission_review_failed",
+      });
+    }
+    return res.status(500).json({
+      error: "Could not review mark submission.",
+      code: "admin_mark_submission_review_failed",
     });
   }
 });

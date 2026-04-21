@@ -62,6 +62,14 @@
           <h2>Today's Logins</h2>
           <p id="todayLogins">0</p>
         </article>
+        <article class="card">
+          <h2>Pending Payout Reviews</h2>
+          <p id="pendingPayoutAccountReviews">0</p>
+        </article>
+        <article class="card">
+          <h2>Pending Marks Reviews</h2>
+          <p id="pendingMarksReviews">0</p>
+        </article>
       </section>
 
       <section class="card" style="margin-top: 1rem;">
@@ -98,6 +106,48 @@
               </tr>
             </thead>
             <tbody id="auditRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 1rem;">
+        <h2>Lecturer Payout Account Review</h2>
+        <p id="adminPayoutAccountStatus" class="auth-subtitle"></p>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Lecturer</th>
+                <th>Department</th>
+                <th>Bank</th>
+                <th>Account</th>
+                <th>Status</th>
+                <th>Updated</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="payoutAccountRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 1rem;">
+        <h2>Lecturer Marks Review</h2>
+        <p id="adminMarksReviewStatus" class="auth-subtitle"></p>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Lecturer</th>
+                <th>Student</th>
+                <th>Course</th>
+                <th>Assessment</th>
+                <th>Score</th>
+                <th>Status</th>
+                <th>Review</th>
+              </tr>
+            </thead>
+            <tbody id="markReviewRows"></tbody>
           </table>
         </div>
       </section>

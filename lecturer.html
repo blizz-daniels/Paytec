@@ -100,6 +100,64 @@
             <button type="submit" class="btn">Save Handout</button>
           </form>
         </article>
+
+        <article class="card">
+          <h2>Submit Marks For Admin Review</h2>
+          <p id="marksStatus" class="auth-subtitle"></p>
+          <form id="marksForm" class="auth-form">
+            <label for="marksStudentUsername">Student matric number</label>
+            <input id="marksStudentUsername" name="studentUsername" type="text" maxlength="40" required />
+
+            <label for="marksCourseCode">Course code</label>
+            <input id="marksCourseCode" name="courseCode" type="text" maxlength="20" required />
+
+            <label for="marksCourseTitle">Course title</label>
+            <input id="marksCourseTitle" name="courseTitle" type="text" maxlength="120" required />
+
+            <label for="marksAssessmentTitle">Assessment</label>
+            <input id="marksAssessmentTitle" name="assessmentTitle" type="text" maxlength="120" placeholder="Exam, Test 1, Quiz, Coursework" required />
+
+            <div class="grid two-col">
+              <div>
+                <label for="marksScore">Score</label>
+                <input id="marksScore" name="score" type="number" min="0" step="0.01" required />
+              </div>
+              <div>
+                <label for="marksMaxScore">Maximum score</label>
+                <input id="marksMaxScore" name="maxScore" type="number" min="0.01" step="0.01" value="100" required />
+              </div>
+            </div>
+
+            <label for="marksNote">Note</label>
+            <textarea id="marksNote" name="note" rows="3" maxlength="500" placeholder="Optional note for the admin reviewer"></textarea>
+
+            <button type="submit" class="btn">Submit Marks</button>
+          </form>
+        </article>
+      </section>
+
+      <section class="card" style="margin-top: 1rem;">
+        <h2>Recent Marks Submitted For Review</h2>
+        <p id="marksReviewQueueStatus" class="auth-subtitle"></p>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Student</th>
+                <th>Course</th>
+                <th>Assessment</th>
+                <th>Score</th>
+                <th>Status</th>
+                <th>Reviewer Note</th>
+              </tr>
+            </thead>
+            <tbody id="marksRows">
+              <tr>
+                <td colspan="6">Loading marks review queue...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section id="lecturerPayoutSection" class="card payout-card" hidden>

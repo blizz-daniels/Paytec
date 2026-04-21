@@ -146,7 +146,7 @@ function renderPayoutAccount(root, account, summary) {
       <div><dt>Account</dt><dd>${escapeHtml(account.account_masked || `•••• ${account.account_last4 || ""}`)}</dd></div>
       <div><dt>Status</dt><dd><span class="${badge.className}">${escapeHtml(badge.text)}</span></dd></div>
       <div><dt>Auto payout</dt><dd>${account.auto_payout_enabled ? "Enabled" : "Disabled"}</dd></div>
-      <div><dt>Reviewed</dt><dd>${account.review_required ? "Yes" : "No"}</dd></div>
+      <div><dt>Admin approval</dt><dd>${account.review_required ? "Pending review" : "Approved"}</dd></div>
     </dl>
   `;
 }
@@ -222,7 +222,9 @@ async function loadLecturerPayoutData() {
     setPayoutMessage(
       "lecturerPayoutStatus",
       account
-        ? `Available balance ${formatMoney(summary.availableBalance || 0)} is ready for payout handling.`
+        ? account.review_required
+          ? "Your payout account is waiting for admin review before transfers can run."
+          : `Available balance ${formatMoney(summary.availableBalance || 0)} is ready for payout handling.`
         : "Link a bank account to start receiving lecturer payouts."
     );
   } catch (err) {
@@ -234,6 +236,72 @@ async function loadLecturerPayoutData() {
     renderPayoutStats(statsRoot, {});
     accountRoot.innerHTML = '<p class="auth-subtitle">Could not load payout account details.</p>';
     historyRoot.innerHTML = '<tr><td colspan="5">Could not load payout history.</td></tr>';
+  }
+}
+
+function formatMarkScore(score, maxScore) {
+  const safeScore = Number(score || 0);
+  const safeMaxScore = Number(maxScore || 0);
+  if (!Number.isFinite(safeScore) || !Number.isFinite(safeMaxScore) || safeMaxScore <= 0) {
+    return "0 / 0";
+  }
+  return `${safeScore.toFixed(2).replace(/\.00$/, "")} / ${safeMaxScore.toFixed(2).replace(/\.00$/, "")}`;
+}
+
+function getReviewBadgeClass(status) {
+  const normalized = String(status || "pending").trim().toLowerCase();
+  if (normalized === "approved") {
+    return "status-badge status-badge--success";
+  }
+  if (normalized === "rejected") {
+    return "status-badge status-badge--error";
+  }
+  return "status-badge status-badge--warning";
+}
+
+function renderMarksRows(rows) {
+  const root = document.getElementById("marksRows");
+  if (!root) {
+    return;
+  }
+  if (!Array.isArray(rows) || !rows.length) {
+    root.innerHTML = '<tr><td colspan="6">No marks have been submitted for admin review yet.</td></tr>';
+    return;
+  }
+
+  root.innerHTML = rows
+    .map(
+      (row) => `
+        <tr>
+          <td>${escapeHtml(row.student_username || "-")}</td>
+          <td>${escapeHtml(`${row.course_code || "-"}${row.course_title ? ` - ${row.course_title}` : ""}`)}</td>
+          <td>${escapeHtml(row.assessment_title || "-")}</td>
+          <td>${escapeHtml(formatMarkScore(row.score, row.max_score))}</td>
+          <td><span class="${getReviewBadgeClass(row.status)}">${escapeHtml(row.status || "pending")}</span></td>
+          <td>${escapeHtml(row.reviewer_note || "Pending admin review")}</td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadLecturerMarkSubmissions() {
+  const queueStatus = document.getElementById("marksReviewQueueStatus");
+  if (queueStatus) {
+    setStatus("marksReviewQueueStatus", "Loading marks review queue...", false);
+  }
+  try {
+    const payload = await requestJson("/api/lecturer/marks-submissions?limit=10");
+    const rows = Array.isArray(payload?.items) ? payload.items : [];
+    renderMarksRows(rows);
+    setStatus(
+      "marksReviewQueueStatus",
+      rows.length ? "Submitted marks stay pending until an admin approves or rejects them." : "No marks submitted yet.",
+      false
+    );
+  } catch (err) {
+    renderMarksRows([]);
+    setStatus("marksReviewQueueStatus", err.message || "Could not load submitted marks.", true);
   }
 }
 
@@ -707,6 +775,52 @@ function initLecturerPage() {
       });
   }
 
+  const marksForm = document.getElementById("marksForm");
+  if (marksForm) {
+    marksForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submitButton = marksForm.querySelector('button[type="submit"]');
+      const payload = {
+        studentUsername: document.getElementById("marksStudentUsername").value.trim(),
+        courseCode: document.getElementById("marksCourseCode").value.trim(),
+        courseTitle: document.getElementById("marksCourseTitle").value.trim(),
+        assessmentTitle: document.getElementById("marksAssessmentTitle").value.trim(),
+        score: document.getElementById("marksScore").value.trim(),
+        maxScore: document.getElementById("marksMaxScore").value.trim(),
+        note: document.getElementById("marksNote").value.trim(),
+      };
+      const loadingToast = window.showToast
+        ? window.showToast("Submitting marks for review...", { type: "loading", sticky: true })
+        : null;
+      setButtonBusy(submitButton, true, "Submitting...");
+      setStatus("marksStatus", "Submitting marks for admin review...", false);
+
+      try {
+        await requestJson("/api/lecturer/marks-submissions", {
+          method: "POST",
+          payload,
+        });
+        marksForm.reset();
+        document.getElementById("marksMaxScore").value = "100";
+        setStatus("marksStatus", "Marks submitted and waiting for admin review.", false);
+        if (window.showToast) {
+          window.showToast("Marks submitted for admin review.", { type: "success" });
+        }
+        await loadLecturerMarkSubmissions();
+      } catch (err) {
+        setStatus("marksStatus", err.message || "Could not submit marks.", true);
+        if (window.showToast) {
+          window.showToast(err.message || "Could not submit marks.", { type: "error" });
+        }
+      } finally {
+        setButtonBusy(submitButton, false, "");
+        if (loadingToast) {
+          loadingToast.close();
+        }
+      }
+    });
+  }
+
   const payoutRequestForm = document.getElementById("lecturerPayoutRequestForm");
   if (payoutRequestForm) {
     payoutRequestForm.addEventListener("submit", async (event) => {
@@ -755,7 +869,7 @@ function initLecturerPage() {
 
   manageConfigs.forEach(bindManageActions);
   loadCurrentUser().then(async () => {
-    await Promise.all([loadManageData(), loadLecturerPayoutData()]);
+    await Promise.all([loadManageData(), loadLecturerPayoutData(), loadLecturerMarkSubmissions()]);
   });
 }
 
