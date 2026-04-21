@@ -5669,6 +5669,31 @@ function mapPaystackSessionStatusFromTransactionStatus(transactionStatus) {
   return "under_review";
 }
 
+function isPaystackSessionPendingCheckoutStatus(statusValue) {
+  const status = String(statusValue || "")
+    .trim()
+    .toLowerCase();
+  return status === "initiated" || status === "pending_webhook";
+}
+
+function isFreshPaystackSession(session, maxAgeMs = 1000 * 60 * 20) {
+  const updatedAt = new Date(session?.updated_at || session?.created_at || "");
+  if (Number.isNaN(updatedAt.getTime())) {
+    return false;
+  }
+  return Date.now() - updatedAt.getTime() <= maxAgeMs;
+}
+
+function extractPaystackSessionCheckoutDetails(session) {
+  const payload = parseJsonObject(session?.init_payload_json || "{}", {});
+  const response = payload?.response?.data || payload?.response || {};
+  return {
+    authorization_url: String(response?.authorization_url || "").trim(),
+    access_code: String(response?.access_code || "").trim(),
+    reference: sanitizeTransactionRef(response?.reference || session?.gateway_reference || ""),
+  };
+}
+
 function getPaystackSystemRequest() {
   return {
     session: {
@@ -5717,6 +5742,25 @@ async function upsertPaystackSession(input = {}) {
     [obligationId, studentId, gatewayReference, amount, status, JSON.stringify(payload)]
   );
   return get("SELECT * FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [gatewayReference]);
+}
+
+async function getLatestPaystackSessionForObligationStudent(obligationId, studentId) {
+  const safeObligationId = parseResourceId(obligationId);
+  const safeStudentId = normalizeIdentifier(studentId || "");
+  if (!safeObligationId || !safeStudentId) {
+    return null;
+  }
+  return get(
+    `
+      SELECT *
+      FROM paystack_sessions
+      WHERE obligation_id = ?
+        AND student_id = ?
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 1
+    `,
+    [safeObligationId, safeStudentId]
+  );
 }
 
 async function updatePaystackSessionStatusByReference(reference, nextStatus, payload = null) {
@@ -9686,6 +9730,31 @@ app.post("/api/payments/paystack/initialize", requireStudent, async (req, res) =
       return res.status(400).json({ error: "Amount must be greater than zero.", code: "paystack_initialize_invalid_amount" });
     }
 
+    const activeSession = await getLatestPaystackSessionForObligationStudent(obligation.id, req.session.user.username);
+    if (activeSession && isPaystackSessionPendingCheckoutStatus(activeSession.status) && isFreshPaystackSession(activeSession)) {
+      const existingCheckout = extractPaystackSessionCheckoutDetails(activeSession);
+      if (
+        String(activeSession.status || "").trim().toLowerCase() === "initiated" &&
+        existingCheckout.authorization_url &&
+        existingCheckout.access_code &&
+        existingCheckout.reference
+      ) {
+        return res.status(200).json({
+          ok: true,
+          authorization_url: existingCheckout.authorization_url,
+          access_code: existingCheckout.access_code,
+          reference: existingCheckout.reference,
+          reused_pending_session: true,
+        });
+      }
+      return res.status(409).json({
+        error: "A Paystack checkout for this payment is already awaiting confirmation. Please wait for it to finish before paying again.",
+        code: "paystack_initialize_pending_session",
+        reference: sanitizeTransactionRef(activeSession.gateway_reference || ""),
+        status: String(activeSession.status || "").trim().toLowerCase() || "pending_webhook",
+      });
+    }
+
     let gatewayReference = buildPaystackGatewayReference(obligation.id, req.session.user.username);
     if (normalizeReference(gatewayReference) === normalizeReference(obligation.payment_reference)) {
       gatewayReference = `${gatewayReference}-P`;
@@ -9784,7 +9853,7 @@ app.get("/api/payments/paystack/callback", async (req, res) => {
       triggerBackgroundPaystackVerification(reference, {
         trigger: "callback_redirect",
       }).catch(() => undefined);
-    }, 1500);
+    }, 250);
     if (typeof backgroundVerifyTimer.unref === "function") {
       backgroundVerifyTimer.unref();
     }

@@ -44,6 +44,11 @@ function normalizePaystackSessionState(value) {
   return normalized;
 }
 
+function isPaystackPendingCheckoutState(value) {
+  const normalized = normalizePaystackSessionState(value);
+  return normalized === "pending_webhook" || normalized === "initiated";
+}
+
 function formatPaystackCheckoutStatusMessage(status, reference = "") {
   const state = normalizePaystackSessionState(status);
   const refPart = reference ? ` (${reference})` : "";
@@ -285,9 +290,10 @@ const paymentState = {
   reconciliationSummary: null,
   paystack: {
     pollTimer: null,
+    kickoffTimer: null,
     pollAttempts: 0,
     maxAttempts: 20,
-    pollEveryMs: 6000,
+    pollEveryMs: 2500,
   },
 };
 
@@ -342,6 +348,10 @@ function stopPaystackLedgerPolling() {
     window.clearInterval(paymentState.paystack.pollTimer);
     paymentState.paystack.pollTimer = null;
   }
+  if (paymentState.paystack.kickoffTimer) {
+    window.clearTimeout(paymentState.paystack.kickoffTimer);
+    paymentState.paystack.kickoffTimer = null;
+  }
   paymentState.paystack.pollAttempts = 0;
 }
 
@@ -378,6 +388,16 @@ function startPaystackLedgerPollingIfNeeded() {
     return;
   }
   paymentState.paystack.pollAttempts = 0;
+  if (!paymentState.paystack.kickoffTimer) {
+    paymentState.paystack.kickoffTimer = window.setTimeout(async () => {
+      paymentState.paystack.kickoffTimer = null;
+      try {
+        await loadStudentPaymentSnapshot();
+      } catch (_err) {
+        // The interval will keep trying until the pending state clears.
+      }
+    }, 1200);
+  }
   paymentState.paystack.pollTimer = window.setInterval(async () => {
     paymentState.paystack.pollAttempts += 1;
     if (paymentState.paystack.pollAttempts > paymentState.paystack.maxAttempts) {
@@ -394,7 +414,7 @@ function startPaystackLedgerPollingIfNeeded() {
       return;
     }
     try {
-      await loadStudentLedger();
+      await loadStudentPaymentSnapshot();
     } catch (_err) {
       // Keep polling until attempts are exhausted.
     }
@@ -557,8 +577,10 @@ function renderReminderCalendar(ledger) {
 
   items.forEach((item) => {
     const outstanding = Number(item.outstanding || 0);
+    const paystackState = normalizePaystackSessionState(item?.paystack_state);
     const isSettled = outstanding <= 0.009;
     const canPayWithPaystack = Number(item.obligation_id || 0) > 0 && outstanding > 0.009;
+    const isAwaitingPaystackConfirmation = canPayWithPaystack && isPaystackPendingCheckoutState(paystackState);
     const ledgerReceiptId = Number.parseInt(String(item.approved_receipt_id || ""), 10);
     const approvedReceiptId =
       Number.isFinite(ledgerReceiptId) && ledgerReceiptId > 0
@@ -567,7 +589,9 @@ function renderReminderCalendar(ledger) {
     let actionHtml = isSettled
       ? '<span class="status-badge status-badge--warning">Preparing receipt...</span>'
       : '<span class="status-badge status-badge--warning">Awaiting payment</span>';
-    if (canPayWithPaystack) {
+    if (isAwaitingPaystackConfirmation) {
+      actionHtml = '<span class="status-badge status-badge--warning">Awaiting Paystack confirmation</span>';
+    } else if (canPayWithPaystack) {
       actionHtml = `<button class="btn btn-secondary" type="button" data-action="paystack-checkout" data-obligation-id="${item.obligation_id}" data-outstanding="${outstanding.toFixed(
         2
       )}">Pay with Paystack</button>`;
@@ -893,6 +917,10 @@ async function loadStudentPaystackReferenceRequests() {
   const payload = await requestJson("/api/my/payments/paystack/reference-requests");
   paymentState.myPaystackReferenceRequests = Array.isArray(payload?.items) ? payload.items : [];
   renderMyPaystackReferenceRequests(paymentState.myPaystackReferenceRequests);
+}
+
+async function loadStudentPaymentSnapshot() {
+  await Promise.all([loadStudentReceipts(), loadStudentLedger(), loadStudentPaystackReferenceRequests()]);
 }
 
 async function loadPaystackReferenceRequests() {
@@ -1482,7 +1510,6 @@ async function initPaymentsPage() {
     if (!paymentState.me.role) {
       throw new Error("Could not load your payment access profile.");
     }
-    await loadPaymentItems();
 
     const studentSection = document.getElementById("studentPaymentsSection");
     const reviewSection = document.getElementById("reviewPaymentsSection");
@@ -1494,8 +1521,8 @@ async function initPaymentsPage() {
       if (queueSection) queueSection.remove();
       bindPaystackCheckoutActions();
       bindPostPaystackReferenceForm();
-      await Promise.all([loadStudentReceipts(), loadStudentLedger(), loadStudentPaystackReferenceRequests()]);
       applyPaystackCallbackStatusFromQuery();
+      await loadStudentPaymentSnapshot();
       if (paymentState.ledger && paymentState.ledger.summary && window.showToast) {
         const overdueCount = Number(paymentState.ledger.summary.overdueCount || 0);
         const dueSoonCount = Number(paymentState.ledger.summary.dueSoonCount || 0);
@@ -1511,6 +1538,7 @@ async function initPaymentsPage() {
     if (studentSection) studentSection.remove();
     if (reviewSection) reviewSection.hidden = false;
     if (queueSection) queueSection.hidden = false;
+    await loadPaymentItems();
     bindPaystackReferenceVerify();
     bindPaystackReferenceRequestActions();
     bindPaymentItemsManagement();

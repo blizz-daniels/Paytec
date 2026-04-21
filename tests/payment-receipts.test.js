@@ -657,6 +657,15 @@ test("paystack initialize validates ownership and amount constraints", async () 
   const requestBody = JSON.parse(String(fetchSpy.mock.calls?.[0]?.[1]?.body || "{}"));
   expect(requestBody.email).toBe("std_001@example.com");
 
+  const repeat = await postJson(studentA, "/api/payments/paystack/initialize", {
+    obligationId: obligation.obligation_id,
+    amount: 15000,
+  });
+  expect(repeat.status).toBe(200);
+  expect(repeat.body.reused_pending_session).toBe(true);
+  expect(repeat.body.reference).toBe(valid.body.reference);
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
+
   const sessionRow = await get("SELECT status, amount FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [
     valid.body.reference,
   ]);
@@ -745,6 +754,14 @@ test("paystack callback redirects safely and does not auto-approve without webho
   const session = await get("SELECT status FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [init.body.reference]);
   expect(session).toBeTruthy();
   expect(session.status).toBe("pending_webhook");
+
+  const duplicate = await postJson(student, "/api/payments/paystack/initialize", {
+    obligationId: row.obligation_id,
+    amount: 12500,
+  });
+  expect(duplicate.status).toBe(409);
+  expect(duplicate.body.code).toBe("paystack_initialize_pending_session");
+  expect(duplicate.body.reference).toBe(init.body.reference);
 });
 
 test("paystack webhook validates signature and auto-approves exact metadata reference", async () => {
