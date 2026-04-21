@@ -292,7 +292,7 @@ const paymentState = {
     pollTimer: null,
     kickoffTimer: null,
     pollAttempts: 0,
-    maxAttempts: 20,
+    maxAttempts: 80,
     pollEveryMs: 2500,
   },
 };

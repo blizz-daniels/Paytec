@@ -5770,6 +5770,24 @@ async function getLatestPaystackSessionForObligationStudent(obligationId, studen
   );
 }
 
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergePlainObjects(base, patch) {
+  const nextBase = isPlainObject(base) ? base : {};
+  const nextPatch = isPlainObject(patch) ? patch : {};
+  const merged = { ...nextBase };
+  for (const [key, value] of Object.entries(nextPatch)) {
+    if (isPlainObject(value) && isPlainObject(nextBase[key])) {
+      merged[key] = mergePlainObjects(nextBase[key], value);
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
+}
+
 async function updatePaystackSessionStatusByReference(reference, nextStatus, payload = null) {
   const gatewayReference = sanitizeTransactionRef(reference || "");
   const status = String(nextStatus || "").trim().toLowerCase().slice(0, 40);
@@ -5780,9 +5798,9 @@ async function updatePaystackSessionStatusByReference(reference, nextStatus, pay
   if (!existing) {
     return null;
   }
-  const nextPayload = payload
-    ? JSON.stringify(payload)
-    : existing.init_payload_json || "{}";
+  const existingPayload = parseJsonObject(existing.init_payload_json || "{}", {});
+  const nextPayloadObject = isPlainObject(payload) ? mergePlainObjects(existingPayload, payload) : existingPayload;
+  const nextPayload = JSON.stringify(nextPayloadObject);
   await run(
     `
       UPDATE paystack_sessions
@@ -7556,6 +7574,8 @@ async function triggerBackgroundPaystackVerification(reference, metadata = {}) {
   if (!safeReference || !paystackClient.hasSecretKey) {
     return { attempted: false, reason: "missing_reference_or_config" };
   }
+  const triggerName = String(metadata.trigger || "unknown").trim().slice(0, 80) || "unknown";
+  const attempt = Math.max(0, Number.parseInt(metadata.attempt, 10) || 0);
 
   try {
     const result = await verifyAndIngestPaystackReference(safeReference, {
@@ -7579,23 +7599,102 @@ async function triggerBackgroundPaystackVerification(reference, metadata = {}) {
         trigger: "callback_background_verify",
       },
     });
+    await updatePaystackSessionStatusByReference(result.reference, result.sessionStatus || "approved", {
+      background_verify: {
+        ...(attempt > 0 ? { attempt_count: attempt } : {}),
+        last_result: "success",
+        last_trigger: triggerName,
+        last_success_at: new Date().toISOString(),
+        last_error: null,
+      },
+    });
     console.info(
       `[paystack] background verify succeeded reference=${result.reference} status=${String(
         result.transaction?.status || result.sessionStatus || "unknown"
       )} inserted=${Boolean(result.ingest?.inserted)} idempotent=${Boolean(result.ingest?.idempotent)} trigger=${
-        metadata.trigger || "unknown"
+        triggerName
       }`
     );
     return { attempted: true, ok: true, result };
   } catch (err) {
     const normalizedError = normalizePaystackError(err, "paystack_background_verify_failed");
+    const existingSession = await get("SELECT status FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [safeReference]);
+    const fallbackStatus = String(existingSession?.status || "pending_webhook").trim().toLowerCase() || "pending_webhook";
+    await updatePaystackSessionStatusByReference(safeReference, fallbackStatus, {
+      background_verify: {
+        ...(attempt > 0 ? { attempt_count: attempt } : {}),
+        last_result: "failed",
+        last_trigger: triggerName,
+        last_failure_at: new Date().toISOString(),
+        last_error: {
+          code: normalizedError.code,
+          message: normalizedError.message,
+        },
+      },
+    });
     console.error(
       `[paystack] background verify failed reference=${safeReference} code=${normalizedError.code} message=${normalizedError.message} trigger=${
-        metadata.trigger || "unknown"
+        triggerName
       }`
     );
     return { attempted: true, ok: false, error: normalizedError };
   }
+}
+
+async function queuePaystackPendingSessionVerification(reference, metadata = {}) {
+  const safeReference = sanitizeTransactionRef(reference || "");
+  if (!safeReference || !paystackClient.hasSecretKey) {
+    return { attempted: false, reason: "missing_reference_or_config" };
+  }
+  const session = await get("SELECT * FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [safeReference]);
+  if (!session) {
+    return { attempted: false, reason: "session_not_found" };
+  }
+  const sessionStatus = String(session.status || "").trim().toLowerCase();
+  if (!isPaystackSessionPendingCheckoutStatus(sessionStatus)) {
+    return { attempted: false, reason: "session_not_pending", status: sessionStatus || null };
+  }
+
+  const payload = parseJsonObject(session.init_payload_json || "{}", {});
+  const verifyMeta = isPlainObject(payload.background_verify) ? payload.background_verify : {};
+  const attemptCount = Math.max(0, Number.parseInt(verifyMeta.attempt_count, 10) || 0);
+  const cooldownRaw = Number(metadata.cooldownMs);
+  const maxAttemptsRaw = Number(metadata.maxAttempts);
+  const cooldownMs =
+    Number.isFinite(cooldownRaw) && cooldownRaw >= 0 ? Math.min(cooldownRaw, 1000 * 60 * 10) : 1000 * 45;
+  const maxAttempts = Number.isFinite(maxAttemptsRaw) && maxAttemptsRaw > 0 ? Math.min(maxAttemptsRaw, 500) : 80;
+  const now = Date.now();
+  const lastAttemptAtRaw =
+    String(verifyMeta.last_attempt_at || verifyMeta.last_failure_at || verifyMeta.last_success_at || "").trim() || "";
+  const lastAttemptAtMs = Date.parse(lastAttemptAtRaw);
+  if (attemptCount >= maxAttempts) {
+    return { attempted: false, reason: "max_attempts_reached", attempts: attemptCount };
+  }
+  if (cooldownMs > 0 && Number.isFinite(lastAttemptAtMs) && now - lastAttemptAtMs < cooldownMs) {
+    return {
+      attempted: false,
+      reason: "cooldown_active",
+      attempts: attemptCount,
+      retry_in_ms: Math.max(0, cooldownMs - (now - lastAttemptAtMs)),
+    };
+  }
+
+  const nextAttempt = attemptCount + 1;
+  const triggerName = String(metadata.trigger || "unknown").trim().slice(0, 80) || "unknown";
+  await updatePaystackSessionStatusByReference(safeReference, sessionStatus || "pending_webhook", {
+    background_verify: {
+      attempt_count: nextAttempt,
+      last_attempt_at: new Date(now).toISOString(),
+      last_trigger: triggerName,
+      last_result: "queued",
+    },
+  });
+  triggerBackgroundPaystackVerification(safeReference, {
+    ...metadata,
+    trigger: triggerName,
+    attempt: nextAttempt,
+  }).catch(() => undefined);
+  return { attempted: true, queued: true, attempt: nextAttempt };
 }
 
 function reconciliationDecisionFromStatus(statusValue) {
@@ -9865,8 +9964,10 @@ app.get("/api/payments/paystack/callback", async (req, res) => {
           String(updatedSession?.status || currentStatus || "")
             .trim()
             .toLowerCase() || "pending_webhook";
-        triggerBackgroundPaystackVerification(reference, {
+        queuePaystackPendingSessionVerification(reference, {
           trigger: "callback_redirect",
+          cooldownMs: 0,
+          maxAttempts: 200,
         }).catch(() => undefined);
       }
     } catch (_err) {
@@ -11362,6 +11463,21 @@ app.get("/api/my/payment-ledger", requireStudent, async (req, res) => {
     );
 
     const scopedRows = rows.filter((row) => rowMatchesStudentDepartmentScope(row, studentDepartment));
+    const pendingPaystackReferences = Array.from(
+      new Set(
+        scopedRows
+          .filter((row) => String(row.paystack_state || "").trim().toLowerCase() === "pending_webhook")
+          .map((row) => sanitizeTransactionRef(row.paystack_reference || ""))
+          .filter(Boolean)
+      )
+    ).slice(0, 3);
+    for (const pendingReference of pendingPaystackReferences) {
+      queuePaystackPendingSessionVerification(pendingReference, {
+        trigger: "student_ledger_poll",
+        cooldownMs: 1000 * 45,
+        maxAttempts: 200,
+      }).catch(() => undefined);
+    }
 
     for (const row of scopedRows) {
       const paymentItemId = parseResourceId(row.id);
