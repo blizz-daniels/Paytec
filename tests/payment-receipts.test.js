@@ -764,6 +764,88 @@ test("paystack callback redirects safely and does not auto-approve without webho
   expect(duplicate.body.reference).toBe(init.body.reference);
 });
 
+test("paystack callback preserves approved session status after webhook confirmation", async () => {
+  const teacher = request.agent(app);
+  await login(teacher, "teach_001", "teach");
+  const createItem = await postJson(teacher, "/api/payment-items", {
+    title: "Paystack Callback Race",
+    description: "Callback should not downgrade approved status",
+    expectedAmount: 18500,
+    currency: "NGN",
+    dueDate: "2026-08-15",
+  });
+  expect(createItem.status).toBe(201);
+
+  const student = request.agent(app);
+  await login(student, "std_001", "doe");
+  const ledger = await student.get("/api/my/payment-ledger");
+  const row = (ledger.body?.items || []).find((entry) => Number(entry.id) === Number(createItem.body.id));
+  expect(row).toBeTruthy();
+
+  const fetchSpy = jest.spyOn(global, "fetch").mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        status: true,
+        data: {
+          authorization_url: "https://checkout.paystack.com/mock-session-race",
+          access_code: "mock-access-code-race",
+          reference: "PSTK-MOCK-RACE-001",
+        },
+      }),
+  });
+
+  const init = await postJson(student, "/api/payments/paystack/initialize", {
+    obligationId: row.obligation_id,
+    amount: 18500,
+  });
+  expect(init.status).toBe(200);
+
+  const webhookPayload = {
+    id: "evt-paystack-callback-race-001",
+    event: "charge.success",
+    data: {
+      id: 999101,
+      reference: init.body.reference,
+      amount: 1850000,
+      paid_at: "2026-02-23T11:15:00Z",
+      customer: {
+        email: "std_001@paytec.local",
+        first_name: "Std",
+        last_name: "One",
+      },
+      metadata: {
+        tenant: "default-school",
+        school_id: "default-school",
+        student_username: "std_001",
+        payment_item_id: createItem.body.id,
+        obligation_id: row.obligation_id,
+        payment_reference: row.my_reference,
+      },
+    },
+  };
+  const signed = signPaystackPayload(webhookPayload);
+  const webhook = await request(app)
+    .post("/api/payments/webhook/paystack")
+    .set("Content-Type", "application/json")
+    .set("x-paystack-signature", signed.signature)
+    .send(signed.rawBody);
+  expect(webhook.status).toBe(200);
+  expect(webhook.body.session_status).toBe("approved");
+
+  const callback = await request(app).get(
+    `/api/payments/paystack/callback?reference=${encodeURIComponent(init.body.reference)}`
+  );
+  expect(callback.status).toBe(302);
+  expect(callback.headers.location).toContain("paystack_status=approved");
+
+  const session = await get("SELECT status FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [init.body.reference]);
+  expect(session).toBeTruthy();
+  expect(session.status).toBe("approved");
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
+});
+
 test("paystack webhook validates signature and auto-approves exact metadata reference", async () => {
   const teacher = request.agent(app);
   await login(teacher, "teach_001", "teach");

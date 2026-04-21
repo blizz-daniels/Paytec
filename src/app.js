@@ -5676,6 +5676,13 @@ function isPaystackSessionPendingCheckoutStatus(statusValue) {
   return status === "initiated" || status === "pending_webhook";
 }
 
+function isPaystackSessionTerminalStatus(statusValue) {
+  const status = String(statusValue || "")
+    .trim()
+    .toLowerCase();
+  return status === "approved" || status === "under_review" || status === "failed";
+}
+
 function isFreshPaystackSession(session, maxAgeMs = 1000 * 60 * 20) {
   const updatedAt = new Date(session?.updated_at || session?.created_at || "");
   if (Number.isNaN(updatedAt.getTime())) {
@@ -9840,26 +9847,34 @@ app.post("/api/payments/paystack/initialize", requireStudent, async (req, res) =
 
 app.get("/api/payments/paystack/callback", async (req, res) => {
   const reference = sanitizeTransactionRef(req.query?.reference || req.query?.trxref || "");
+  let redirectStatus = "pending_webhook";
   if (reference) {
     try {
-      await updatePaystackSessionStatusByReference(reference, "pending_webhook", {
-        callback_query: req.query || {},
-        callback_received_at: new Date().toISOString(),
-      });
+      const existingSession = await get("SELECT status FROM paystack_sessions WHERE gateway_reference = ? LIMIT 1", [reference]);
+      const currentStatus = String(existingSession?.status || "")
+        .trim()
+        .toLowerCase();
+      if (isPaystackSessionTerminalStatus(currentStatus)) {
+        redirectStatus = currentStatus;
+      } else {
+        const updatedSession = await updatePaystackSessionStatusByReference(reference, "pending_webhook", {
+          callback_query: req.query || {},
+          callback_received_at: new Date().toISOString(),
+        });
+        redirectStatus =
+          String(updatedSession?.status || currentStatus || "")
+            .trim()
+            .toLowerCase() || "pending_webhook";
+        triggerBackgroundPaystackVerification(reference, {
+          trigger: "callback_redirect",
+        }).catch(() => undefined);
+      }
     } catch (_err) {
       // Callback endpoint must stay non-blocking for UX redirects.
     }
-    const backgroundVerifyTimer = setTimeout(() => {
-      triggerBackgroundPaystackVerification(reference, {
-        trigger: "callback_redirect",
-      }).catch(() => undefined);
-    }, 250);
-    if (typeof backgroundVerifyTimer.unref === "function") {
-      backgroundVerifyTimer.unref();
-    }
   }
   const params = new URLSearchParams();
-  params.set("paystack_status", "pending_webhook");
+  params.set("paystack_status", redirectStatus);
   if (reference) {
     params.set("paystack_reference", reference);
   }
